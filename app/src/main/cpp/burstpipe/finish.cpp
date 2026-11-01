@@ -510,7 +510,12 @@ void hue_tune(ImageF& rgb, const LookParams& p) {
 }
 
 bool apply_look_preset(const std::string& name, LookParams& p) {
-    if (name == "default") { p = LookParams(); return true; }
+    if (name == "default") {
+        // a little brighter and crisper than the neutral parameters, still well below pixel's noise
+        p = LookParams();
+        p.targetKey = 0.23f; p.sharpen = 0.8f; p.localContrast = 0.3f;
+        return true;
+    }
     if (name == "pixel") {
         // brighter mid-tones, stronger compression and local contrast, crisper, slightly cool,
         // deeper sky blue and gentler skin saturation
