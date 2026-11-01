@@ -32,7 +32,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.LoadingIndicator
+import androidx.compose.material3.WavyProgressIndicatorDefaults
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.material3.MaterialShapes
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -187,6 +190,34 @@ private fun QuickToggle(caption: String, value: String, checked: Boolean, rotati
 }
 
 private val QuickTogglePressed = RoundedCornerShape(14.dp)
+
+/**
+ * The seam between viewfinder and controls, in PiliPaw's wave (Yoin's WaveProgressBar): M3E's
+ * wavy line flowing while the camera is live, hurrying while a shot is taken, flat when closed.
+ */
+@Composable
+fun ControlsWave(live: Boolean, busy: Boolean, modifier: Modifier = Modifier) {
+    val base = WavyProgressIndicatorDefaults.linearIndicatorStroke
+    val stroke = remember(base) { Stroke(width = base.width * 0.92f, cap = base.cap) }
+    val amplitude by animateFloatAsState(if (live) 1f else 0f, YoinMotion.defaultSpatialSpec(), label = "waveAmplitude")
+    LinearWavyProgressIndicator(
+        progress = { 1f },
+        modifier = modifier.fillMaxWidth().height(18.dp),
+        color = MaterialTheme.colorScheme.primary,
+        trackColor = Color.Transparent,
+        stroke = stroke,
+        trackStroke = stroke,
+        gapSize = 0.dp,
+        stopSize = 0.dp,
+        amplitude = { amplitude },
+        wavelength = 24.dp,
+        waveSpeed = when {
+            busy -> 72.dp
+            live -> 24.dp
+            else -> 0.dp
+        },
+    )
+}
 
 private fun flashLabel(mode: FlashMode): Int = when (mode) {
     FlashMode.OFF -> R.string.value_off

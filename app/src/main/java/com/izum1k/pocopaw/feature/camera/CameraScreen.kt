@@ -36,6 +36,7 @@ import androidx.compose.material3.toShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -45,6 +46,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onPlaced
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
@@ -56,6 +61,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.gpo.yoin.symbols.YoinSymbols
 import com.izum1k.pocopaw.R
+import com.izum1k.pocopaw.camera.CameraController
 import com.izum1k.pocopaw.camera.LensFacing
 import com.izum1k.pocopaw.container
 import com.izum1k.pocopaw.data.AspectRatio
@@ -127,6 +133,8 @@ private fun CameraContent(vm: CameraViewModel) {
     val frame = rememberAspectFrame(settings.aspect)
     val tallest = remember { AspectRatio.entries.maxOf { it.portraitRatio } }
     val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    var viewfinderBottom by remember { mutableFloatStateOf(0f) }
+    var controlsTop by remember { mutableFloatStateOf(0f) }
     val evLabel = if (ui.mode == CaptureMode.PHOTO && ui.evIndex != 0 && current != null) CameraFormat.ev(ui.evIndex, current.evStep) else null
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
@@ -153,7 +161,8 @@ private fun CameraContent(vm: CameraViewModel) {
                     val under = (TOP_BAR_HEIGHT + VIEWFINDER_GAP).toPx()
                     IntOffset(0, (statusTop.toPx() + under * (1f - frame.blowUp(tallest))).roundToInt())
                 }
-                .padding(horizontal = SIDE_MARGIN),
+                .padding(horizontal = SIDE_MARGIN)
+                .onPlaced { viewfinderBottom = it.boundsInRoot().bottom },
             topOverlay = {
                 Column(
                     Modifier
@@ -191,6 +200,22 @@ private fun CameraContent(vm: CameraViewModel) {
             modifier = Modifier.statusBarsPadding(),
         )
 
+        ControlsWave(
+            live = cameraState is CameraController.State.Previewing || cameraState is CameraController.State.Capturing,
+            busy = ui.busy == Busy.CAPTURING || ui.busy == Busy.PROCESSING,
+            modifier = Modifier
+                .padding(horizontal = SIDE_MARGIN + 12.dp)
+                .layout { measurable, constraints ->
+                    val placeable = measurable.measure(constraints)
+                    layout(placeable.width, placeable.height) {
+                        val gap = controlsTop - viewfinderBottom
+                        val y = viewfinderBottom + (gap - placeable.height) / 2f
+                        val shown = ((gap - placeable.height - WAVE_CLEARANCE.toPx()) / WAVE_CLEARANCE.toPx()).coerceIn(0f, 1f)
+                        placeable.placeWithLayer(0, y.roundToInt()) { alpha = shown }
+                    }
+                },
+        )
+
         Column(
             Modifier
                 .align(Alignment.BottomCenter)
@@ -200,27 +225,32 @@ private fun CameraContent(vm: CameraViewModel) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             SnackbarHost(snackbar, Modifier.align(Alignment.CenterHorizontally))
-            Reveal(ui.mode == CaptureMode.PRO) {
-                ProPanel(
-                    camera = current,
-                    iso = ui.manualIso,
-                    exposureNs = ui.manualExposureNs,
-                    onIso = vm::setIso,
-                    onShutter = vm::setShutter,
+            Column(
+                Modifier.onPlaced { controlsTop = it.positionInRoot().y },
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Reveal(ui.mode == CaptureMode.PRO) {
+                    ProPanel(
+                        camera = current,
+                        iso = ui.manualIso,
+                        exposureNs = ui.manualExposureNs,
+                        onIso = vm::setIso,
+                        onShutter = vm::setShutter,
+                    )
+                }
+                ModeBar(ui.mode, vm::setMode)
+                ShutterRow(
+                    last = ui.last?.thumbnail,
+                    hasLast = ui.last != null,
+                    busy = ui.busy,
+                    countdown = ui.countdown,
+                    canFlip = ui.canFlip,
+                    rotation = rotation,
+                    onThumbnail = { ui.last?.uri?.let { openCapture(context, it) } },
+                    onShutter = { vm.shutter(deviceRotation) },
+                    onFlip = vm::flip,
                 )
             }
-            ModeBar(ui.mode, vm::setMode)
-            ShutterRow(
-                last = ui.last?.thumbnail,
-                hasLast = ui.last != null,
-                busy = ui.busy,
-                countdown = ui.countdown,
-                canFlip = ui.canFlip,
-                rotation = rotation,
-                onThumbnail = { ui.last?.uri?.let { openCapture(context, it) } },
-                onShutter = { vm.shutter(deviceRotation) },
-                onFlip = vm::flip,
-            )
         }
     }
 }
@@ -274,6 +304,9 @@ private fun PermissionGate(asked: Boolean, onRequest: () -> Unit) {
 private val TOP_BAR_HEIGHT = 72.dp
 private val VIEWFINDER_GAP = 4.dp
 private val SIDE_MARGIN = 12.dp
+
+/** The wave fades in over this much more room than it needs, and is gone with less. */
+private val WAVE_CLEARANCE = 12.dp
 
 private fun hasCameraPermission(context: Context): Boolean =
     ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
