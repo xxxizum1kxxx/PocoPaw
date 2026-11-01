@@ -115,7 +115,7 @@ fun TopControls(
     val haptics = LocalHapticFeedback.current
     // Inset as if inside the viewfinder (12dp margin + 12dp), so in 16:9, where it floats on the
     // picture, it keeps clear of the picture's edges and corners.
-    Row(modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 12.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Row(
             Modifier
                 .clip(PillShape)

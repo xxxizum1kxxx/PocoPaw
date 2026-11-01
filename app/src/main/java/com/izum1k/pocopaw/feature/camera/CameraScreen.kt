@@ -36,6 +36,7 @@ import androidx.compose.material3.toShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -45,6 +46,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onPlaced
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
@@ -162,7 +166,7 @@ private fun CameraContent(vm: CameraViewModel) {
                 Column(
                     Modifier
                         .align(Alignment.TopStart)
-                        .offset { IntOffset(0, ((TOP_BAR_HEIGHT + VIEWFINDER_GAP - 12.dp).toPx() * frame.blowUp(tallest)).roundToInt()) },
+                        .offset { IntOffset(0, ((TOP_BAR_HEIGHT - TOP_INSET + FLOAT_INSET).toPx() * frame.blowUp(tallest)).roundToInt()) },
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Reveal(evLabel != null && ui.focus == null) { EvChip(evLabel.orEmpty(), rotation) }
@@ -179,22 +183,38 @@ private fun CameraContent(vm: CameraViewModel) {
             onAspect = { vm.setAspect(it) },
             onGrid = { vm.setGrid(it) },
             onSettings = { nav.push(Route.Settings) },
-            modifier = Modifier.statusBarsPadding(),
+            modifier = Modifier
+                .statusBarsPadding()
+                .offset { IntOffset(0, ((FLOAT_INSET - TOP_INSET).toPx() * frame.blowUp(tallest)).roundToInt()) },
         )
 
         Column(
             Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(bottom = 4.dp),
+                .navigationBarsPadding(),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             SnackbarHost(snackbar, Modifier.align(Alignment.CenterHorizontally))
-            // In 4:3 the info and the lenses sit in the black under the picture; a taller framing
-            // grows under them, so they float on it without moving.
+            // In 4:3 the info and the lenses sit in the black under the picture; as a taller framing
+            // blows up under them they rise with it, to end up [FLOAT_INSET] inside its bottom edge.
+            var floatTop by remember { mutableFloatStateOf(0f) }
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .onPlaced { floatTop = it.positionInRoot().y }
+                        .layout { measurable, constraints ->
+                            val placeable = measurable.measure(constraints)
+                            layout(placeable.width, placeable.height) {
+                                val bottom = statusTop.toPx() + (placeable.width - 2 * SIDE_MARGIN.toPx()) * tallest
+                                val lift = (floatTop + placeable.height - bottom + FLOAT_INSET.toPx()).coerceAtLeast(0f)
+                                placeable.place(0, -(lift * frame.blowUp(tallest)).roundToInt())
+                            }
+                        },
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
                     if (settings.developerInfo) DevChip(current, remaining, vm.rawLimit, live, ui.lastRun)
                     Reveal(current?.facing == LensFacing.BACK) {
                         current?.let {
@@ -283,10 +303,18 @@ private fun PermissionGate(asked: Boolean, onRequest: () -> Unit) {
     }
 }
 
-/** [TopControls]' height under the status bar: 56dp of controls, 12dp above and 8dp below. */
-private val TOP_BAR_HEIGHT = 76.dp
-private val VIEWFINDER_GAP = 4.dp
+/** [TopControls]' height under the status bar: 56dp of controls under [TOP_INSET]. */
+private val TOP_BAR_HEIGHT = 64.dp
+
+/** Between the 4:3 picture and the controls above and below it. */
+private val VIEWFINDER_GAP = 16.dp
 private val SIDE_MARGIN = 12.dp
+
+/** [TopControls]' own top padding, which is all that separates them from the picture's top in the tallest framing. */
+private val TOP_INSET = 8.dp
+
+/** How far inside the tallest framing's edges the controls floating on it keep. */
+private val FLOAT_INSET = 18.dp
 /** The camera whose frames are on screen; a reopen mid-capture (RAW budget) keeps the busy flag instead. */
 private fun CameraController.State.showing(): String? = when (this) {
     is CameraController.State.Previewing -> cameraId
