@@ -178,7 +178,7 @@ private fun CameraContent(vm: CameraViewModel) {
             controlRotation = rotation,
             onSurfaceAvailable = vm::onSurfaceAvailable,
             onSurfaceDestroyed = vm::onSurfaceDestroyed,
-            onTap = vm::tapFocus,
+            onTap = { x, y, onRing -> if (quickOpen) quickOpen = false else vm.tapFocus(x, y, onRing) },
             onZoom = vm::zoomBy,
             onEvSteps = { vm.setEv(ui.evIndex + it) },
             onWbSteps = { vm.setWb(ui.wbShift + it) },
