@@ -31,5 +31,12 @@ object CameraFormat {
         return if (rounded % 1f == 0f) "${rounded.toInt()}×" else String.format(Locale.US, "%.1f×", rounded)
     }
 
+    /** Dioptres as a distance: 12cm, 1.5m, ∞. */
+    fun focusDistance(dioptres: Float): String {
+        if (dioptres < 0.05f) return "∞"
+        val metres = 1f / dioptres
+        return if (metres < 1f) "${(metres * 100).roundToInt()}cm" else String.format(Locale.US, "%.1fm", metres)
+    }
+
     fun millimetres(mm: Float): String = String.format(Locale.US, "%.2f mm", mm)
 }

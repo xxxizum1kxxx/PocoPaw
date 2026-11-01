@@ -1,6 +1,10 @@
 package com.izum1k.pocopaw.feature.camera
 
+import android.graphics.RectF
 import android.graphics.SurfaceTexture
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.Stroke
 import android.view.TextureView
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -80,6 +84,8 @@ fun Viewfinder(
     gridStyle: GridStyle,
     focus: FocusPoint?,
     focusLocked: Boolean,
+    /** Faces in normalised viewfinder (texture) coordinates, like [focus]. */
+    faces: List<RectF>,
     evLabel: String?,
     countdown: Int?,
     shutterTick: Int,
@@ -135,6 +141,7 @@ fun Viewfinder(
                     .fillMaxSize()
                     .viewfinderGestures(evDragEnabled, onTap, onZoom, onEvSteps),
             )
+            FaceBoxes(if (focus == null) faces else emptyList(), focusLocked)
             FocusRing(focus, focusLocked, evLabel, controlRotation)
         }
 
@@ -304,6 +311,30 @@ private fun BoxScope.FocusRing(focus: FocusPoint?, locked: Boolean, evLabel: Str
                     modifier = Modifier.graphicsLayer { rotationZ = controlRotation },
                 )
             }
+        }
+    }
+}
+
+/** A rounded frame per face; the one 3A follows is the largest, and turns primary once focus holds. */
+@Composable
+private fun FaceBoxes(faces: List<RectF>, focusLocked: Boolean) {
+    val alpha by animateFloatAsState(if (faces.isEmpty()) 0f else 1f, YoinMotion.defaultEffectsSpec(), label = "faceAlpha")
+    var shown by remember { mutableStateOf(faces) }
+    if (faces.isNotEmpty()) shown = faces
+    val primary = MaterialTheme.colorScheme.primary
+    val lead = shown.maxByOrNull { it.width() * it.height() }
+    Canvas(Modifier.fillMaxSize().graphicsLayer { this.alpha = alpha }) {
+        val stroke = Stroke(2.dp.toPx())
+        val corner = CornerRadius(12.dp.toPx())
+        shown.forEach { f ->
+            val color = if (f === lead && focusLocked) primary else Color.White.copy(alpha = 0.8f)
+            drawRoundRect(
+                color,
+                topLeft = Offset(f.left * size.width, f.top * size.height),
+                size = Size(f.width() * size.width, f.height() * size.height),
+                cornerRadius = corner,
+                style = stroke,
+            )
         }
     }
 }

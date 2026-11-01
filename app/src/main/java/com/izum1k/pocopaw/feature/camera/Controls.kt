@@ -474,6 +474,32 @@ private fun DevPill(
     )
 }
 
+/** AF state (primary once focused, quiet while it scans) and the lens's focus distance. */
+@Composable
+fun AfChip(live: LiveExposure, rotation: Float, modifier: Modifier = Modifier) {
+    val dioptres = live.focusDioptres ?: return
+    val color by animateColorAsState(
+        when {
+            live.focusLocked -> MaterialTheme.colorScheme.primary
+            live.focusing -> MaterialTheme.colorScheme.onSurface
+            else -> MaterialTheme.colorScheme.onSurfaceVariant
+        },
+        YoinMotion.defaultEffectsSpec(),
+        label = "afColor",
+    )
+    Row(
+        modifier
+            .graphicsLayer { rotationZ = rotation }
+            .clip(PillShape)
+            .background(controlContainer())
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text("AF", style = MaterialTheme.typography.labelMedium, color = color, fontWeight = FontWeight.Bold)
+        Text(CameraFormat.focusDistance(dioptres), style = MaterialTheme.typography.labelMedium.withTabularFigures())
+    }
+}
+
 @Composable
 fun EvChip(label: String, rotation: Float, modifier: Modifier = Modifier) {
     Row(

@@ -3,6 +3,7 @@ package com.izum1k.pocopaw.camera
 import android.annotation.SuppressLint
 import android.graphics.ImageFormat
 import android.graphics.Rect
+import android.graphics.RectF
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
@@ -14,6 +15,7 @@ import android.hardware.camera2.CaptureFailure
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
+import android.hardware.camera2.params.Face
 import android.hardware.camera2.params.MeteringRectangle
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
@@ -47,6 +49,8 @@ import java.nio.ByteBuffer
 import java.util.concurrent.Executor
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -93,8 +97,13 @@ class CameraController(private val manager: CameraManager) {
     private var previewSurface: Surface? = null
     private var controls = PreviewControls()
     private var focusRegion: MeteringRectangle? = null
+    /** The largest face, as a 3A region; a tap's [focusRegion] overrides it. */
+    private var faceRegion: MeteringRectangle? = null
+    private var faceSeenAt = 0L
+    private var faceRegionAt = 0L
     private var activeCapture: CaptureCollector? = null
     private var aeWatcher: ((Int?) -> Unit)? = null
+    private var afWatcher: ((Int?) -> Unit)? = null
     private var recoveries = 0
 
     suspend fun open(info: CameraInfo, texture: SurfaceTexture, controls: PreviewControls) = withContext(dispatcher) {
@@ -195,7 +204,9 @@ class CameraController(private val manager: CameraManager) {
             val s = session ?: throw CameraFailure(Reason.UNKNOWN)
             val reader = rawReader ?: throw CameraFailure(Reason.UNKNOWN)
             _state.value = State.Capturing(info.id)
+            var unlockFocus = false
             try {
+                unlockFocus = lockFocus(s, info)
                 val fires = info.hasFlash && spec.flash != FlashMode.OFF && spec.exposure is ExposurePlan.Auto
                 if (fires) runPrecapture(s)
                 val requests = List(spec.frameCount) { stillRequest(info, spec, reader.surface, it) }
@@ -226,7 +237,13 @@ class CameraController(private val manager: CameraManager) {
                 reader.setOnImageAvailableListener(null, null)
                 if (device != null && session === s) {
                     _state.value = State.Previewing(info.id)
-                    runCatching { startPreview() }
+                    runCatching {
+                        if (unlockFocus) previewBuilder()?.let { b ->
+                            b.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_CANCEL)
+                            s.capture(b.build(), null, handler)
+                        }
+                        startPreview()
+                    }
                 }
             }
         }
@@ -276,6 +293,7 @@ class CameraController(private val manager: CameraManager) {
         device = null
         rawReader = null
         previewSurface = null
+        faceRegion = null
         _live.value = LiveExposure()
     }
 
@@ -383,14 +401,12 @@ class CameraController(private val manager: CameraManager) {
     ) {
         val c = info.characteristics
         b.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-        val region = focusRegion
+        b.set(CaptureRequest.STATISTICS_FACE_DETECT_MODE, faceDetectMode(info))
+        val tap = focusRegion
+        val region = tap ?: faceRegion
         if (info.hasAutoFocus) {
-            if (region != null) {
-                b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_AUTO)
-                if ((c.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0) > 0) b.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(region))
-            } else {
-                b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-            }
+            b.set(CaptureRequest.CONTROL_AF_MODE, if (tap != null) CameraMetadata.CONTROL_AF_MODE_AUTO else CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            if (region != null && (c.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0) > 0) b.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(region))
         } else {
             b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
         }
@@ -445,6 +461,83 @@ class CameraController(private val manager: CameraManager) {
         return iso to MAX_PREVIEW_EXPOSURE_NS
     }
 
+    /**
+     * Settles focus before a burst and holds it for every frame: frames focused differently do
+     * not merge. Continuous AF is triggered into a lock (true: the caller cancels it afterwards);
+     * a tap has already started its own scan, which is only waited for. Gives up after
+     * [AF_LOCK_TIMEOUT_MS] and shoots anyway.
+     */
+    private suspend fun lockFocus(s: CameraCaptureSession, info: CameraInfo): Boolean {
+        if (!info.hasAutoFocus) return false
+        val tapped = focusRegion != null
+        val done = CompletableDeferred<Unit>()
+        afWatcher = { af ->
+            if (af == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED || af == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED) done.complete(Unit)
+        }
+        try {
+            if (!tapped) {
+                val b = previewBuilder() ?: return false
+                b.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
+                s.capture(b.build(), null, handler)
+            }
+            val start = System.nanoTime()
+            val locked = withTimeoutOrNull(AF_LOCK_TIMEOUT_MS) { done.await() } != null
+            Log.i(TAG, if (locked) "focus locked in ${(System.nanoTime() - start) / 1_000_000}ms" else "focus did not lock in ${AF_LOCK_TIMEOUT_MS}ms")
+        } finally {
+            afWatcher = null
+        }
+        return !tapped
+    }
+
+    /**
+     * Follows the largest face with the 3A regions while no tap holds them. Moves smaller than
+     * [FACE_MOVE] are ignored and the region changes at most every [FACE_UPDATE_MS], so the
+     * repeating request is not rebuilt every frame; a face gone for [FACE_LOST_MS] lets go.
+     */
+    private fun followFaces(info: CameraInfo, faces: Array<Face>?) {
+        val now = System.currentTimeMillis()
+        val face = faces?.filter { it.score >= MIN_FACE_SCORE }?.maxByOrNull { it.bounds.width() * it.bounds.height() }
+        val a = info.activeArray
+        val next = face?.let {
+            val r = it.bounds
+            val half = (max(r.width(), r.height()) * FACE_REGION_SCALE / 2).roundToInt()
+            val left = (r.centerX() - half).coerceIn(0, a.width() - 1)
+            val top = (r.centerY() - half).coerceIn(0, a.height() - 1)
+            MeteringRectangle(left, top, min(2 * half, a.width() - left), min(2 * half, a.height() - top), MeteringRectangle.METERING_WEIGHT_MAX - 1)
+        }
+        if (next != null) faceSeenAt = now
+        val current = faceRegion
+        val changed = when {
+            next == null -> current != null && now - faceSeenAt > FACE_LOST_MS
+            current == null -> true
+            else -> {
+                val moved = hypot((next.x + next.width / 2f - current.x - current.width / 2f).toDouble(), (next.y + next.height / 2f - current.y - current.height / 2f).toDouble())
+                moved > a.width() * FACE_MOVE || abs(next.width - current.width) > current.width * FACE_MOVE * 4
+            }
+        }
+        if (!changed || now - faceRegionAt < FACE_UPDATE_MS) return
+        faceRegion = next
+        faceRegionAt = now
+        if (focusRegion != null) return
+        scope.launch {
+            if (!mutex.tryLock()) return@launch
+            try {
+                if (_state.value is State.Previewing) runCatching { startPreview() }
+            } finally {
+                mutex.unlock()
+            }
+        }
+    }
+
+    private fun faceDetectMode(info: CameraInfo): Int {
+        val modes = info.characteristics.get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES) ?: return CameraMetadata.STATISTICS_FACE_DETECT_MODE_OFF
+        return when {
+            CameraMetadata.STATISTICS_FACE_DETECT_MODE_FULL in modes -> CameraMetadata.STATISTICS_FACE_DETECT_MODE_FULL
+            CameraMetadata.STATISTICS_FACE_DETECT_MODE_SIMPLE in modes -> CameraMetadata.STATISTICS_FACE_DETECT_MODE_SIMPLE
+            else -> CameraMetadata.STATISTICS_FACE_DETECT_MODE_OFF
+        }
+    }
+
     private suspend fun runPrecapture(s: CameraCaptureSession) {
         val b = previewBuilder() ?: return
         b.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER, CameraMetadata.CONTROL_AE_PRECAPTURE_TRIGGER_START)
@@ -470,7 +563,21 @@ class CameraController(private val manager: CameraManager) {
             val af = result.get(CaptureResult.CONTROL_AF_STATE)
             val ae = result.get(CaptureResult.CONTROL_AE_STATE)
             aeWatcher?.invoke(ae)
+            afWatcher?.invoke(af)
+            val info = camera
+            val faces = result.get(CaptureResult.STATISTICS_FACES)
+            if (info != null) followFaces(info, faces)
+            val a = info?.activeArray
             _live.value = LiveExposure(
+                focusDioptres = if (info?.hasAutoFocus == true) result.get(CaptureResult.LENS_FOCUS_DISTANCE) else null,
+                faces = if (a == null) emptyList() else faces.orEmpty().filter { it.score >= MIN_FACE_SCORE }.map {
+                    RectF(
+                        it.bounds.left / a.width().toFloat(),
+                        it.bounds.top / a.height().toFloat(),
+                        it.bounds.right / a.width().toFloat(),
+                        it.bounds.bottom / a.height().toFloat(),
+                    )
+                },
                 iso = result.get(CaptureResult.SENSOR_SENSITIVITY),
                 exposureNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME),
                 focusLocked = af == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED || af == CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED,
@@ -583,6 +690,13 @@ class CameraController(private val manager: CameraManager) {
         private const val SERVICE_RESTART_DELAY_MS = 2_000L
         private const val PRECAPTURE_TIMEOUT_MS = 1_500L
         private const val MAX_PREVIEW_EXPOSURE_NS = 66_666_666L
+        private const val AF_LOCK_TIMEOUT_MS = 1_000L
+        private const val MIN_FACE_SCORE = 50
+        private const val FACE_REGION_SCALE = 1.2f
+        /** Of the active array's width. */
+        private const val FACE_MOVE = 0.04f
+        private const val FACE_UPDATE_MS = 300L
+        private const val FACE_LOST_MS = 600L
 
         fun orientationFor(info: CameraInfo, deviceRotation: Int): Int = when (info.facing) {
             LensFacing.FRONT -> (info.sensorOrientation - deviceRotation + 360) % 360

@@ -1,5 +1,6 @@
 package com.izum1k.pocopaw.camera
 
+import android.graphics.RectF
 import com.izum1k.pocopaw.data.FlashMode
 
 data class ManualExposure(val iso: Int, val exposureNs: Long)
@@ -53,6 +54,10 @@ data class LiveExposure(
     val aeConverged: Boolean = false,
     /** AE with auto flash says this scene needs the flash. */
     val flashRequired: Boolean = false,
+    /** Lens focus distance in dioptres (0 is infinity); approximate on marble. Null for fixed focus. */
+    val focusDioptres: Float? = null,
+    /** Detected faces, normalised to the active array in the sensor's own orientation. */
+    val faces: List<RectF> = emptyList(),
     /** Gyroscope angular speed RMS over the last second (rad/s), for night exposure; null if unknown. */
     val motionRadPerSec: Float? = null,
 )

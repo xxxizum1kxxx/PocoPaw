@@ -144,6 +144,10 @@ private fun CameraContent(vm: CameraViewModel) {
             gridStyle = settings.gridStyle,
             focus = ui.focus,
             focusLocked = live.focusLocked,
+            faces = remember(live.faces, current) {
+                val cam = current ?: return@remember emptyList()
+                live.faces.map { CameraViewModel.sensorToView(it, cam.sensorOrientation, cam.facing == LensFacing.FRONT) }
+            },
             evLabel = evLabel,
             countdown = ui.countdown,
             shutterTick = ui.shutterTick,
@@ -172,6 +176,7 @@ private fun CameraContent(vm: CameraViewModel) {
                         .offset { IntOffset(0, ((TOP_BAR_HEIGHT - TOP_INSET + FLOAT_INSET).toPx() * frame.blowUp(tallest)).roundToInt()) },
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    Reveal(settings.developerInfo && live.focusDioptres != null) { AfChip(live, rotation) }
                     Reveal(evLabel != null && ui.focus == null) { EvChip(evLabel.orEmpty(), rotation) }
                 }
             },

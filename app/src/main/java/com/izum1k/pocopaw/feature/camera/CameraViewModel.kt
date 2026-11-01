@@ -1,6 +1,7 @@
 package com.izum1k.pocopaw.feature.camera
 
 import android.graphics.Bitmap
+import android.graphics.RectF
 import android.graphics.SurfaceTexture
 import android.media.MediaActionSound
 import android.net.Uri
@@ -459,6 +460,22 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
          * Displayed (portrait, mirrored for the front camera) to sensor coordinates. The preview
          * shows the sensor rotated clockwise by its orientation.
          */
+        /** [viewToSensor] undone, for a rectangle: what the face detector reports, as displayed. */
+        fun sensorToView(r: RectF, sensorOrientation: Int, mirrored: Boolean): RectF {
+            fun point(u: Float, v: Float): Pair<Float, Float> {
+                val (vx, y) = when (sensorOrientation) {
+                    90 -> 1f - v to u
+                    180 -> 1f - u to 1f - v
+                    270 -> v to 1f - u
+                    else -> u to v
+                }
+                return (if (mirrored) 1f - vx else vx) to y
+            }
+            val (x0, y0) = point(r.left, r.top)
+            val (x1, y1) = point(r.right, r.bottom)
+            return RectF(minOf(x0, x1), minOf(y0, y1), maxOf(x0, x1), maxOf(y0, y1))
+        }
+
         fun viewToSensor(x: Float, y: Float, sensorOrientation: Int, mirrored: Boolean): Pair<Float, Float> {
             val vx = if (mirrored) 1f - x else x
             return when (sensorOrientation) {
