@@ -65,6 +65,7 @@ import com.izum1k.pocopaw.camera.CameraController
 import com.izum1k.pocopaw.camera.LensFacing
 import com.izum1k.pocopaw.container
 import com.izum1k.pocopaw.data.AspectRatio
+import com.izum1k.pocopaw.ui.component.PillReveal
 import com.izum1k.pocopaw.ui.component.Reveal
 import com.izum1k.pocopaw.ui.navigation.LocalNavigator
 import com.izum1k.pocopaw.ui.navigation.Route
@@ -141,6 +142,11 @@ private fun CameraContent(vm: CameraViewModel) {
     } else {
         null
     }
+    // Chips keep their last value while they fade out at 0.
+    var evChip by remember { mutableStateOf("") }
+    if (evLabel != null) evChip = evLabel
+    var wbChip by remember { mutableStateOf("") }
+    if (ui.wbShift != 0) wbChip = CameraFormat.wb(ui.wbShift)
     val wbDial = SwipeDial(ui.wbShift, -CameraViewModel.WB_MAX_STEPS, CameraViewModel.WB_MAX_STEPS, "WB " + CameraFormat.wb(ui.wbShift))
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
@@ -185,9 +191,9 @@ private fun CameraContent(vm: CameraViewModel) {
                         .offset { IntOffset(0, ((TOP_BAR_HEIGHT - TOP_INSET + FLOAT_INSET).toPx() * frame.blowUp(tallest)).roundToInt()) },
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Reveal(settings.developerInfo && live.focusDioptres != null) { AfChip(live, rotation) }
-                    Reveal(evLabel != null && ui.focus == null) { EvChip(evLabel.orEmpty(), rotation) }
-                    Reveal(ui.wbShift != 0) { EvChip(CameraFormat.wb(ui.wbShift), rotation, tag = "WB") }
+                    PillReveal(settings.developerInfo && live.focusDioptres != null) { AfChip(live, rotation) }
+                    PillReveal(evLabel != null && ui.focus == null) { EvChip(evChip, rotation) }
+                    PillReveal(ui.wbShift != 0) { EvChip(wbChip, rotation, tag = "WB") }
                 }
             },
         )
@@ -272,7 +278,7 @@ private fun CameraContent(vm: CameraViewModel) {
                     mode = ui.mode,
                     onMode = vm::setMode,
                     start = {
-                        Reveal(settings.developerInfo && current != null) {
+                        PillReveal(settings.developerInfo && current != null) {
                             BudgetPill(
                                 remaining = remaining,
                                 limit = vm.rawLimit,
@@ -282,7 +288,7 @@ private fun CameraContent(vm: CameraViewModel) {
                         }
                     },
                     end = {
-                        Reveal(settings.developerInfo && ui.lastRun != null) {
+                        PillReveal(settings.developerInfo && ui.lastRun != null) {
                             ui.lastRun?.let { RunPill(it) }
                         }
                     },

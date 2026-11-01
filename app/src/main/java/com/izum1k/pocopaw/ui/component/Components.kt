@@ -4,6 +4,8 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -240,5 +242,24 @@ fun Reveal(visible: Boolean, content: @Composable () -> Unit) {
         exit = fadeOut(YoinMotion.fastEffectsSpec()) + shrinkVertically(YoinMotion.defaultSpatialSpec()),
     ) { content() }
 }
+
+/**
+ * [Reveal] for pills and chips: the slot still grows and shrinks, but the pill is never clipped
+ * by it (a rotated chip overhangs its slot); it scales and fades in whole instead.
+ */
+@Composable
+fun PillReveal(visible: Boolean, content: @Composable () -> Unit) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(YoinMotion.defaultEffectsSpec()) +
+            scaleIn(YoinMotion.defaultSpatialSpec(), initialScale = PILL_REVEAL_SCALE) +
+            expandVertically(YoinMotion.defaultSpatialSpec(), clip = false),
+        exit = fadeOut(YoinMotion.fastEffectsSpec()) +
+            scaleOut(YoinMotion.defaultSpatialSpec(), targetScale = PILL_REVEAL_SCALE) +
+            shrinkVertically(YoinMotion.defaultSpatialSpec(), clip = false),
+    ) { content() }
+}
+
+private const val PILL_REVEAL_SCALE = 0.8f
 
 val PillShape = RoundedCornerShape(50)
