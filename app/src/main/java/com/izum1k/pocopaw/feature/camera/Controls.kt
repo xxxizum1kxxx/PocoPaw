@@ -28,6 +28,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FilledTonalIconButton
@@ -269,8 +271,9 @@ private fun QuickMoreToggle(open: Boolean, rotation: Float, onClick: () -> Unit)
 }
 
 /**
- * The capture settings worth changing between shots, under [TopControls]: output, processing,
+ * The capture settings worth changing between shots, covering the viewfinder: output, processing,
  * burst frames, scene, look and Ultra HDR. With DNG only, nothing after output applies.
+ * [topInset] and [bottomInset] keep the rows clear of controls floating on a tall framing.
  */
 @Composable
 fun QuickSettingsPanel(
@@ -282,27 +285,22 @@ fun QuickSettingsPanel(
     onLook: (LookStyle) -> Unit,
     onUltraHdr: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    topInset: Dp = 0.dp,
+    bottomInset: Dp = 0.dp,
 ) {
     val merged = settings.output != OutputFormat.DNG
     Column(
         modifier
-            .fillMaxWidth()
-            .padding(horizontal = 24.dp)
-            .clip(RoundedCornerShape(28.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.96f))
-            // Swallow taps between the rows so they do not fall through and close the panel.
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surface)
+            // Taps on the panel stay on it rather than reaching the viewfinder under it.
             .clickable(interactionSource = null, indication = null) {}
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+            .verticalScroll(rememberScrollState())
+            .padding(start = 20.dp, end = 20.dp, top = topInset + 16.dp, bottom = bottomInset + 16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
     ) {
         QuickRow(stringResource(R.string.settings_output)) {
-            ConnectedChoice(OutputFormat.entries.filter { it.available }, settings.output, { outputLabel(it) }, onOutput, contentPadding = QuickChoicePadding, weight = { if (it == OutputFormat.DNG_JPEG) 1.6f else 1f })
-        }
-        QuickRow(stringResource(R.string.settings_pipeline), merged) {
-            ConnectedChoice(Processing.entries, settings.processing, { if (it == Processing.HDR_PLUS) "HDR+" else "HDR+ KR" }, onProcessing, enabled = merged, contentPadding = QuickChoicePadding)
-        }
-        QuickRow(stringResource(R.string.settings_burst_frames), merged) {
-            ConnectedChoice(BurstFrames.entries, settings.burstFrames, { it.count.toString() }, onFrames, enabled = merged, contentPadding = QuickChoicePadding)
+            ConnectedChoice(OutputFormat.entries.filter { it.available }, settings.output, { outputLabel(it) }, onOutput, weight = { if (it == OutputFormat.DNG_JPEG) 1.6f else 1f })
         }
         QuickRow(stringResource(R.string.settings_scene), merged) {
             ConnectedChoice(SceneMode.entries, settings.scene, {
@@ -313,36 +311,43 @@ fun QuickSettingsPanel(
                         SceneMode.NIGHT -> R.string.scene_night_short
                     },
                 )
-            }, onScene, enabled = merged, contentPadding = QuickChoicePadding)
+            }, onScene, enabled = merged)
         }
-        QuickRow(stringResource(R.string.settings_look), merged) {
-            ConnectedChoice(LookStyle.entries, settings.look, {
-                if (it == LookStyle.PIXEL) "Pixel" else stringResource(R.string.look_standard)
-            }, onLook, enabled = merged, contentPadding = QuickChoicePadding)
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            QuickRow(stringResource(R.string.settings_pipeline), merged, Modifier.weight(1f)) {
+                ConnectedChoice(Processing.entries, settings.processing, { if (it == Processing.HDR_PLUS) "HDR+" else "HDR+ KR" }, onProcessing, enabled = merged)
+            }
+            QuickRow(stringResource(R.string.settings_burst_frames), merged, Modifier.weight(1f)) {
+                ConnectedChoice(BurstFrames.entries, settings.burstFrames, { it.count.toString() }, onFrames, enabled = merged)
+            }
         }
-        QuickRow(stringResource(R.string.settings_ultra_hdr), merged) {
-            ConnectedChoice(listOf(false, true), settings.ultraHdr, {
-                stringResource(if (it) R.string.value_on else R.string.value_off)
-            }, onUltraHdr, enabled = merged, contentPadding = QuickChoicePadding)
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            QuickRow(stringResource(R.string.settings_look), merged, Modifier.weight(1f)) {
+                ConnectedChoice(LookStyle.entries, settings.look, {
+                    if (it == LookStyle.PIXEL) "Pixel" else stringResource(R.string.look_standard)
+                }, onLook, enabled = merged)
+            }
+            QuickRow(stringResource(R.string.settings_ultra_hdr), merged, Modifier.weight(1f)) {
+                ConnectedChoice(listOf(false, true), settings.ultraHdr, {
+                    stringResource(if (it) R.string.value_on else R.string.value_off)
+                }, onUltraHdr, enabled = merged)
+            }
         }
     }
 }
 
 @Composable
-private fun QuickRow(caption: String, enabled: Boolean = true, content: @Composable () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+private fun QuickRow(caption: String, enabled: Boolean = true, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
             caption,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 1f else 0.38f),
-            maxLines = 2,
-            modifier = Modifier.width(68.dp).padding(start = 4.dp),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.38f),
+            modifier = Modifier.padding(start = 4.dp),
         )
-        Box(Modifier.weight(1f)) { content() }
+        content()
     }
 }
-
-private val QuickChoicePadding = PaddingValues(horizontal = 2.dp, vertical = 6.dp)
 
 /**
  * The seam between viewfinder and controls, in PiliPaw's wave (Yoin's WaveProgressBar): a quiet

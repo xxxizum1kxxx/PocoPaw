@@ -14,8 +14,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
-import androidx.compose.foundation.clickable
-import androidx.compose.ui.graphics.TransformOrigin
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
@@ -205,52 +203,51 @@ private fun CameraContent(vm: CameraViewModel) {
                     PillReveal(ui.wbShift != 0) { EvChip(wbChip, rotation, tag = "WB") { vm.setWb(0) } }
                 }
             },
+            cover = {
+                AnimatedVisibility(
+                    quickOpen,
+                    enter = fadeIn(YoinMotion.defaultEffectsSpec()) + scaleIn(YoinMotion.defaultSpatialSpec(), initialScale = 1.04f),
+                    exit = fadeOut(YoinMotion.fastEffectsSpec()) + scaleOut(YoinMotion.defaultSpatialSpec(), targetScale = 1.04f),
+                ) {
+                    // A tall framing runs under the top controls and the floating info and lenses.
+                    val b = frame.blowUp(tallest)
+                    val under = TOP_BAR_HEIGHT + VIEWFINDER_GAP
+                    val float = max(b, if (ui.mode == CaptureMode.PRO) 1f else 0f)
+                    QuickSettingsPanel(
+                        settings = settings,
+                        onOutput = { vm.updateSettings { setOutput(it) } },
+                        onProcessing = { vm.updateSettings { setProcessing(it) } },
+                        onFrames = { vm.updateSettings { setBurstFrames(it) } },
+                        onScene = { vm.updateSettings { setScene(it) } },
+                        onLook = { vm.updateSettings { setLook(it) } },
+                        onUltraHdr = { vm.updateSettings { setUltraHdr(it) } },
+                        topInset = (TOP_BAR_HEIGHT + (FLOAT_INSET - TOP_INSET) * b - under * (1f - b)).coerceAtLeast(0.dp),
+                        bottomInset = QUICK_FLOAT_CLEARANCE * float,
+                    )
+                }
+            },
         )
 
         BackHandler(quickOpen) { quickOpen = false }
-        if (quickOpen) {
-            Box(Modifier.fillMaxSize().clickable(interactionSource = null, indication = null) { quickOpen = false })
-        }
-        Column(
-            Modifier
+        TopControls(
+            settings = settings,
+            hasFlash = current?.hasFlash == true,
+            flashRequired = live.flashRequired,
+            rotation = rotation,
+            onFlash = { vm.setFlash(it) },
+            onTimer = { vm.setTimer(it) },
+            onAspect = { vm.setAspect(it) },
+            onGrid = { vm.setGrid(it) },
+            quickOpen = quickOpen,
+            onQuick = { quickOpen = it },
+            onSettings = {
+                quickOpen = false
+                nav.push(Route.Settings)
+            },
+            modifier = Modifier
                 .statusBarsPadding()
                 .offset { IntOffset(0, ((FLOAT_INSET - TOP_INSET).toPx() * frame.blowUp(tallest)).roundToInt()) },
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            TopControls(
-                settings = settings,
-                hasFlash = current?.hasFlash == true,
-                flashRequired = live.flashRequired,
-                rotation = rotation,
-                onFlash = { vm.setFlash(it) },
-                onTimer = { vm.setTimer(it) },
-                onAspect = { vm.setAspect(it) },
-                onGrid = { vm.setGrid(it) },
-                quickOpen = quickOpen,
-                onQuick = { quickOpen = it },
-                onSettings = {
-                    quickOpen = false
-                    nav.push(Route.Settings)
-                },
-            )
-            AnimatedVisibility(
-                quickOpen,
-                enter = fadeIn(YoinMotion.defaultEffectsSpec()) +
-                    scaleIn(YoinMotion.defaultSpatialSpec(), initialScale = 0.9f, transformOrigin = TransformOrigin(0.5f, 0f)),
-                exit = fadeOut(YoinMotion.fastEffectsSpec()) +
-                    scaleOut(YoinMotion.defaultSpatialSpec(), targetScale = 0.9f, transformOrigin = TransformOrigin(0.5f, 0f)),
-            ) {
-                QuickSettingsPanel(
-                    settings = settings,
-                    onOutput = { vm.updateSettings { setOutput(it) } },
-                    onProcessing = { vm.updateSettings { setProcessing(it) } },
-                    onFrames = { vm.updateSettings { setBurstFrames(it) } },
-                    onScene = { vm.updateSettings { setScene(it) } },
-                    onLook = { vm.updateSettings { setLook(it) } },
-                    onUltraHdr = { vm.updateSettings { setUltraHdr(it) } },
-                )
-            }
-        }
+        )
 
         Column(
             Modifier
@@ -405,6 +402,9 @@ private val TOP_INSET = 8.dp
 
 /** How far inside the tallest framing's edges the controls floating on it keep. */
 private val FLOAT_INSET = 18.dp
+
+/** The info and lenses floating on the picture's bottom, which the quick settings keep clear of. */
+private val QUICK_FLOAT_CLEARANCE = 104.dp
 /** The camera whose frames are on screen; a reopen mid-capture (RAW budget) keeps the busy flag instead. */
 private fun CameraController.State.showing(): String? = when (this) {
     is CameraController.State.Previewing -> cameraId

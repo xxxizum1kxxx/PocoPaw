@@ -27,7 +27,6 @@ fun <T> ConnectedChoice(
     onSelect: (T) -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
-    contentPadding: PaddingValues = PaddingValues(horizontal = 4.dp, vertical = 10.dp),
     weight: (T) -> Float = { 1f },
 ) {
     val haptics = LocalHapticFeedback.current
@@ -48,7 +47,7 @@ fun <T> ConnectedChoice(
                     options.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
                     else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
                 },
-                contentPadding = contentPadding,
+                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 10.dp),
             ) {
                 Text(label(option), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge)
             }

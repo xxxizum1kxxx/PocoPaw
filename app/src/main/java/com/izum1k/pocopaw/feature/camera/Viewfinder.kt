@@ -125,6 +125,8 @@ fun Viewfinder(
     modifier: Modifier = Modifier,
     topOverlay: @Composable BoxScope.() -> Unit = {},
     bottomOverlay: @Composable BoxScope.() -> Unit = {},
+    /** Over everything, edge to edge of the frame. */
+    cover: @Composable BoxScope.() -> Unit = {},
 ) {
     // The iris opens on the new camera's first frame, not on the old one's last.
     var fresh by remember { mutableStateOf(false) }
@@ -216,6 +218,7 @@ fun Viewfinder(
         ShutterFlash(shutterTick)
         Box(Modifier.fillMaxSize().padding(12.dp), content = topOverlay)
         Box(Modifier.fillMaxSize().padding(12.dp), content = bottomOverlay)
+        Box(Modifier.fillMaxSize(), content = cover)
     }
 }
 
