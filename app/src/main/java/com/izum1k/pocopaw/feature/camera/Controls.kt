@@ -662,7 +662,7 @@ fun ModeBar(
 
 private val SIDE_PADDING = 20.dp
 
-/** Between a slider's label and value, and between the value and the bar. */
+/** A slider's label-and-value button: its padding either side, and between label and value. */
 private val SLIDER_LABEL_GAP = 12.dp
 
 @Composable
@@ -751,7 +751,8 @@ fun ProPanel(
             .padding(horizontal = 16.dp)
             .clip(YoinContainerShapes.Card)
             .background(controlContainer())
-            .padding(horizontal = 16.dp, vertical = 2.dp),
+            // The label and value pad themselves, as one button.
+            .padding(end = 16.dp, top = 2.dp, bottom = 2.dp),
     ) {
         StopSlider(
             label = "ISO",
@@ -856,7 +857,10 @@ private fun StopSlider(
                 .clickable(enabled = count > 0) {
                     haptics.performHapticFeedback(if (auto) HapticFeedbackType.ToggleOff else HapticFeedbackType.ToggleOn)
                     onIndex(if (auto) position else null)
-                },
+                }
+                // The value column is as wide as the widest value and the bar has its own inset, so
+                // the end is tighter for the gap to match the start's.
+                .padding(start = SLIDER_LABEL_GAP, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(SLIDER_LABEL_GAP),
         ) {
@@ -878,7 +882,6 @@ private fun StopSlider(
                 )
             }
         }
-        Spacer(Modifier.width(SLIDER_LABEL_GAP))
         Box(Modifier.weight(1f)) {
             Slider(
                 value = marks.getOrElse(position) { 0f },
