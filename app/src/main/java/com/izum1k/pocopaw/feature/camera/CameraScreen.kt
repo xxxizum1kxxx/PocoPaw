@@ -165,20 +165,7 @@ private fun CameraContent(vm: CameraViewModel) {
                         .offset { IntOffset(0, ((TOP_BAR_HEIGHT + VIEWFINDER_GAP - 12.dp).toPx() * frame.blowUp(tallest)).roundToInt()) },
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    if (settings.developerInfo) DevChip(current, remaining, vm.rawLimit, live, ui.lastRun)
                     Reveal(evLabel != null && ui.focus == null) { EvChip(evLabel.orEmpty(), rotation) }
-                }
-            },
-            bottomOverlay = {
-                if (current?.facing == LensFacing.BACK) {
-                    LensSelector(
-                        lenses = ui.backCameras,
-                        current = current,
-                        zoom = ui.zoom,
-                        rotation = rotation,
-                        onSelect = vm::selectCamera,
-                        modifier = Modifier.align(Alignment.BottomCenter),
-                    )
                 }
             },
         )
@@ -200,11 +187,27 @@ private fun CameraContent(vm: CameraViewModel) {
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(bottom = 8.dp),
+                .padding(bottom = 4.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             SnackbarHost(snackbar, Modifier.align(Alignment.CenterHorizontally))
+            // In 4:3 the info and the lenses sit in the black under the picture; a taller framing
+            // grows under them, so they float on it without moving.
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    if (settings.developerInfo) DevChip(current, remaining, vm.rawLimit, live, ui.lastRun)
+                    Reveal(current?.facing == LensFacing.BACK) {
+                        current?.let {
+                            LensSelector(
+                                lenses = ui.backCameras,
+                                current = it,
+                                zoom = ui.zoom,
+                                rotation = rotation,
+                                onSelect = vm::selectCamera,
+                            )
+                        }
+                    }
+                }
                 Reveal(ui.mode == CaptureMode.PRO) {
                     ProPanel(
                         camera = current,

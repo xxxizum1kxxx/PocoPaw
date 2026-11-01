@@ -301,7 +301,7 @@ fun LensSelector(
     ) {
         lenses.forEach { lens ->
             val selected = lens.id == current?.id
-            val size by animateDpAsState(if (selected) 44.dp else 36.dp, YoinMotion.defaultSpatialSpec(), label = "lensSize")
+            val size by animateDpAsState(if (selected) 40.dp else 34.dp, YoinMotion.defaultSpatialSpec(), label = "lensSize")
             val container by animateColorAsState(
                 if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
                 YoinMotion.defaultEffectsSpec(),
@@ -348,7 +348,7 @@ fun DevChip(info: CameraInfo?, remaining: Int, limit: Int, live: LiveExposure, l
     val numbers = MaterialTheme.typography.labelMedium.withTabularFigures()
     val quiet = MaterialTheme.colorScheme.onSurfaceVariant
     // The last pipeline run gets a pill of its own: one row with it overflows a phone's width.
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         DevPill {
             Text("RAW", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, softWrap = false)
             Text("${info.rawSize.width}×${info.rawSize.height}", style = numbers, softWrap = false)
@@ -371,7 +371,7 @@ private fun DevPill(content: @Composable RowScope.() -> Unit) {
         Modifier
             .clip(PillShape)
             .background(controlContainer())
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .padding(horizontal = 12.dp, vertical = 5.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
         content = content,
@@ -420,7 +420,7 @@ fun ModeBar(mode: CaptureMode, onMode: (CaptureMode) -> Unit, modifier: Modifier
                             onMode(m)
                         }
                     }
-                    .padding(horizontal = 20.dp, vertical = 6.dp),
+                    .padding(horizontal = 20.dp, vertical = 5.dp),
             ) {
                 Text(
                     stringResource(if (m == CaptureMode.PHOTO) R.string.mode_photo else R.string.mode_pro),
