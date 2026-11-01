@@ -1,10 +1,15 @@
 package com.izum1k.pocopaw.feature.settings
 
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gpo.yoin.symbols.YoinSymbols
 import com.izum1k.pocopaw.BuildConfig
@@ -36,7 +41,13 @@ fun SettingsScreen() {
 
     PawPage(title = stringResource(R.string.settings_title)) {
         item {
-            Section(title = stringResource(R.string.settings_capture)) {
+            Section(title = stringResource(R.string.settings_defaults)) {
+                Text(
+                    stringResource(R.string.settings_defaults_note),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                )
                 ChoiceRow(
                     title = stringResource(R.string.settings_output),
                     options = OutputFormat.entries,
@@ -46,6 +57,18 @@ fun SettingsScreen() {
                     optionEnabled = { it.available },
                     icon = YoinSymbols.Image,
                 )
+                ChoiceRow(
+                    title = stringResource(R.string.settings_scene),
+                    options = SceneMode.entries,
+                    selected = settings.scene,
+                    label = { stringResource(sceneLabel(it)) },
+                    onSelect = { scope.launch { repo.setScene(it) } },
+                    enabled = settings.output != OutputFormat.DNG,
+                )
+            }
+        }
+        item {
+            Section(title = stringResource(R.string.settings_processing)) {
                 ChoiceRow(
                     title = stringResource(R.string.settings_pipeline),
                     options = Processing.entries,
@@ -64,14 +87,6 @@ fun SettingsScreen() {
                     enabled = settings.output != OutputFormat.DNG,
                 )
                 ChoiceRow(
-                    title = stringResource(R.string.settings_scene),
-                    options = SceneMode.entries,
-                    selected = settings.scene,
-                    label = { stringResource(sceneLabel(it)) },
-                    onSelect = { scope.launch { repo.setScene(it) } },
-                    enabled = settings.output != OutputFormat.DNG,
-                )
-                ChoiceRow(
                     title = stringResource(R.string.settings_look),
                     options = LookStyle.entries,
                     selected = settings.look,
@@ -84,13 +99,24 @@ fun SettingsScreen() {
                     value = stringResource(R.string.settings_ultra_hdr_value),
                     checked = settings.ultraHdr,
                     onCheckedChange = { scope.launch { repo.setUltraHdr(it) } },
+                    enabled = settings.output != OutputFormat.DNG,
                 )
+            }
+        }
+        item {
+            Section(title = stringResource(R.string.settings_viewfinder)) {
                 ChoiceRow(
                     title = stringResource(R.string.settings_grid_style),
                     options = GridStyle.entries,
                     selected = settings.gridStyle,
                     label = { stringResource(gridLabel(it)) },
                     onSelect = { scope.launch { repo.setGridStyle(it) } },
+                )
+                SwitchRow(
+                    title = stringResource(R.string.settings_developer_info),
+                    value = stringResource(R.string.settings_developer_info_value),
+                    checked = settings.developerInfo,
+                    onCheckedChange = { scope.launch { repo.setDeveloperInfo(it) } },
                 )
             }
         }
@@ -121,12 +147,6 @@ fun SettingsScreen() {
         }
         item {
             Section(title = stringResource(R.string.settings_developer)) {
-                SwitchRow(
-                    title = stringResource(R.string.settings_developer_info),
-                    value = stringResource(R.string.settings_developer_info_value),
-                    checked = settings.developerInfo,
-                    onCheckedChange = { scope.launch { repo.setDeveloperInfo(it) } },
-                )
                 SettingRow(
                     title = stringResource(R.string.capabilities_title),
                     icon = YoinSymbols.Info,

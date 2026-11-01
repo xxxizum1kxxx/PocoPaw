@@ -39,7 +39,10 @@
     <string name="error_camera_device">Camera error</string>
 
     <string name="settings_title">Settings</string>
-    <string name="settings_capture">Capture</string>
+    <string name="settings_defaults">Capture defaults</string>
+    <string name="settings_defaults_note">Used every time the camera opens. Changes in the viewfinder\'s quick settings last until the app is closed.</string>
+    <string name="settings_processing">Processing defaults</string>
+    <string name="settings_viewfinder">Viewfinder</string>
     <string name="settings_output">Output</string>
     <string name="settings_pipeline">Processing</string>
     <string name="settings_grid_style">Grid style</string>

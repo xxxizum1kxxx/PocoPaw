@@ -37,7 +37,10 @@
     <string name="error_camera_device">相机出错</string>
 
     <string name="settings_title">设置</string>
-    <string name="settings_capture">拍摄</string>
+    <string name="settings_defaults">默认拍摄参数</string>
+    <string name="settings_defaults_note">每次打开相机时使用。取景器快捷设置里的调整只在本次有效，关闭应用后恢复为这里的默认值。</string>
+    <string name="settings_processing">默认处理参数</string>
+    <string name="settings_viewfinder">取景器</string>
     <string name="settings_output">输出格式</string>
     <string name="settings_pipeline">处理管线</string>
     <string name="settings_grid_style">网格样式</string>

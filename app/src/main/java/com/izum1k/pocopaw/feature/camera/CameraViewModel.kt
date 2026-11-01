@@ -24,7 +24,10 @@ import com.izum1k.pocopaw.data.OutputFormat
 import com.izum1k.pocopaw.data.Processing
 import com.izum1k.pocopaw.data.TimerMode
 import com.izum1k.pocopaw.data.SceneMode
-import com.izum1k.pocopaw.data.SettingsRepository
+import com.izum1k.pocopaw.data.BurstFrames
+import com.izum1k.pocopaw.data.LookStyle
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
 import com.izum1k.pocopaw.pipeline.BurstLook
 import com.izum1k.pocopaw.pipeline.BurstScene
 import com.izum1k.pocopaw.pipeline.DngPassthroughPipeline
@@ -62,6 +65,35 @@ data class LastCapture(val uri: Uri, val thumbnail: Bitmap?)
 /** The last pipeline run, for the developer chip. */
 data class PipelineRun(val pipelineId: String, val frames: Int, val millis: Long)
 
+/** The quick settings panel's choices; null keeps the saved default. */
+data class SessionSettings(
+    val output: OutputFormat? = null,
+    val processing: Processing? = null,
+    val burstFrames: BurstFrames? = null,
+    val scene: SceneMode? = null,
+    val look: LookStyle? = null,
+    val ultraHdr: Boolean? = null,
+) {
+    fun over(saved: CameraSettings) = saved.copy(
+        output = output ?: saved.output,
+        processing = processing ?: saved.processing,
+        burstFrames = burstFrames ?: saved.burstFrames,
+        scene = scene ?: saved.scene,
+        look = look ?: saved.look,
+        ultraHdr = ultraHdr ?: saved.ultraHdr,
+    )
+
+    /** Drops the choices whose saved default just changed. */
+    fun without(prev: CameraSettings, saved: CameraSettings) = copy(
+        output = output.takeIf { prev.output == saved.output },
+        processing = processing.takeIf { prev.processing == saved.processing },
+        burstFrames = burstFrames.takeIf { prev.burstFrames == saved.burstFrames },
+        scene = scene.takeIf { prev.scene == saved.scene },
+        look = look.takeIf { prev.look == saved.look },
+        ultraHdr = ultraHdr.takeIf { prev.ultraHdr == saved.ultraHdr },
+    )
+}
+
 data class CameraUiState(
     val cameras: List<CameraInfo> = emptyList(),
     val current: CameraInfo? = null,
@@ -97,7 +129,11 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
     private val motion = container.motion
     private val settingsRepo = container.settings
 
-    val settings: StateFlow<CameraSettings> = settingsRepo.settings
+    /** Quick settings changed in the viewfinder: this session's, over the saved defaults, never saved. */
+    private val session = MutableStateFlow(SessionSettings())
+
+    val settings: StateFlow<CameraSettings> = combine(settingsRepo.settings, session) { saved, s -> s.over(saved) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, session.value.over(settingsRepo.settings.value))
     val cameraState: StateFlow<CameraController.State> = controller.state
     val live: StateFlow<LiveExposure> = controller.live
     val rawRemaining: StateFlow<Int> = controller.budget.remaining
@@ -116,6 +152,14 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
 
     init {
         val catalog = container.catalog
+        // A default changed in Settings wins over this session's choice for that setting.
+        viewModelScope.launch {
+            var prev = settingsRepo.settings.value
+            settingsRepo.settings.collect { saved ->
+                session.update { it.without(prev, saved) }
+                prev = saved
+            }
+        }
         viewModelScope.launch {
             settings.collect { if (it.scene == SceneMode.NIGHT) motion.start() else motion.stop() }
         }
@@ -298,8 +342,8 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
 
     fun setTimer(v: TimerMode) = viewModelScope.launch { settingsRepo.setTimer(v) }
 
-    /** A capture setting changed from the quick settings panel. */
-    fun updateSettings(change: suspend SettingsRepository.() -> Unit) = viewModelScope.launch { settingsRepo.change() }
+    /** A capture setting changed from the quick settings panel, for this session only. */
+    fun setQuick(change: SessionSettings.() -> SessionSettings) = session.update(change)
     fun setAspect(v: AspectRatio) = viewModelScope.launch { settingsRepo.setAspect(v) }
     fun setGrid(v: Boolean) = viewModelScope.launch { settingsRepo.setGrid(v) }
 

@@ -212,12 +212,12 @@ private fun CameraContent(vm: CameraViewModel) {
                     // From the top of the 4:3 picture, where it sits in every framing, as tall as its rows.
                     QuickSettingsPanel(
                         settings = settings,
-                        onOutput = { vm.updateSettings { setOutput(it) } },
-                        onProcessing = { vm.updateSettings { setProcessing(it) } },
-                        onFrames = { vm.updateSettings { setBurstFrames(it) } },
-                        onScene = { vm.updateSettings { setScene(it) } },
-                        onLook = { vm.updateSettings { setLook(it) } },
-                        onUltraHdr = { vm.updateSettings { setUltraHdr(it) } },
+                        onOutput = { vm.setQuick { copy(output = it) } },
+                        onProcessing = { vm.setQuick { copy(processing = it) } },
+                        onFrames = { vm.setQuick { copy(burstFrames = it) } },
+                        onScene = { vm.setQuick { copy(scene = it) } },
+                        onLook = { vm.setQuick { copy(look = it) } },
+                        onUltraHdr = { vm.setQuick { copy(ultraHdr = it) } },
                         modifier = Modifier
                             .offset { IntOffset(0, ((TOP_BAR_HEIGHT + VIEWFINDER_GAP).toPx() * frame.blowUp(tallest)).roundToInt()) }
                             .clip(YoinContainerShapes.Panel)
