@@ -28,8 +28,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FilledTonalIconButton
@@ -273,7 +271,6 @@ private fun QuickMoreToggle(open: Boolean, rotation: Float, onClick: () -> Unit)
 /**
  * The capture settings worth changing between shots, covering the viewfinder: output, processing,
  * burst frames, scene, look and Ultra HDR. With DNG only, nothing after output applies.
- * [topInset] and [bottomInset] keep the rows clear of controls floating on a tall framing.
  */
 @Composable
 fun QuickSettingsPanel(
@@ -285,8 +282,6 @@ fun QuickSettingsPanel(
     onLook: (LookStyle) -> Unit,
     onUltraHdr: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
-    topInset: Dp = 0.dp,
-    bottomInset: Dp = 0.dp,
 ) {
     val merged = settings.output != OutputFormat.DNG
     Column(
@@ -295,8 +290,7 @@ fun QuickSettingsPanel(
             .background(MaterialTheme.colorScheme.surface)
             // Taps on the panel stay on it rather than reaching the viewfinder under it.
             .clickable(interactionSource = null, indication = null) {}
-            .verticalScroll(rememberScrollState())
-            .padding(start = 20.dp, end = 20.dp, top = topInset + 16.dp, bottom = bottomInset + 16.dp),
+            .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
     ) {
         QuickRow(stringResource(R.string.settings_output)) {

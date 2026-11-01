@@ -54,6 +54,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Constraints
+import com.izum1k.pocopaw.ui.theme.YoinContainerShapes
 import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
@@ -209,10 +211,7 @@ private fun CameraContent(vm: CameraViewModel) {
                     enter = fadeIn(YoinMotion.defaultEffectsSpec()) + scaleIn(YoinMotion.defaultSpatialSpec(), initialScale = 1.04f),
                     exit = fadeOut(YoinMotion.fastEffectsSpec()) + scaleOut(YoinMotion.defaultSpatialSpec(), targetScale = 1.04f),
                 ) {
-                    // A tall framing runs under the top controls and the floating info and lenses.
-                    val b = frame.blowUp(tallest)
-                    val under = TOP_BAR_HEIGHT + VIEWFINDER_GAP
-                    val float = max(b, if (ui.mode == CaptureMode.PRO) 1f else 0f)
+                    // Over the 4:3 picture alone, where it sits in every framing; a taller one shows below.
                     QuickSettingsPanel(
                         settings = settings,
                         onOutput = { vm.updateSettings { setOutput(it) } },
@@ -221,8 +220,17 @@ private fun CameraContent(vm: CameraViewModel) {
                         onScene = { vm.updateSettings { setScene(it) } },
                         onLook = { vm.updateSettings { setLook(it) } },
                         onUltraHdr = { vm.updateSettings { setUltraHdr(it) } },
-                        topInset = (TOP_BAR_HEIGHT + (FLOAT_INSET - TOP_INSET) * b - under * (1f - b)).coerceAtLeast(0.dp),
-                        bottomInset = QUICK_FLOAT_CLEARANCE * float,
+                        modifier = Modifier
+                            .layout { measurable, constraints ->
+                                val w = constraints.maxWidth
+                                val h = (w * AspectRatio.FOUR_THREE.portraitRatio).roundToInt()
+                                val placeable = measurable.measure(Constraints.fixed(w, h))
+                                layout(w, h) {
+                                    val under = (TOP_BAR_HEIGHT + VIEWFINDER_GAP).toPx()
+                                    placeable.place(0, (under * frame.blowUp(tallest)).roundToInt())
+                                }
+                            }
+                            .clip(YoinContainerShapes.Panel),
                     )
                 }
             },
@@ -402,9 +410,6 @@ private val TOP_INSET = 8.dp
 
 /** How far inside the tallest framing's edges the controls floating on it keep. */
 private val FLOAT_INSET = 18.dp
-
-/** The info and lenses floating on the picture's bottom, which the quick settings keep clear of. */
-private val QUICK_FLOAT_CLEARANCE = 104.dp
 /** The camera whose frames are on screen; a reopen mid-capture (RAW budget) keeps the busy flag instead. */
 private fun CameraController.State.showing(): String? = when (this) {
     is CameraController.State.Previewing -> cameraId
