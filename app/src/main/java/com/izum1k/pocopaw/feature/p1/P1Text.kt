@@ -1,7 +1,18 @@
 package com.izum1k.pocopaw.feature.p1
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import com.izum1k.pocopaw.ui.theme.YoinContainerShapes
 import com.izum1k.pocopaw.R
 import com.izum1k.pocopaw.feature.camera.CameraFormat
 import java.util.Locale
@@ -56,3 +67,32 @@ internal fun variantDescription(v: P1Variant): String = when {
 @Composable
 internal fun lensLabel(item: P1Item): String =
     stringResource(if (item.cameraId == "2") R.string.p1_lens_uw else R.string.p1_lens_main)
+
+/** How to hold the phone, then which lens: the same two tags, in the same order, wherever an item is named. */
+@Composable
+internal fun ItemTags(item: P1Item, modifier: Modifier = Modifier) {
+    val c = MaterialTheme.colorScheme
+    val (container, content) = when (item.hold) {
+        P1Hold.HANDHELD -> c.tertiaryContainer to c.onTertiaryContainer
+        P1Hold.BRACED -> c.secondaryContainer to c.onSecondaryContainer
+        P1Hold.FIXED -> c.primaryContainer to c.onPrimaryContainer
+    }
+    Row(modifier, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Tag(stringResource(item.hold.label), container, content)
+        Tag(lensLabel(item), c.surfaceContainerHighest, c.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun Tag(text: String, container: Color, content: Color) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelMedium,
+        color = content,
+        maxLines = 1,
+        modifier = Modifier
+            .clip(YoinContainerShapes.Card)
+            .background(container)
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+    )
+}

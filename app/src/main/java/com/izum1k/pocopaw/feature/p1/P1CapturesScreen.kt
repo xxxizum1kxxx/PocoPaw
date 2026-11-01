@@ -4,6 +4,7 @@ import android.text.format.Formatter
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -110,19 +111,7 @@ fun P1CapturesScreen() {
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                     )
                     P1Items.all.filter { it.group == group }.forEach { item ->
-                        val scene = item.scene?.let { stringResource(it) + "\n" }.orEmpty()
-                        SettingRow(
-                            title = item.name,
-                            value = scene + lensLabel(item) + " · " + variantDescription(item.variant),
-                            onClick = { nav.push(Route.P1Capture(item.name)) },
-                            trailing = {
-                                Text(
-                                    stringResource(R.string.p1_sets, state.sets[item.name] ?: 0),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = if ((state.sets[item.name] ?: 0) > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            },
-                        )
+                        ItemRow(item, state.sets[item.name] ?: 0) { nav.push(Route.P1Capture(item.name)) }
                     }
                 }
             }
@@ -191,6 +180,33 @@ fun P1CapturesScreen() {
                 }) { Text(stringResource(R.string.action_delete)) }
             },
             dismissButton = { TextButton(onClick = { confirmClear = false }) { Text(stringResource(R.string.action_cancel)) } },
+        )
+    }
+}
+
+@Composable
+private fun ItemRow(item: P1Item, sets: Int, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 60.dp)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(item.name, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f, fill = false))
+                ItemTags(item, Modifier.padding(start = 8.dp))
+            }
+            item.scene?.let { Text(stringResource(it), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            Text(variantDescription(item.variant), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Text(
+            stringResource(R.string.p1_sets, sets),
+            style = MaterialTheme.typography.labelMedium,
+            color = if (sets > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 12.dp),
         )
     }
 }

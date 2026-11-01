@@ -74,14 +74,7 @@ fun P1CaptureScreen(name: String) {
             TopAppBar(
                 title = { Text(item.name, fontFamily = FontFamily.Monospace) },
                 navigationIcon = { BackButton() },
-                actions = {
-                    Text(
-                        lensLabel(item),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(end = 16.dp),
-                    )
-                },
+                actions = { ItemTags(item, Modifier.padding(end = 16.dp)) },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
             )
         },

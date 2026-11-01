@@ -38,11 +38,19 @@ enum class P1Group(@StringRes val title: Int, @StringRes val note: Int) {
     LCA(R.string.p1_group_lca, R.string.p1_note_lca),
 }
 
+/** How the phone is held during the burst. */
+enum class P1Hold(@StringRes val label: Int) {
+    HANDHELD(R.string.p1_hold_hand),
+    BRACED(R.string.p1_hold_brace),
+    FIXED(R.string.p1_hold_fixed),
+}
+
 /** One row of CAPTURE_P1.md and what a press captures for it. */
 data class P1Item(
     val name: String,
     val group: P1Group,
     val cameraId: String,
+    val hold: P1Hold,
     @StringRes val scene: Int?,
     val variant: P1Variant,
 )
@@ -55,32 +63,32 @@ object P1Items {
     private val night = P1Variant(mode = P1Mode.NIGHT, frames = 0, ev = 0.0)
 
     val all: List<P1Item> = listOf(
-        P1Item("mo_main_wave", P1Group.MOTION, "0", R.string.p1_scene_wave, standard(8)),
-        P1Item("mo_main_walk", P1Group.MOTION, "0", R.string.p1_scene_walk, standard(8)),
-        P1Item("mo_uw_street", P1Group.MOTION, "2", R.string.p1_scene_street, standard(8)),
-        P1Item("br_main_backlit", P1Group.BRACKET, "0", null, bracket),
-        P1Item("br_uw_backlit", P1Group.BRACKET, "2", null, bracket),
-        P1Item("nt_main_hand", P1Group.NIGHT, "0", R.string.p1_scene_hand, night),
-        P1Item("nt_main_brace", P1Group.NIGHT, "0", R.string.p1_scene_brace, night),
-        P1Item("nt_uw_hand", P1Group.NIGHT, "2", R.string.p1_scene_hand, night),
-        P1Item("awb_day", P1Group.AWB, "0", R.string.p1_scene_day, standard(4)),
-        P1Item("awb_shade", P1Group.AWB, "0", R.string.p1_scene_shade, standard(4)),
-        P1Item("awb_warm", P1Group.AWB, "0", R.string.p1_scene_warm, standard(4)),
-        P1Item("awb_cool", P1Group.AWB, "0", R.string.p1_scene_cool, standard(4)),
-        P1Item("awb_mixed", P1Group.AWB, "0", R.string.p1_scene_mixed, standard(4)),
-        P1Item("awb_night", P1Group.AWB, "0", R.string.p1_scene_street_light, standard(4)),
+        P1Item("mo_main_wave", P1Group.MOTION, "0", P1Hold.HANDHELD, R.string.p1_scene_wave, standard(8)),
+        P1Item("mo_main_walk", P1Group.MOTION, "0", P1Hold.HANDHELD, R.string.p1_scene_walk, standard(8)),
+        P1Item("mo_uw_street", P1Group.MOTION, "2", P1Hold.HANDHELD, R.string.p1_scene_street, standard(8)),
+        P1Item("br_main_backlit", P1Group.BRACKET, "0", P1Hold.HANDHELD, null, bracket),
+        P1Item("br_uw_backlit", P1Group.BRACKET, "2", P1Hold.HANDHELD, null, bracket),
+        P1Item("nt_main_hand", P1Group.NIGHT, "0", P1Hold.HANDHELD, null, night),
+        P1Item("nt_main_brace", P1Group.NIGHT, "0", P1Hold.BRACED, null, night),
+        P1Item("nt_uw_hand", P1Group.NIGHT, "2", P1Hold.HANDHELD, null, night),
+        P1Item("awb_day", P1Group.AWB, "0", P1Hold.HANDHELD, R.string.p1_scene_day, standard(4)),
+        P1Item("awb_shade", P1Group.AWB, "0", P1Hold.HANDHELD, R.string.p1_scene_shade, standard(4)),
+        P1Item("awb_warm", P1Group.AWB, "0", P1Hold.HANDHELD, R.string.p1_scene_warm, standard(4)),
+        P1Item("awb_cool", P1Group.AWB, "0", P1Hold.HANDHELD, R.string.p1_scene_cool, standard(4)),
+        P1Item("awb_mixed", P1Group.AWB, "0", P1Hold.HANDHELD, R.string.p1_scene_mixed, standard(4)),
+        P1Item("awb_night", P1Group.AWB, "0", P1Hold.HANDHELD, R.string.p1_scene_street_light, standard(4)),
         P1Item(
-            "tp_main_iso100", P1Group.TRIPOD, "0", null,
+            "tp_main_iso100", P1Group.TRIPOD, "0", P1Hold.FIXED, null,
             P1Variant(frames = 64, iso = 100, maxExposureNs = 250_000_000L),
         ),
-        P1Item("tp_main_iso800", P1Group.TRIPOD, "0", null, P1Variant(frames = 64, iso = 800, ev = -2.0)),
-        P1Item("tp_main_iso3200", P1Group.TRIPOD, "0", null, P1Variant(frames = 64, iso = 3200, ev = -4.0)),
+        P1Item("tp_main_iso800", P1Group.TRIPOD, "0", P1Hold.FIXED, null, P1Variant(frames = 64, iso = 800, ev = -2.0)),
+        P1Item("tp_main_iso3200", P1Group.TRIPOD, "0", P1Hold.FIXED, null, P1Variant(frames = 64, iso = 3200, ev = -4.0)),
         P1Item(
-            "dk_main", P1Group.DARK, "0", null,
+            "dk_main", P1Group.DARK, "0", P1Hold.FIXED, null,
             P1Variant(mode = P1Mode.DARK, frames = 8, darkIsos = listOf(100, 400, 800, 1600, 3200, 6400)),
         ),
-        P1Item("lca_main", P1Group.LCA, "0", null, standard(8)),
-        P1Item("lca_uw", P1Group.LCA, "2", null, standard(8)),
+        P1Item("lca_main", P1Group.LCA, "0", P1Hold.FIXED, null, standard(8)),
+        P1Item("lca_uw", P1Group.LCA, "2", P1Hold.FIXED, null, standard(8)),
     )
 
     fun byName(name: String): P1Item? = all.firstOrNull { it.name == name }
