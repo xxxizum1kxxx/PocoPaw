@@ -148,6 +148,7 @@ private fun CameraContent(vm: CameraViewModel) {
             countdown = ui.countdown,
             shutterTick = ui.shutterTick,
             cameraState = cameraState,
+            live = ui.busy != Busy.IDLE || cameraState.showing() == current?.id,
             processing = ui.busy == Busy.PROCESSING,
             processingProgress = { ui.progress },
             evDragEnabled = ui.mode == CaptureMode.PHOTO,
@@ -309,6 +310,13 @@ private val SIDE_MARGIN = 12.dp
 
 /** The wave keeps at least this much air above and below; it fades out rather than touch either side. */
 private val WAVE_MARGIN = 4.dp
+
+/** The camera whose frames are on screen; a reopen mid-capture (RAW budget) keeps the busy flag instead. */
+private fun CameraController.State.showing(): String? = when (this) {
+    is CameraController.State.Previewing -> cameraId
+    is CameraController.State.Capturing -> cameraId
+    else -> null
+}
 
 private fun hasCameraPermission(context: Context): Boolean =
     ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED

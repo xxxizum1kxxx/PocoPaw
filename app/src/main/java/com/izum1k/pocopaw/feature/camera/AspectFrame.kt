@@ -24,6 +24,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 
@@ -43,6 +44,12 @@ val AspectRatio.portraitRatio: Float get() = width.toFloat() / height
 class AspectFrame(ratio: Float) {
     val crop = Animatable(ratio)
     val scale = Animatable(scaleFor(ratio))
+
+    /**
+     * The same seam drawn as an iris (1 open, 0 shut to black): every camera switch, and every
+     * reopen the user can see, closes it over the old picture and opens it on the new one.
+     */
+    val iris = Animatable(0f)
 
     /** The framed band inside the 4:3 picture, as fractions of its width and height. */
     val bandWidth: Float get() = min(1f, SENSOR_RATIO / crop.value)
@@ -107,7 +114,8 @@ private fun Modifier.aspectSeamShader(frame: AspectFrame): Modifier {
     return graphicsLayer {
         val bw = frame.bandWidth
         val bh = frame.bandHeight
-        if (bw >= 0.9999f && bh >= 0.9999f) {
+        val iris = frame.iris.value
+        if (bw >= 0.9999f && bh >= 0.9999f && iris >= 0.9999f) {
             renderEffect = null
             return@graphicsLayer
         }
@@ -117,11 +125,17 @@ private fun Modifier.aspectSeamShader(frame: AspectFrame): Modifier {
         val pitch = AspectSeamTokens.Pitch.toPx()
         val columns = max(4, (size.width / pitch).toInt())
         val cellWidth = size.width / columns
+        val ramp = AspectSeamTokens.Ramp.toPx()
+        val front = AspectSeamTokens.Front.toPx()
+        // Shut: even the centre lies past the ramp. Open: even the corners lie inside the circle.
+        val reach = ramp + front + cellWidth * 2f
+        val openRadius = hypot(size.width, size.height) / 2f + reach
         s.setFloatUniform("size", size.width, size.height)
         s.setFloatUniform("cell", cellWidth, cellWidth * .866f)
         s.setFloatUniform("band", left, top, size.width - left, size.height - top)
-        s.setFloatUniform("ramp", AspectSeamTokens.Ramp.toPx())
-        s.setFloatUniform("front", AspectSeamTokens.Front.toPx())
+        s.setFloatUniform("iris", -reach + (openRadius + reach) * iris.coerceAtLeast(0f))
+        s.setFloatUniform("ramp", ramp)
+        s.setFloatUniform("front", front)
         renderEffect = android.graphics.RenderEffect.createRuntimeShaderEffect(s, "content").asComposeRenderEffect()
     }
 }
@@ -158,6 +172,8 @@ private fun Modifier.aspectSeamFade(frame: AspectFrame): Modifier = drawWithCont
         drawRect(Color.Black, size = Size(size.width, max(0f, edge - ramp)))
         drawRect(Color.Black, topLeft = Offset(0f, size.height - edge + ramp), size = Size(size.width, max(0f, edge - ramp)))
     }
+    val shut = 1f - frame.iris.value.coerceIn(0f, 1f)
+    if (shut > 0f) drawRect(Color.Black.copy(alpha = shut))
 }
 
 private object AspectSeamTokens {
@@ -178,6 +194,7 @@ private object AspectSeamTokens {
         uniform float2 size;
         uniform float2 cell;
         uniform float4 band;
+        uniform float iris;
         uniform float ramp;
         uniform float front;
 
@@ -187,9 +204,10 @@ private object AspectSeamTokens {
             return fract(sin(dot(p, float2(127.1, 311.7))) * 43758.547);
         }
 
-        // How far outside the band, px (negative inside).
+        // How far outside both the band and the iris circle, px (negative inside).
         float outside(float2 p) {
-            return max(max(band.x - p.x, p.x - band.z), max(band.y - p.y, p.y - band.w));
+            float b = max(max(band.x - p.x, p.x - band.z), max(band.y - p.y, p.y - band.w));
+            return max(b, length(p - size * 0.5) - iris);
         }
 
         half4 main(float2 xy) {

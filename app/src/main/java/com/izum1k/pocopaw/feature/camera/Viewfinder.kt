@@ -41,7 +41,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -82,6 +84,7 @@ fun Viewfinder(
     countdown: Int?,
     shutterTick: Int,
     cameraState: CameraController.State,
+    live: Boolean,
     processing: Boolean,
     processingProgress: () -> Float,
     evDragEnabled: Boolean,
@@ -96,6 +99,14 @@ fun Viewfinder(
     topOverlay: @Composable BoxScope.() -> Unit = {},
     bottomOverlay: @Composable BoxScope.() -> Unit = {},
 ) {
+    // The iris opens on the new camera's first frame, not on the old one's last.
+    var fresh by remember { mutableStateOf(false) }
+    LaunchedEffect(live) { if (!live) fresh = false }
+    val irisOpen = YoinMotion.slowSpatialSpec<Float>()
+    val irisShut = YoinMotion.fastSpatialSpec<Float>()
+    LaunchedEffect(live && fresh) {
+        if (live && fresh) frame.iris.animateTo(1f, irisOpen) else frame.iris.animateTo(0f, irisShut)
+    }
     BoxWithConstraints(
         modifier
             .fillMaxWidth()
@@ -118,7 +129,7 @@ fun Viewfinder(
                 }
                 .aspectSeam(frame),
         ) {
-            PreviewTexture(onSurfaceAvailable, onSurfaceDestroyed, Modifier.fillMaxSize())
+            PreviewTexture(onSurfaceAvailable, onSurfaceDestroyed, onFrame = { if (live && !fresh) fresh = true }, Modifier.fillMaxSize())
             Box(
                 Modifier
                     .fillMaxSize()
@@ -129,9 +140,6 @@ fun Viewfinder(
 
         if (grid) GridOverlay(gridStyle, Modifier.framedBand(frame))
 
-        val opening = cameraState is CameraController.State.Opening || cameraState is CameraController.State.Closed
-        val scrim by animateFloatAsState(if (opening) 0.65f else 0f, YoinMotion.defaultEffectsSpec(), label = "openingScrim")
-        Box(Modifier.fillMaxSize().graphicsLayer { alpha = scrim }.background(Color.Black))
         AnimatedVisibility(
             visible = cameraState is CameraController.State.Opening,
             enter = fadeIn(YoinMotion.defaultEffectsSpec()),
@@ -184,10 +192,12 @@ private fun Modifier.framedBand(frame: AspectFrame): Modifier = layout { measura
 private fun PreviewTexture(
     onSurfaceAvailable: (SurfaceTexture) -> Unit,
     onSurfaceDestroyed: () -> Unit,
+    onFrame: () -> Unit,
     modifier: Modifier,
 ) {
     val available by rememberUpdatedState(onSurfaceAvailable)
     val destroyed by rememberUpdatedState(onSurfaceDestroyed)
+    val frame by rememberUpdatedState(onFrame)
     AndroidView(
         modifier = modifier,
         factory = { context ->
@@ -199,7 +209,7 @@ private fun PreviewTexture(
                         destroyed()
                         return true
                     }
-                    override fun onSurfaceTextureUpdated(surface: SurfaceTexture) = Unit
+                    override fun onSurfaceTextureUpdated(surface: SurfaceTexture) = frame()
                 }
             }
         },
