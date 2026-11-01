@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="action_back">返回</string>
+    <string name="action_flip">切换镜头</string>
+    <string name="action_open_last">最近拍摄</string>
+    <string name="action_retry">重试</string>
+    <string name="action_shutter">快门</string>
+
+    <string name="permission_title">相机权限</string>
+    <string name="permission_grant">授权</string>
+    <string name="permission_open_settings">打开设置</string>
+
+    <string name="control_flash">闪光</string>
+    <string name="control_timer">定时</string>
+    <string name="control_aspect">画幅</string>
+    <string name="control_grid">网格</string>
+    <string name="control_shutter">快门</string>
+
+    <string name="value_off">关</string>
+    <string name="value_on">开</string>
+    <string name="value_auto">自动</string>
+    <string name="value_seconds">%1$d 秒</string>
+    <string name="value_yes">有</string>
+    <string name="value_no">无</string>
+
+    <string name="mode_photo">照片</string>
+    <string name="mode_pro">专业</string>
+
+    <string name="message_capture_failed">拍摄失败</string>
+    <string name="message_save_failed">保存失败</string>
+
+    <string name="error_camera_in_use">相机被其他应用占用</string>
+    <string name="error_camera_disabled">相机已停用</string>
+    <string name="error_camera_service">相机服务重启中</string>
+    <string name="error_camera_configuration">数据流配置被拒绝</string>
+    <string name="error_camera_device">相机出错</string>
+
+    <string name="settings_title">设置</string>
+    <string name="settings_capture">拍摄</string>
+    <string name="settings_output">输出格式</string>
+    <string name="settings_pipeline">处理管线</string>
+    <string name="settings_grid_style">网格样式</string>
+    <string name="settings_feedback">反馈</string>
+    <string name="settings_shutter_sound">快门声</string>
+    <string name="settings_haptics">触感</string>
+    <string name="settings_appearance">外观</string>
+    <string name="settings_color_style">配色风格</string>
+    <string name="settings_developer">开发</string>
+    <string name="settings_developer_info">RAW 信息</string>
+    <string name="settings_developer_info_value">在取景器上显示 RAW 尺寸、曝光和剩余 RAW 请求数</string>
+    <string name="settings_about">关于</string>
+
+    <string name="output_dng">DNG</string>
+    <string name="output_jpeg">JPEG（待管线）</string>
+    <string name="output_dng_jpeg">DNG + JPEG（待管线）</string>
+
+    <string name="pipeline_dng_passthrough">单帧 DNG 直出</string>
+    <string name="pipeline_unknown">自定义</string>
+
+    <string name="grid_thirds">三分线</string>
+    <string name="grid_golden">黄金分割</string>
+    <string name="grid_square">4 × 4</string>
+
+    <string name="color_expressive">壁纸取色</string>
+    <string name="color_system">系统</string>
+
+    <string name="credit_aperture">布局参照，LineageOS，Apache-2.0</string>
+    <string name="credit_yoin">主题与设计语言，Apache-2.0</string>
+    <string name="credit_symbols">图标，MIT</string>
+    <string name="credit_mcu">配色，Apache-2.0</string>
+    <string name="credit_font">字体，SIL OFL 1.1</string>
+
+    <string name="capabilities_title">设备能力</string>
+    <string name="lens_back">后置 %1$s</string>
+    <string name="lens_front">前置</string>
+    <string name="lens_external">外接</string>
+    <string name="cap_id">相机 ID</string>
+    <string name="cap_raw_size">RAW 尺寸</string>
+    <string name="cap_cfa">拜耳排列</string>
+    <string name="cap_levels">黑电平 / 白电平</string>
+    <string name="cap_focal">焦距</string>
+    <string name="cap_equivalent">等效 %1$d mm</string>
+    <string name="cap_aperture">光圈</string>
+    <string name="cap_iso">ISO</string>
+    <string name="cap_exposure">曝光时间</string>
+    <string name="cap_preview">预览尺寸</string>
+    <string name="cap_hardware_level">硬件级别</string>
+    <string name="cap_ois">光学防抖</string>
+    <string name="cap_flash">闪光灯</string>
+    <string name="cap_af">自动对焦</string>
+    <string name="cap_noise_profile">噪声模型</string>
+    <string name="cap_raw_budget">每次打开的 RAW 请求上限</string>
+</resources>

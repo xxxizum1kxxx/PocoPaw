@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PocoPaw</string>
+
+    <string name="action_back">Back</string>
+    <string name="action_flip">Switch camera</string>
+    <string name="action_open_last">Last capture</string>
+    <string name="action_retry">Retry</string>
+    <string name="action_shutter">Shutter</string>
+
+    <string name="permission_title">Camera access</string>
+    <string name="permission_grant">Allow</string>
+    <string name="permission_open_settings">Open settings</string>
+
+    <string name="control_flash">Flash</string>
+    <string name="control_timer">Timer</string>
+    <string name="control_aspect">Ratio</string>
+    <string name="control_grid">Grid</string>
+    <string name="control_shutter">Shutter</string>
+
+    <string name="value_off">Off</string>
+    <string name="value_on">On</string>
+    <string name="value_auto">Auto</string>
+    <string name="value_seconds">%1$ds</string>
+    <string name="value_yes">Yes</string>
+    <string name="value_no">No</string>
+
+    <string name="mode_photo">Photo</string>
+    <string name="mode_pro">Pro</string>
+
+    <string name="message_capture_failed">Capture failed</string>
+    <string name="message_save_failed">Could not save</string>
+
+    <string name="error_camera_in_use">Camera in use by another app</string>
+    <string name="error_camera_disabled">Camera disabled</string>
+    <string name="error_camera_service">Camera service restarting</string>
+    <string name="error_camera_configuration">Stream configuration rejected</string>
+    <string name="error_camera_device">Camera error</string>
+
+    <string name="settings_title">Settings</string>
+    <string name="settings_capture">Capture</string>
+    <string name="settings_output">Output</string>
+    <string name="settings_pipeline">Processing</string>
+    <string name="settings_grid_style">Grid style</string>
+    <string name="settings_feedback">Feedback</string>
+    <string name="settings_shutter_sound">Shutter sound</string>
+    <string name="settings_haptics">Haptics</string>
+    <string name="settings_appearance">Appearance</string>
+    <string name="settings_color_style">Colour style</string>
+    <string name="settings_developer">Developer</string>
+    <string name="settings_developer_info">RAW info</string>
+    <string name="settings_developer_info_value">RAW size, exposure and remaining RAW requests on the viewfinder</string>
+    <string name="settings_about">About</string>
+
+    <string name="output_dng">DNG</string>
+    <string name="output_jpeg">JPEG (needs pipeline)</string>
+    <string name="output_dng_jpeg">DNG + JPEG (needs pipeline)</string>
+
+    <string name="pipeline_dng_passthrough">Single-frame DNG</string>
+    <string name="pipeline_unknown">Custom</string>
+
+    <string name="grid_thirds">Thirds</string>
+    <string name="grid_golden">Golden ratio</string>
+    <string name="grid_square">4 × 4</string>
+
+    <string name="color_expressive">Wallpaper</string>
+    <string name="color_system">System</string>
+
+    <string name="credit_aperture">Layout reference, LineageOS, Apache-2.0</string>
+    <string name="credit_yoin">Theme and design language, Apache-2.0</string>
+    <string name="credit_symbols">Icons, MIT</string>
+    <string name="credit_mcu">Colour, Apache-2.0</string>
+    <string name="credit_font">Typeface, SIL OFL 1.1</string>
+
+    <string name="capabilities_title">Camera capabilities</string>
+    <string name="lens_back">Back %1$s</string>
+    <string name="lens_front">Front</string>
+    <string name="lens_external">External</string>
+    <string name="cap_id">Camera ID</string>
+    <string name="cap_raw_size">RAW size</string>
+    <string name="cap_cfa">Bayer pattern</string>
+    <string name="cap_levels">Black / white level</string>
+    <string name="cap_focal">Focal length</string>
+    <string name="cap_equivalent">%1$d mm equiv.</string>
+    <string name="cap_aperture">Aperture</string>
+    <string name="cap_iso">ISO</string>
+    <string name="cap_exposure">Exposure</string>
+    <string name="cap_preview">Preview</string>
+    <string name="cap_hardware_level">Hardware level</string>
+    <string name="cap_ois">OIS</string>
+    <string name="cap_flash">Flash</string>
+    <string name="cap_af">Autofocus</string>
+    <string name="cap_noise_profile">Noise profile</string>
+    <string name="cap_raw_budget">RAW requests per open</string>
+</resources>

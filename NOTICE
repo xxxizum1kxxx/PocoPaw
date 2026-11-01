@@ -1,0 +1,30 @@
+PocoPaw
+Licensed under the GNU General Public License, version 3 or later.
+
+This product includes software developed by third parties:
+
+- Yoin (app/src/main/java/com/izum1k/pocopaw/ui/theme)
+  Copyright 2026 Chen Wuyi
+  Licensed under the Apache License, Version 2.0.
+  https://github.com/p2o51/Yoin
+  Adapted for ScalePaw, then for PocoPaw.
+
+- ScalePaw and PiliPaw (parts of app/src/main/java/com/izum1k/pocopaw/ui)
+  Copyright Chen Wuyi and the ScalePaw authors
+  Licensed under the GNU General Public License, version 3.
+  https://github.com/p2o51/PiliPaw
+
+- Material Color Utilities (app/src/main/java/{contrast,dislike,dynamiccolor,
+  hct,palettes,scheme,temperature,utils})
+  Copyright 2022-2026 Google LLC
+  Licensed under the Apache License, Version 2.0.
+  https://github.com/material-foundation/material-color-utilities
+
+- Google Sans Flex (app/src/main/res/font/google_sans_flex_*.ttf)
+  Copyright 2022 The Google Sans Flex Project Authors
+  Licensed under the SIL Open Font License, Version 1.1.
+  See licenses/GoogleSansFlex-OFL.txt.
+
+The camera screen layout follows Aperture by The LineageOS Project
+(Apache License, Version 2.0, https://github.com/LineageOS/android_packages_apps_Aperture).
+No Aperture source code is included.

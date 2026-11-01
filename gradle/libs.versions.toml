@@ -1,0 +1,42 @@
+[versions]
+agp = "9.2.1"
+kotlin = "2.3.21"
+composeBom = "2026.03.01"
+material3Expressive = "1.5.0-alpha16"
+nav3Core = "1.1.2"
+lifecycleViewmodelNav3 = "2.10.0"
+activityCompose = "1.10.1"
+lifecycleCompose = "2.9.0"
+coroutines = "1.10.1"
+kotlinxSerialization = "1.8.0"
+datastore = "1.1.7"
+graphicsShapes = "1.1.0"
+yoinSymbols = "0.2.0"
+
+[libraries]
+yoin-symbols = { group = "io.github.p2o51", name = "yoin-symbols", version.ref = "yoinSymbols" }
+compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+compose-ui = { group = "androidx.compose.ui", name = "ui" }
+compose-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
+compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+compose-foundation = { group = "androidx.compose.foundation", name = "foundation" }
+compose-animation = { group = "androidx.compose.animation", name = "animation" }
+compose-runtime = { group = "androidx.compose.runtime", name = "runtime" }
+material3-expressive = { group = "androidx.compose.material3", name = "material3", version.ref = "material3Expressive" }
+androidx-navigation3-runtime = { group = "androidx.navigation3", name = "navigation3-runtime", version.ref = "nav3Core" }
+androidx-navigation3-ui = { group = "androidx.navigation3", name = "navigation3-ui", version.ref = "nav3Core" }
+androidx-lifecycle-viewmodel-navigation3 = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-navigation3", version.ref = "lifecycleViewmodelNav3" }
+activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycleCompose" }
+lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "lifecycleCompose" }
+core-ktx = { group = "androidx.core", name = "core-ktx", version = "1.15.0" }
+graphics-shapes = { group = "androidx.graphics", name = "graphics-shapes", version.ref = "graphicsShapes" }
+kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
+kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
+datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }

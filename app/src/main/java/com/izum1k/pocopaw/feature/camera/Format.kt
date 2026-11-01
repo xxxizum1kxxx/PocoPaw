@@ -1,0 +1,34 @@
+package com.izum1k.pocopaw.feature.camera
+
+import android.util.Rational
+import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.roundToInt
+import kotlin.math.roundToLong
+
+object CameraFormat {
+    /** 1/125, 1/4, 0.5", 1"; shutter speeds as photographers read them. */
+    fun shutter(ns: Long): String {
+        val seconds = ns / 1_000_000_000.0
+        return if (seconds >= 0.3) {
+            val s = if (seconds >= 1) seconds.roundToLong().toString() else String.format(Locale.US, "%.1f", seconds)
+            "$s\""
+        } else {
+            "1/${(1 / seconds).roundToInt()}"
+        }
+    }
+
+    fun ev(index: Int, step: Rational): String {
+        val v = index * step.toFloat()
+        if (abs(v) < 0.05f) return "0"
+        val sign = if (v > 0) "+" else "−"
+        return sign + String.format(Locale.US, "%.1f", abs(v))
+    }
+
+    fun zoom(z: Float): String {
+        val rounded = (z * 10f).roundToInt() / 10f
+        return if (rounded % 1f == 0f) "${rounded.toInt()}×" else String.format(Locale.US, "%.1f×", rounded)
+    }
+
+    fun millimetres(mm: Float): String = String.format(Locale.US, "%.2f mm", mm)
+}
