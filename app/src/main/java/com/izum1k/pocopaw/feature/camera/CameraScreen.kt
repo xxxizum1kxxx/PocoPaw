@@ -9,11 +9,6 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
@@ -53,6 +48,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.unit.Constraints
 import com.izum1k.pocopaw.ui.theme.YoinContainerShapes
@@ -206,11 +202,13 @@ private fun CameraContent(vm: CameraViewModel) {
                 }
             },
             cover = {
-                AnimatedVisibility(
-                    quickOpen,
-                    enter = fadeIn(YoinMotion.defaultEffectsSpec()) + scaleIn(YoinMotion.defaultSpatialSpec(), initialScale = 1.04f),
-                    exit = fadeOut(YoinMotion.fastEffectsSpec()) + scaleOut(YoinMotion.defaultSpatialSpec(), targetScale = 1.04f),
-                ) {
+                // Unrolls down from the top controls and rolls back up into them.
+                val reveal by animateFloatAsState(
+                    if (quickOpen) 1f else 0f,
+                    if (quickOpen) YoinMotion.defaultSpatialSpec() else YoinMotion.fastSpatialSpec(),
+                    label = "quickReveal",
+                )
+                if (quickOpen || reveal > 0f) {
                     // From the top of the 4:3 picture, where it sits in every framing, as tall as its rows.
                     QuickSettingsPanel(
                         settings = settings,
@@ -221,16 +219,15 @@ private fun CameraContent(vm: CameraViewModel) {
                         onLook = { vm.updateSettings { setLook(it) } },
                         onUltraHdr = { vm.updateSettings { setUltraHdr(it) } },
                         modifier = Modifier
+                            .offset { IntOffset(0, ((TOP_BAR_HEIGHT + VIEWFINDER_GAP).toPx() * frame.blowUp(tallest)).roundToInt()) }
+                            .clip(YoinContainerShapes.Panel)
                             .layout { measurable, constraints ->
                                 val w = constraints.maxWidth
-                                val h = (w * AspectRatio.FOUR_THREE.portraitRatio).roundToInt()
-                                val placeable = measurable.measure(Constraints(minWidth = w, maxWidth = w, maxHeight = h))
-                                layout(w, placeable.height) {
-                                    val under = (TOP_BAR_HEIGHT + VIEWFINDER_GAP).toPx()
-                                    placeable.place(0, (under * frame.blowUp(tallest)).roundToInt())
-                                }
+                                val max = (w * AspectRatio.FOUR_THREE.portraitRatio).roundToInt()
+                                val placeable = measurable.measure(Constraints(minWidth = w, maxWidth = w, maxHeight = max))
+                                layout(w, (placeable.height * reveal.coerceIn(0f, 1f)).roundToInt()) { placeable.place(0, 0) }
                             }
-                            .clip(YoinContainerShapes.Panel),
+                            .graphicsLayer { alpha = (reveal / 0.5f).coerceIn(0f, 1f) },
                     )
                 }
             },
