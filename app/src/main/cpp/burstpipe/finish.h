@@ -41,4 +41,5 @@ bool write_jpeg(const std::string& path, const ImageF& rgb, int quality, int dow
 std::vector<uint8_t> to_rgb8(const ImageF& rgb, int downscale, int& w, int& h);  // dithered, box-downscaled
 // Display-referred RGB -> RGBA8888 rows (Android ARGB_8888 memory order), dithered
 void to_rgba8888(const ImageF& rgb, uint8_t* out, size_t stride);
-std::vector<uint8_t> encode_jpeg(const uint8_t* px, int w, int h, int channels, int quality);
+// chroma420: 4:2:0 at any quality (otherwise 4:4:4 above 90), as Android's Bitmap.compress
+std::vector<uint8_t> encode_jpeg(const uint8_t* px, int w, int h, int channels, int quality, bool chroma420 = false);

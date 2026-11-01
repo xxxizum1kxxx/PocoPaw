@@ -394,12 +394,14 @@ std::vector<uint8_t> to_rgb8(const ImageF& rgb, int ds, int& w, int& h) {
     return buf;
 }
 
-std::vector<uint8_t> encode_jpeg(const uint8_t* px, int w, int h, int channels, int quality) {
+std::vector<uint8_t> encode_jpeg(const uint8_t* px, int w, int h, int channels, int quality, bool chroma420) {
     std::vector<uint8_t> out;
-    stbi_write_jpg_to_func([](void* ctx, void* data, int size) {
+    auto sink = [](void* ctx, void* data, int size) {
         auto* o = static_cast<std::vector<uint8_t>*>(ctx);
         o->insert(o->end(), (uint8_t*)data, (uint8_t*)data + size);
-    }, &out, w, h, channels, px, quality);
+    };
+    if (chroma420) stbi_write_jpg_420_to_func(sink, &out, w, h, channels, px, quality);
+    else stbi_write_jpg_to_func(sink, &out, w, h, channels, px, quality);
     return out;
 }
 

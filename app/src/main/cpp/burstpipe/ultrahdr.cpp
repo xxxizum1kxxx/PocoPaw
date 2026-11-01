@@ -46,7 +46,8 @@ std::vector<uint8_t> encode_ultrahdr(const ImageF& sdr, int ds, const HdrLuma& h
                                      int quality, UltraHdrStats* st) {
     int w, h;
     std::vector<uint8_t> px = to_rgb8(sdr, ds, w, h);
-    std::vector<uint8_t> base = encode_jpeg(px.data(), w, h, 3, quality);
+    // 4:2:0 like the SDR-only JPEG; 4:4:4 made the file 0.3-1 MB larger for no visible gain
+    std::vector<uint8_t> base = encode_jpeg(px.data(), w, h, 3, quality, true);
 
     float lut[256];
     for (int i = 0; i < 256; i++) lut[i] = srgb_to_linear(i / 255.f);
