@@ -455,7 +455,7 @@ fun LensSelector(
 ) {
     if (lenses.size < 2 && (current == null || lenses.none { it.id == current.id })) return
     val haptics = LocalHapticFeedback.current
-    // A tap shows every lens's 35mm-equivalent focal length for a while, then the zoom factors again.
+    // A tap shows the current lens's 35mm-equivalent focal length for a while, then its zoom factor again.
     var focalTap by remember { mutableIntStateOf(0) }
     var showFocal by remember { mutableStateOf(false) }
     LaunchedEffect(focalTap) {
@@ -486,8 +486,8 @@ fun LensSelector(
                 label = "lensContent",
             )
             val factor = if (selected) lens.relativeZoom * zoom else lens.relativeZoom
-            val label = if (showFocal) {
-                CameraFormat.equivalentFocal(lens.equivalentFocalMm * (if (selected) zoom else 1f))
+            val label = if (showFocal && selected) {
+                CameraFormat.equivalentFocal(lens.equivalentFocalMm * zoom)
             } else {
                 CameraFormat.zoom(factor)
             }
