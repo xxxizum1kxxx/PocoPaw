@@ -124,6 +124,17 @@ class CameraController(private val manager: CameraManager) {
         }
     }
 
+    /** Closes and reopens the current camera, which gives back the whole RAW budget. */
+    suspend fun reopen() = withContext(dispatcher) {
+        mutex.withLock {
+            val info = camera ?: return@withLock
+            val tex = texture ?: return@withLock
+            if (_state.value !is State.Previewing) return@withLock
+            Log.i(TAG, "reopening ${info.id} on request, ${budget.remaining.value} RAW requests left")
+            openLocked(info, tex)
+        }
+    }
+
     fun updateControls(next: PreviewControls) {
         scope.launch {
             mutex.withLock {

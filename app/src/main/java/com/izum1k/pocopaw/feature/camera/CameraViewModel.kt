@@ -41,6 +41,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.ln
+import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 
 enum class CaptureMode { PHOTO, PRO }
 
@@ -64,6 +67,10 @@ data class CameraUiState(
     val evIndex: Int = 0,
     val manualIso: Int = 100,
     val manualExposureNs: Long = 10_000_000L,
+    /** Pro: AE picks the ISO (with a manual shutter, the one that keeps AE's exposure). */
+    val isoAuto: Boolean = true,
+    /** Pro: AE picks the shutter (with a manual ISO, the one that keeps AE's exposure). */
+    val shutterAuto: Boolean = true,
     val focus: FocusPoint? = null,
     val countdown: Int? = null,
     val busy: Busy = Busy.IDLE,
@@ -205,14 +212,22 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
         pushControls()
     }
 
-    fun setIso(iso: Int) {
-        _ui.update { it.copy(manualIso = iso) }
+    /** A manual ISO, or null for auto. */
+    fun setIso(iso: Int?) {
+        _ui.update { if (iso == null) it.copy(isoAuto = true) else it.copy(isoAuto = false, manualIso = iso) }
         pushControls()
     }
 
-    fun setShutter(ns: Long) {
-        _ui.update { it.copy(manualExposureNs = ns) }
+    /** A manual shutter, or null for auto. */
+    fun setShutter(ns: Long?) {
+        _ui.update { if (ns == null) it.copy(shutterAuto = true) else it.copy(shutterAuto = false, manualExposureNs = ns) }
         pushControls()
+    }
+
+    /** Reopens the camera to give back its RAW budget. */
+    fun restartCamera() {
+        if (_ui.value.busy != Busy.IDLE) return
+        viewModelScope.launch { controller.reopen() }
     }
 
     /** A tap at normalised texture coordinates (portrait, as displayed). */
@@ -273,7 +288,7 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
         if (settings.value.shutterSound) sound.play(MediaActionSound.SHUTTER_CLICK)
         val spec = CaptureSpec(
             frameCount = pipeline.framesPerCapture,
-            exposure = pipeline.exposureFor(exposurePlan(s), live.value.copy(motionRadPerSec = motion.rms()), cam),
+            exposure = pipeline.exposureFor(captureExposure(s, cam), live.value.copy(motionRadPerSec = motion.rms()), cam),
             flash = settings.value.flash,
             deviceRotation = deviceRotation,
             zoomRatio = s.zoom,
@@ -337,9 +352,16 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
         _ui.update { it.copy(busy = Busy.IDLE, countdown = null, message = message, messageId = it.messageId + 1) }
     }
 
-    private fun exposurePlan(s: CameraUiState): ExposurePlan = when (s.mode) {
-        CaptureMode.PHOTO -> ExposurePlan.Auto(s.evIndex)
-        CaptureMode.PRO -> ExposurePlan.Manual(ManualExposure(s.manualIso, s.manualExposureNs))
+    /** What the preview runs: Camera2 has no half-auto, so unless both are manual AE keeps metering. */
+    private fun exposurePlan(s: CameraUiState): ExposurePlan = when {
+        s.mode == CaptureMode.PHOTO -> ExposurePlan.Auto(s.evIndex)
+        s.isoAuto || s.shutterAuto -> ExposurePlan.Auto()
+        else -> ExposurePlan.Manual(ManualExposure(s.manualIso, s.manualExposureNs))
+    }
+
+    private fun captureExposure(s: CameraUiState, cam: CameraInfo): ExposurePlan {
+        if (s.mode != CaptureMode.PRO || s.isoAuto == s.shutterAuto) return exposurePlan(s)
+        return priorityExposure(s, live.value, cam)?.let { ExposurePlan.Manual(it) } ?: ExposurePlan.Auto()
     }
 
     private fun previewControls(flash: FlashMode = settings.value.flash): PreviewControls {
@@ -363,9 +385,12 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
 
         val ISO_STOPS = listOf(50, 64, 80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600, 2000, 2500, 3200, 4000, 5000, 6400)
 
+        /** Third stops, as a camera's dial marks them: evenly spaced in exposure, not in time. */
         val SHUTTER_STOPS: List<Long> = listOf(
-            8000, 4000, 2000, 1000, 500, 250, 125, 100, 60, 30, 15, 8, 4, 2,
-        ).map { 1_000_000_000L / it } + listOf(1_000_000_000L)
+            8000, 6400, 5000, 4000, 3200, 2500, 2000, 1600, 1250, 1000, 800, 640, 500, 400, 320, 250, 200, 160,
+            125, 100, 80, 60, 50, 40, 30, 25, 20, 15, 13, 10, 8, 6, 5, 4,
+        ).map { 1_000_000_000L / it } + listOf(0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.3, 1.6, 2.0, 2.5, 3.2, 4.0, 5.0, 6.0, 8.0, 10.0, 13.0, 15.0, 20.0, 25.0, 30.0)
+            .map { (it * 1e9).roundToLong() }
 
         fun isoStops(cam: CameraInfo?): List<Int> {
             val r = cam?.isoRange ?: return ISO_STOPS
@@ -379,7 +404,30 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
 
         fun snapIso(iso: Int, cam: CameraInfo?): Int = isoStops(cam).minBy { abs(it - iso) }
 
-        fun snapShutter(ns: Long, cam: CameraInfo?): Long = shutterStops(cam).minBy { abs(it - ns) }
+        fun snapShutter(ns: Long, cam: CameraInfo?): Long = shutterStops(cam).minBy { abs(ln(it.toDouble() / ns)) }
+
+        /**
+         * Pro with one of the two on auto: the other one is the user's, and the auto one is
+         * whatever keeps the preview AE's ISO × exposure. Null until AE has reported.
+         */
+        fun priorityExposure(s: CameraUiState, live: LiveExposure, cam: CameraInfo?): ManualExposure? {
+            val iso0 = live.iso ?: return null
+            val exp0 = live.exposureNs ?: return null
+            val product = iso0.toDouble() * exp0
+            return when {
+                s.isoAuto && !s.shutterAuto -> {
+                    val r = cam?.isoRange
+                    val iso = (product / s.manualExposureNs).roundToInt()
+                    ManualExposure(if (r != null) iso.coerceIn(r.lower, r.upper) else iso, s.manualExposureNs)
+                }
+                s.shutterAuto && !s.isoAuto -> {
+                    val r = cam?.exposureRangeNs
+                    val exp = (product / s.manualIso).roundToLong()
+                    ManualExposure(s.manualIso, if (r != null) exp.coerceIn(r.lower, r.upper) else exp)
+                }
+                else -> ManualExposure(iso0, exp0)
+            }
+        }
 
         /**
          * Displayed (portrait, mirrored for the front camera) to sensor coordinates. The preview

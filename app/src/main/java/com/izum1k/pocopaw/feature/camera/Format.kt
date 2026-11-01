@@ -7,11 +7,12 @@ import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
 object CameraFormat {
-    /** 1/125, 1/4, 0.5", 1"; shutter speeds as photographers read them. */
+    /** 1/125, 1/4, 0.5", 1", 2.5"; shutter speeds as photographers read them. */
     fun shutter(ns: Long): String {
         val seconds = ns / 1_000_000_000.0
         return if (seconds >= 0.3) {
-            val s = if (seconds >= 1) seconds.roundToLong().toString() else String.format(Locale.US, "%.1f", seconds)
+            val whole = seconds >= 1 && abs(seconds - seconds.roundToLong()) < 0.05
+            val s = if (whole) seconds.roundToLong().toString() else String.format(Locale.US, "%.1f", seconds)
             "$s\""
         } else {
             "1/${(1 / seconds).roundToInt()}"

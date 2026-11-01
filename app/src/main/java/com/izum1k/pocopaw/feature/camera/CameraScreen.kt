@@ -215,7 +215,7 @@ private fun CameraContent(vm: CameraViewModel) {
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    if (settings.developerInfo) DevChip(current, remaining, vm.rawLimit, live, ui.lastRun)
+                    if (settings.developerInfo) DevChip(settings, current, live)
                     Reveal(current?.facing == LensFacing.BACK) {
                         current?.let {
                             LensSelector(
@@ -232,7 +232,10 @@ private fun CameraContent(vm: CameraViewModel) {
                     ProPanel(
                         camera = current,
                         iso = ui.manualIso,
+                        isoAuto = ui.isoAuto,
                         exposureNs = ui.manualExposureNs,
+                        shutterAuto = ui.shutterAuto,
+                        metered = CameraViewModel.priorityExposure(ui, live, current),
                         onIso = vm::setIso,
                         onShutter = vm::setShutter,
                     )
@@ -241,7 +244,25 @@ private fun CameraContent(vm: CameraViewModel) {
                     capturing = ui.busy == Busy.CAPTURING,
                     modifier = Modifier.padding(horizontal = SIDE_MARGIN + 12.dp),
                 )
-                ModeBar(ui.mode, vm::setMode)
+                ModeBar(
+                    mode = ui.mode,
+                    onMode = vm::setMode,
+                    start = {
+                        Reveal(settings.developerInfo && current != null) {
+                            BudgetPill(
+                                remaining = remaining,
+                                limit = vm.rawLimit,
+                                enabled = ui.busy == Busy.IDLE && cameraState is CameraController.State.Previewing,
+                                onRestart = vm::restartCamera,
+                            )
+                        }
+                    },
+                    end = {
+                        Reveal(settings.developerInfo && ui.lastRun != null) {
+                            ui.lastRun?.let { RunPill(it) }
+                        }
+                    },
+                )
                 ShutterRow(
                     last = ui.last?.thumbnail,
                     hasLast = ui.last != null,

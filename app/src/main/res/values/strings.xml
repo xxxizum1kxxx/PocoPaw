@@ -49,7 +49,7 @@
     <string name="settings_color_style">Colour style</string>
     <string name="settings_developer">Developer</string>
     <string name="settings_developer_info">RAW info</string>
-    <string name="settings_developer_info_value">RAW size, exposure and remaining RAW requests on the viewfinder</string>
+    <string name="settings_developer_info_value">Output, pipeline and exposure on the viewfinder; RAW requests left and the last run by the modes</string>
     <string name="settings_about">About</string>
 
     <string name="output_dng">DNG</string>
@@ -70,6 +70,9 @@
     <string name="settings_ultra_hdr">Ultra HDR</string>
     <string name="settings_ultra_hdr_value">JPEG with a gain map; brighter highlights on HDR screens</string>
     <string name="dev_processed">%1$d f · %2$.1f s</string>
+    <string name="pipeline_single">Single frame</string>
+    <string name="scene_bracket_short">Bracket</string>
+    <string name="scene_night_short">Night</string>
 
     <string name="grid_thirds">Thirds</string>
     <string name="grid_golden">Golden ratio</string>

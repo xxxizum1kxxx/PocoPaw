@@ -47,7 +47,7 @@
     <string name="settings_color_style">配色风格</string>
     <string name="settings_developer">开发</string>
     <string name="settings_developer_info">RAW 信息</string>
-    <string name="settings_developer_info_value">在取景器上显示 RAW 尺寸、曝光和剩余 RAW 请求数</string>
+    <string name="settings_developer_info_value">在取景器上显示输出格式、管线和曝光，在模式栏两侧显示剩余 RAW 请求数和上次处理耗时</string>
     <string name="settings_about">关于</string>
 
     <string name="output_dng">DNG</string>
@@ -68,6 +68,9 @@
     <string name="settings_ultra_hdr">Ultra HDR</string>
     <string name="settings_ultra_hdr_value">带增益图的 JPEG，HDR 屏上高光更亮</string>
     <string name="dev_processed">%1$d 帧 · %2$.1f 秒</string>
+    <string name="pipeline_single">单帧直出</string>
+    <string name="scene_bracket_short">包围</string>
+    <string name="scene_night_short">夜景</string>
 
     <string name="grid_thirds">三分线</string>
     <string name="grid_golden">黄金分割</string>

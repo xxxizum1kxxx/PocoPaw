@@ -77,6 +77,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.graphics.shapes.Morph
 import com.gpo.yoin.symbols.YoinSymbols
@@ -85,7 +86,11 @@ import com.izum1k.pocopaw.camera.CameraInfo
 import com.izum1k.pocopaw.camera.LiveExposure
 import com.izum1k.pocopaw.data.AspectRatio
 import com.izum1k.pocopaw.data.CameraSettings
+import com.izum1k.pocopaw.camera.ManualExposure
 import com.izum1k.pocopaw.data.FlashMode
+import com.izum1k.pocopaw.data.OutputFormat
+import com.izum1k.pocopaw.data.Processing
+import com.izum1k.pocopaw.data.SceneMode
 import com.izum1k.pocopaw.data.TimerMode
 import com.izum1k.pocopaw.ui.component.PillShape
 import com.izum1k.pocopaw.ui.component.Reveal
@@ -337,44 +342,98 @@ fun LensSelector(
     }
 }
 
-/** RAW size, live exposure and the RAW requests left before the device is reopened. */
+/** What a shutter press will write and through which pipeline, with the live exposure. */
 @Composable
-fun DevChip(info: CameraInfo?, remaining: Int, limit: Int, live: LiveExposure, lastRun: PipelineRun?, modifier: Modifier = Modifier) {
-    if (info == null) return
-    val low = remaining <= 5
-    val remainingColor by animateColorAsState(
-        if (low) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+fun DevChip(settings: CameraSettings, camera: CameraInfo?, live: LiveExposure, modifier: Modifier = Modifier) {
+    if (camera == null) return
+    val numbers = MaterialTheme.typography.labelMedium.withTabularFigures()
+    val quiet = MaterialTheme.colorScheme.onSurfaceVariant
+    DevPill(modifier) {
+        Text(outputLabel(settings.output), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, softWrap = false)
+        Text(pipelineLabel(settings, camera), style = numbers, softWrap = false)
+        live.iso?.let { Text("ISO $it", style = numbers, color = quiet, softWrap = false) }
+        live.exposureNs?.let { Text(CameraFormat.shutter(it), style = numbers, color = quiet, softWrap = false) }
+    }
+}
+
+private fun outputLabel(output: OutputFormat): String = when (output) {
+    OutputFormat.DNG -> "DNG"
+    OutputFormat.JPEG -> "JPEG"
+    OutputFormat.DNG_JPEG -> "DNG+JPEG"
+}
+
+/** The pipeline [CameraViewModel] will pick for the next press, flash included. */
+@Composable
+private fun pipelineLabel(settings: CameraSettings, camera: CameraInfo): String {
+    if (settings.output == OutputFormat.DNG) return stringResource(R.string.pipeline_single)
+    val merge = when (settings.processing) {
+        Processing.HDR_PLUS -> "HDR+"
+        Processing.HDR_PLUS_KR -> "HDR+ KR"
+    }
+    val flash = camera.hasFlash && settings.flash != FlashMode.OFF
+    val scene = when {
+        flash -> null
+        settings.scene == SceneMode.BRACKET -> stringResource(R.string.scene_bracket_short)
+        settings.scene == SceneMode.NIGHT -> stringResource(R.string.scene_night_short)
+        else -> null
+    }
+    return listOfNotNull("$merge ×${if (flash) 1 else settings.burstFrames.count}", scene).joinToString(" ")
+}
+
+/** RAW requests left on this open of the device; a tap reopens it to give them all back. */
+@Composable
+fun BudgetPill(remaining: Int, limit: Int, enabled: Boolean, onRestart: () -> Unit, modifier: Modifier = Modifier) {
+    val haptics = LocalHapticFeedback.current
+    val color by animateColorAsState(
+        if (remaining <= 5) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
         YoinMotion.defaultEffectsSpec(),
         label = "budgetColor",
     )
-    val numbers = MaterialTheme.typography.labelMedium.withTabularFigures()
-    val quiet = MaterialTheme.colorScheme.onSurfaceVariant
-    // The last pipeline run gets a pill of its own: one row with it overflows a phone's width.
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        DevPill {
-            Text("RAW", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, softWrap = false)
-            Text("${info.rawSize.width}×${info.rawSize.height}", style = numbers, softWrap = false)
-            live.iso?.let { Text("ISO $it", style = numbers, color = quiet, softWrap = false) }
-            live.exposureNs?.let { Text(CameraFormat.shutter(it), style = numbers, color = quiet, softWrap = false) }
-            Text("$remaining/$limit", style = numbers, color = remainingColor, softWrap = false)
-        }
-        Reveal(lastRun != null) {
-            val run = lastRun ?: return@Reveal
-            DevPill {
-                Text(stringResource(R.string.dev_processed, run.frames, run.millis / 1000f), style = numbers, color = quiet, softWrap = false)
-            }
-        }
+    var restarts by remember { mutableIntStateOf(0) }
+    val spin by animateFloatAsState(restarts * 360f, YoinMotion.defaultSpatialSpec(), label = "budgetSpin")
+    DevPill(
+        modifier,
+        spacing = 4.dp,
+        enabled = enabled,
+        onClick = {
+            haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+            restarts++
+            onRestart()
+        },
+    ) {
+        Icon(YoinSymbols.Refresh, contentDescription = null, tint = color, modifier = Modifier.size(14.dp).graphicsLayer { rotationZ = spin })
+        Text("$remaining/$limit", style = MaterialTheme.typography.labelMedium.withTabularFigures(), color = color, softWrap = false)
+    }
+}
+
+/** Frames and seconds of the last pipeline run. */
+@Composable
+fun RunPill(run: PipelineRun, modifier: Modifier = Modifier) {
+    DevPill(modifier) {
+        Text(
+            stringResource(R.string.dev_processed, run.frames, run.millis / 1000f),
+            style = MaterialTheme.typography.labelMedium.withTabularFigures(),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            softWrap = false,
+        )
     }
 }
 
 @Composable
-private fun DevPill(content: @Composable RowScope.() -> Unit) {
+private fun DevPill(
+    modifier: Modifier = Modifier,
+    spacing: Dp = 10.dp,
+    onClick: (() -> Unit)? = null,
+    enabled: Boolean = true,
+    content: @Composable RowScope.() -> Unit,
+) {
     Row(
-        Modifier
+        modifier
             .clip(PillShape)
             .background(controlContainer())
+            .then(if (onClick != null) Modifier.clickable(enabled = enabled, onClick = onClick) else Modifier)
             .padding(horizontal = 12.dp, vertical = 5.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(spacing),
         verticalAlignment = Alignment.CenterVertically,
         content = content,
     )
@@ -395,10 +454,28 @@ fun EvChip(label: String, rotation: Float, modifier: Modifier = Modifier) {
     }
 }
 
+/** The modes, centred, with room either side for [start] and [end]. */
 @Composable
-fun ModeBar(mode: CaptureMode, onMode: (CaptureMode) -> Unit, modifier: Modifier = Modifier) {
+fun ModeBar(
+    mode: CaptureMode,
+    onMode: (CaptureMode) -> Unit,
+    modifier: Modifier = Modifier,
+    start: @Composable () -> Unit = {},
+    end: @Composable () -> Unit = {},
+) {
+    Row(modifier.fillMaxWidth().padding(horizontal = SIDE_PADDING), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) { start() }
+        Modes(mode, onMode)
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) { end() }
+    }
+}
+
+private val SIDE_PADDING = 20.dp
+
+@Composable
+private fun Modes(mode: CaptureMode, onMode: (CaptureMode) -> Unit) {
     val haptics = LocalHapticFeedback.current
-    Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+    Row {
         CaptureMode.entries.forEach { m ->
             val selected = m == mode
             val container by animateColorAsState(
@@ -434,14 +511,20 @@ fun ModeBar(mode: CaptureMode, onMode: (CaptureMode) -> Unit, modifier: Modifier
     }
 }
 
-/** Manual ISO and shutter on the camera's own stops. */
+/**
+ * ISO and shutter on the camera's own third stops, each with Auto at its left end. The shutter
+ * stops are even in exposure, so the bar is logarithmic in time. [metered] is what auto would use.
+ */
 @Composable
 fun ProPanel(
     camera: CameraInfo?,
     iso: Int,
+    isoAuto: Boolean,
     exposureNs: Long,
-    onIso: (Int) -> Unit,
-    onShutter: (Long) -> Unit,
+    shutterAuto: Boolean,
+    metered: ManualExposure?,
+    onIso: (Int?) -> Unit,
+    onShutter: (Long?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val isoStops = CameraViewModel.isoStops(camera)
@@ -456,46 +539,62 @@ fun ProPanel(
     ) {
         StopSlider(
             label = "ISO",
-            value = iso.toString(),
+            value = if (isoAuto) metered?.iso?.toString() ?: "–" else iso.toString(),
+            auto = isoAuto,
             index = isoStops.indexOf(CameraViewModel.snapIso(iso, camera)),
             count = isoStops.size,
-            onIndex = { onIso(isoStops[it]) },
+            onIndex = { onIso(it?.let(isoStops::get)) },
         )
         StopSlider(
             label = stringResource(R.string.control_shutter),
-            value = CameraFormat.shutter(exposureNs),
+            value = if (shutterAuto) metered?.exposureNs?.let(CameraFormat::shutter) ?: "–" else CameraFormat.shutter(exposureNs),
+            auto = shutterAuto,
             index = shutterStops.indexOf(CameraViewModel.snapShutter(exposureNs, camera)),
             count = shutterStops.size,
-            onIndex = { onShutter(shutterStops[it]) },
+            onIndex = { onShutter(it?.let(shutterStops::get)) },
         )
     }
 }
 
+/** Position 0 is Auto (null to [onIndex]), position i the (i − 1)th stop. */
 @Composable
-private fun StopSlider(label: String, value: String, index: Int, count: Int, onIndex: (Int) -> Unit) {
+private fun StopSlider(label: String, value: String, auto: Boolean, index: Int, count: Int, onIndex: (Int?) -> Unit) {
     val haptics = LocalHapticFeedback.current
-    var last by remember { mutableIntStateOf(index) }
+    val position = if (auto) 0 else index.coerceAtLeast(0) + 1
+    var last by remember { mutableIntStateOf(position) }
+    last = position
+    val autoAlpha by animateFloatAsState(if (auto) 1f else 0f, YoinMotion.defaultEffectsSpec(), label = "autoAlpha")
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, softWrap = false, modifier = Modifier.width(60.dp))
-        Text(
-            value,
-            style = MaterialTheme.typography.titleSmall.withTabularFigures(),
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.widthIn(min = 56.dp),
-        )
+        Column(Modifier.widthIn(min = 56.dp)) {
+            Text(
+                stringResource(R.string.value_auto),
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+                softWrap = false,
+                modifier = Modifier.graphicsLayer { alpha = autoAlpha },
+            )
+            Text(
+                value,
+                style = MaterialTheme.typography.titleSmall.withTabularFigures(),
+                fontWeight = FontWeight.SemiBold,
+                color = if (auto) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                softWrap = false,
+            )
+        }
         Slider(
-            value = index.coerceAtLeast(0).toFloat(),
+            value = position.toFloat(),
             onValueChange = { v ->
-                val i = v.roundToInt().coerceIn(0, count - 1)
-                if (i != last) {
-                    last = i
-                    haptics.performHapticFeedback(HapticFeedbackType.SegmentTick)
-                    onIndex(i)
+                val p = v.roundToInt().coerceIn(0, count)
+                if (p != last) {
+                    last = p
+                    haptics.performHapticFeedback(if (p == 0) HapticFeedbackType.ToggleOn else HapticFeedbackType.SegmentTick)
+                    onIndex(if (p == 0) null else p - 1)
                 }
             },
-            valueRange = 0f..(count - 1).coerceAtLeast(1).toFloat(),
-            steps = (count - 2).coerceAtLeast(0),
-            enabled = count > 1,
+            valueRange = 0f..count.toFloat(),
+            enabled = count > 0,
             modifier = Modifier.weight(1f),
         )
     }
