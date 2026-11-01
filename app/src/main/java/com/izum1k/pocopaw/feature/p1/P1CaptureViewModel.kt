@@ -9,11 +9,9 @@ import com.izum1k.pocopaw.camera.CameraController
 import com.izum1k.pocopaw.camera.CameraInfo
 import com.izum1k.pocopaw.camera.CaptureSpec
 import com.izum1k.pocopaw.camera.ExposurePlan
-import com.izum1k.pocopaw.camera.LensFacing
 import com.izum1k.pocopaw.camera.LiveExposure
 import com.izum1k.pocopaw.camera.PreviewControls
 import com.izum1k.pocopaw.data.SceneMode
-import com.izum1k.pocopaw.feature.camera.CameraViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -21,27 +19,29 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
-data class P1Result(val folder: String, val iso: Int?, val exposureNs: Long?, val gyroRms: Double)
+data class P1Result(val dir: File, val frames: Int, val iso: Int?, val exposureNs: Long?, val gyroRms: Double)
 
-enum class P1Message { METERING, FAILED }
+enum class P1Message { METERING, FAILED, DISCARDED }
 
 data class P1CaptureUiState(
     val camera: CameraInfo? = null,
-    val variant: Int = 0,
-    /** Finished bursts per variant. */
-    val counts: List<Int> = emptyList(),
+    /** Kept bursts of this item. */
+    val count: Int = 0,
     val busy: Boolean = false,
     val written: Int = 0,
     val total: Int = 0,
+    /** A finished burst waiting to be kept or discarded. */
+    val pending: P1Result? = null,
     val last: P1Result? = null,
     val message: P1Message? = null,
-    val shutterTick: Int = 0,
 )
 
 /**
- * Bare capture for one CAPTURE_P1 item: auto preview for metering, then the variant's manual RAW
- * burst written to disk in probe's format. No pipeline runs.
+ * Fully automatic capture for one CAPTURE_P1 item: auto preview (AE, AF, AWB) for metering, then
+ * the item's manual RAW burst written to disk in probe's format and offered for review. No
+ * pipeline runs.
  */
 class P1CaptureViewModel(private val container: AppContainer, private val store: P1Store, val item: P1Item) : ViewModel() {
     private val controller = container.controller
@@ -61,7 +61,7 @@ class P1CaptureViewModel(private val container: AppContainer, private val store:
         viewModelScope.launch {
             val cam = withContext(Dispatchers.IO) { container.catalog.byId(item.cameraId) ?: container.catalog.default() }
             _ui.update { it.copy(camera = cam) }
-            refreshCounts()
+            refreshCount()
             maybeOpen()
         }
     }
@@ -99,35 +99,37 @@ class P1CaptureViewModel(private val container: AppContainer, private val store:
         viewModelScope.launch { controller.open(cam, t, PreviewControls()) }
     }
 
-    fun selectVariant(index: Int) {
-        if (_ui.value.busy) return
-        _ui.update { it.copy(variant = index.coerceIn(item.variants.indices)) }
-    }
-
-    fun tapFocus(x: Float, y: Float) {
-        val cam = _ui.value.camera ?: return
-        if (_ui.value.busy) return
-        val (u, v) = CameraViewModel.viewToSensor(x, y, cam.sensorOrientation, cam.facing == LensFacing.FRONT)
-        controller.focusAt(u, v)
-    }
-
     fun consumeMessage() = _ui.update { it.copy(message = null) }
+
+    fun keep() {
+        val r = _ui.value.pending ?: return
+        _ui.update { it.copy(pending = null, last = r) }
+        viewModelScope.launch { refreshCount() }
+    }
+
+    fun discard() {
+        val r = _ui.value.pending ?: return
+        _ui.update { it.copy(pending = null, message = P1Message.DISCARDED) }
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { r.dir.deleteRecursively() }
+            refreshCount()
+        }
+    }
 
     fun shutter() {
         val s = _ui.value
         val cam = s.camera ?: return
-        if (s.busy || cameraState.value !is CameraController.State.Previewing) return
-        val variant = item.variants[s.variant]
+        if (s.busy || s.pending != null || cameraState.value !is CameraController.State.Previewing) return
         val meter = live.value
         val rms = motion.rms()?.toDouble()
-        val plan = P1Exposure.plan(variant, meter, cam, rms ?: DEFAULT_GYRO_RMS)
+        val plan = P1Exposure.plan(item.variant, meter, cam, rms ?: DEFAULT_GYRO_RMS)
         if (plan == null) {
             _ui.update { it.copy(message = P1Message.METERING) }
             return
         }
-        _ui.update { it.copy(busy = true, written = 0, total = plan.size, message = null, shutterTick = it.shutterTick + 1) }
+        _ui.update { it.copy(busy = true, written = 0, total = plan.size, message = null) }
         viewModelScope.launch {
-            val dir = withContext(Dispatchers.IO) { store.newSet(item, variant) }
+            val dir = withContext(Dispatchers.IO) { store.newSet(item) }
             val writer = ProbeWriter(dir)
             try {
                 for (chunk in plan.chunked(CHUNK_FRAMES)) {
@@ -141,23 +143,22 @@ class P1CaptureViewModel(private val container: AppContainer, private val store:
                         burst.close()
                     }
                 }
-                withContext(Dispatchers.IO) { writer.finish(item, variant, cam, meter, rms ?: 0.0) }
-                _ui.update { it.copy(last = P1Result(dir.name, writer.firstIso, writer.firstExposureNs, rms ?: 0.0)) }
+                withContext(Dispatchers.IO) { writer.finish(item, cam, meter, rms ?: 0.0) }
+                val result = P1Result(dir, writer.written, writer.firstIso, writer.firstExposureNs, rms ?: 0.0)
+                _ui.update { it.copy(pending = result) }
             } catch (e: Exception) {
                 Log.w(TAG, "P1 capture ${dir.name} failed", e)
                 withContext(Dispatchers.IO) { dir.deleteRecursively() }
                 _ui.update { it.copy(message = P1Message.FAILED) }
             } finally {
-                controller.resetFocus()
                 _ui.update { it.copy(busy = false) }
-                refreshCounts()
             }
         }
     }
 
-    private suspend fun refreshCounts() {
-        val counts = withContext(Dispatchers.IO) { item.variants.map { store.count(item, it) } }
-        _ui.update { it.copy(counts = counts) }
+    private suspend fun refreshCount() {
+        val n = withContext(Dispatchers.IO) { store.sets(item).size }
+        _ui.update { it.copy(count = n) }
     }
 
     /** The viewfinder's night scene shares the meter. */

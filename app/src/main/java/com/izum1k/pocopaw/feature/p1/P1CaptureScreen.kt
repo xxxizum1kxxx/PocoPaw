@@ -2,9 +2,7 @@ package com.izum1k.pocopaw.feature.p1
 
 import android.graphics.SurfaceTexture
 import android.view.TextureView
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,28 +13,24 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
@@ -52,7 +46,6 @@ import com.izum1k.pocopaw.feature.camera.Busy
 import com.izum1k.pocopaw.feature.camera.CameraFormat
 import com.izum1k.pocopaw.feature.camera.ShutterButton
 import com.izum1k.pocopaw.ui.component.BackButton
-import com.izum1k.pocopaw.ui.component.ConnectedChoice
 import com.izum1k.pocopaw.ui.theme.YoinContainerShapes
 import kotlinx.coroutines.delay
 import java.util.Locale
@@ -97,36 +90,35 @@ fun P1CaptureScreen(name: String) {
         Column(Modifier.fillMaxSize().padding(padding)) {
             Preview(item, vm, ui, cameraState)
             Spacer(Modifier.weight(1f))
-            Column(
-                Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                if (item.variants.size > 1) {
-                    ConnectedChoice(
-                        options = item.variants.indices.toList(),
-                        selected = ui.variant,
-                        label = { variantLabel(item.variants[it]) },
-                        onSelect = vm::selectVariant,
-                        enabled = !ui.busy,
-                    )
-                }
+            Box(Modifier.fillMaxWidth().padding(bottom = 16.dp), contentAlignment = Alignment.Center) {
                 ShutterButton(busy = if (ui.busy) Busy.CAPTURING else Busy.IDLE, countdown = null, onClick = vm::shutter)
             }
         }
     }
+
+    ui.pending?.let { r ->
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text(stringResource(R.string.p1_keep_title)) },
+            text = { Text(resultText(r), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall) },
+            confirmButton = { TextButton(onClick = vm::keep) { Text(stringResource(R.string.p1_keep)) } },
+            dismissButton = { TextButton(onClick = vm::discard) { Text(stringResource(R.string.p1_discard)) } },
+        )
+    }
 }
 
 @Composable
+private fun resultText(r: P1Result): String = stringResource(
+    R.string.p1_result,
+    r.dir.name,
+    r.frames,
+    r.iso ?: 0,
+    r.exposureNs?.let(CameraFormat::shutter) ?: "–",
+    String.format(Locale.US, "%.3f", r.gyroRms),
+)
+
+@Composable
 private fun Preview(item: P1Item, vm: P1CaptureViewModel, ui: P1CaptureUiState, cameraState: CameraController.State) {
-    var tap by remember { mutableStateOf<Offset?>(null) }
-    LaunchedEffect(tap) {
-        if (tap != null) {
-            delay(FOCUS_RING_MS)
-            tap = null
-        }
-    }
-    val busy by rememberUpdatedState(ui.busy)
     Box(
         Modifier
             .fillMaxWidth()
@@ -136,22 +128,6 @@ private fun Preview(item: P1Item, vm: P1CaptureViewModel, ui: P1CaptureUiState, 
         contentAlignment = Alignment.Center,
     ) {
         PreviewTexture(vm::onSurfaceAvailable, vm::onSurfaceDestroyed, Modifier.fillMaxSize())
-        Box(
-            Modifier
-                .fillMaxSize()
-                .pointerInput(Unit) {
-                    detectTapGestures { p ->
-                        if (busy) return@detectTapGestures
-                        tap = p
-                        vm.tapFocus(p.x / size.width, p.y / size.height)
-                    }
-                },
-        )
-        tap?.let { p ->
-            Canvas(Modifier.fillMaxSize()) {
-                drawCircle(Color.White, radius = 36.dp.toPx(), center = p, style = Stroke(2.dp.toPx()))
-            }
-        }
         when (cameraState) {
             is CameraController.State.Opening -> LoadingIndicator()
             is CameraController.State.Error -> Button(onClick = vm::retry) { Text(stringResource(R.string.action_retry)) }
@@ -165,8 +141,6 @@ private fun Preview(item: P1Item, vm: P1CaptureViewModel, ui: P1CaptureUiState, 
 /** The press's requirements, over the top of the preview. */
 @Composable
 private fun Requirements(item: P1Item, ui: P1CaptureUiState, modifier: Modifier) {
-    val v = item.variants[ui.variant]
-    val required = ui.variant == 0
     Column(
         modifier
             .fillMaxWidth()
@@ -182,23 +156,13 @@ private fun Requirements(item: P1Item, ui: P1CaptureUiState, modifier: Modifier)
         Text(stringResource(item.group.note), style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.75f))
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
             Text(
-                stringResource(if (required) R.string.p1_required else R.string.p1_optional),
-                style = MaterialTheme.typography.labelSmall,
-                color = if (required) MaterialTheme.colorScheme.onPrimary else Color.White,
-                modifier = Modifier
-                    .clip(YoinContainerShapes.Card)
-                    .background(if (required) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.2f))
-                    .padding(horizontal = 6.dp, vertical = 2.dp),
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                if (item.variants.size > 1) variantLabel(v) + " · " + variantDescription(v) else variantDescription(v),
+                variantDescription(item.variant),
                 style = MaterialTheme.typography.labelLarge,
                 color = Color.White,
                 modifier = Modifier.weight(1f),
             )
             Text(
-                stringResource(R.string.p1_sets, ui.counts.getOrElse(ui.variant) { 0 }),
+                stringResource(R.string.p1_sets, ui.count),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(start = 8.dp),
@@ -228,18 +192,18 @@ private fun Status(ui: P1CaptureUiState, modifier: Modifier) {
                 )
             }
             ui.message != null -> Text(
-                stringResource(if (ui.message == P1Message.METERING) R.string.p1_metering else R.string.p1_failed),
-                color = MaterialTheme.colorScheme.error,
+                stringResource(
+                    when (ui.message) {
+                        P1Message.METERING -> R.string.p1_metering
+                        P1Message.FAILED -> R.string.p1_failed
+                        P1Message.DISCARDED -> R.string.p1_discarded
+                    },
+                ),
+                color = if (ui.message == P1Message.DISCARDED) Color.White else MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.labelLarge,
             )
             last != null -> Text(
-                stringResource(
-                    R.string.p1_result,
-                    last.folder,
-                    last.iso ?: 0,
-                    last.exposureNs?.let(CameraFormat::shutter) ?: "–",
-                    String.format(Locale.US, "%.3f", last.gyroRms),
-                ),
+                resultText(last),
                 style = MaterialTheme.typography.bodySmall,
                 fontFamily = FontFamily.Monospace,
                 color = Color.White,
@@ -271,5 +235,4 @@ private fun PreviewTexture(onAvailable: (SurfaceTexture) -> Unit, onDestroyed: (
 }
 
 private const val MESSAGE_MS = 3_000L
-private const val FOCUS_RING_MS = 1_000L
 private const val OVERLAY_ALPHA = 0.55f

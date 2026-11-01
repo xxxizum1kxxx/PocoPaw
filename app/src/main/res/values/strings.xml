@@ -144,12 +144,6 @@
     <string name="p1_lens_main">Main</string>
     <string name="p1_lens_uw">Ultra-wide</string>
     <string name="p1_sets">%d sets</string>
-    <string name="p1_required">Required</string>
-    <string name="p1_optional">Optional</string>
-    <string name="p1_v_normal">Normal</string>
-    <string name="p1_v_bracket">Bracket</string>
-    <string name="p1_v_night">Night</string>
-    <string name="p1_v_dark">Dark</string>
     <string name="p1_d_ev">%1$d frames, all at %2$s EV</string>
     <string name="p1_d_bracket">%1$d frames: %2$d at %3$s EV + %4$d at %5$s EV, cycled %6$s</string>
     <string name="p1_d_iso">%1$d frames at ISO %2$d, %3$s EV</string>
@@ -158,17 +152,21 @@
     <string name="p1_metering">Waiting for metering…</string>
     <string name="p1_writing">Writing %1$d / %2$d</string>
     <string name="p1_failed">Capture failed</string>
-    <string name="p1_result">%1$s · ISO %2$d · %3$s · gyro %4$s rad/s</string>
+    <string name="p1_result">%1$s\n%2$d frames · ISO %3$d · %4$s · gyro %5$s rad/s</string>
     <string name="p1_export">Export zip</string>
     <string name="p1_export_value">%1$d sets · %2$s</string>
     <string name="p1_exporting">Exporting %d%%</string>
     <string name="p1_export_done">Exported %s</string>
     <string name="p1_export_failed">Export failed</string>
     <string name="p1_export_pick">Items to export</string>
-    <string name="p1_clear">Delete captures</string>
     <string name="p1_clear_confirm">Delete every P1 capture on this phone?</string>
     <string name="p1_adb">Or: adb pull %s</string>
     <string name="p1_empty">Nothing captured yet</string>
+    <string name="p1_keep_title">Keep this set?</string>
+    <string name="p1_keep">Keep</string>
+    <string name="p1_discard">Discard</string>
+    <string name="p1_discarded">Set discarded</string>
+    <string name="p1_reset">Reset and delete all captures</string>
     <string name="action_delete">Delete</string>
     <string name="action_cancel">Cancel</string>
 </resources>

@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -89,12 +91,6 @@ fun P1CapturesScreen() {
                 if (progress != null) {
                     LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp))
                 }
-                SettingRow(
-                    title = stringResource(R.string.p1_clear),
-                    icon = YoinSymbols.Refresh,
-                    enabled = totalSets > 0 && progress == null,
-                    onClick = { confirmClear = true },
-                )
                 Text(
                     stringResource(R.string.p1_adb, vm.rootPath),
                     style = MaterialTheme.typography.bodySmall,
@@ -117,7 +113,7 @@ fun P1CapturesScreen() {
                         val scene = item.scene?.let { stringResource(it) + "\n" }.orEmpty()
                         SettingRow(
                             title = item.name,
-                            value = scene + lensLabel(item) + " · " + variantDescription(item.required),
+                            value = scene + lensLabel(item) + " · " + variantDescription(item.variant),
                             onClick = { nav.push(Route.P1Capture(item.name)) },
                             trailing = {
                                 Text(
@@ -130,6 +126,17 @@ fun P1CapturesScreen() {
                     }
                 }
             }
+        }
+        item(key = "reset") {
+            Button(
+                onClick = { confirmClear = true },
+                enabled = totalSets > 0 && state.exportProgress == null,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                ),
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp).heightIn(min = 56.dp),
+            ) { Text(stringResource(R.string.p1_reset)) }
         }
     }
 
@@ -175,6 +182,7 @@ fun P1CapturesScreen() {
     if (confirmClear) {
         AlertDialog(
             onDismissRequest = { confirmClear = false },
+            title = { Text(stringResource(R.string.p1_reset)) },
             text = { Text(stringResource(R.string.p1_clear_confirm)) },
             confirmButton = {
                 TextButton(onClick = {

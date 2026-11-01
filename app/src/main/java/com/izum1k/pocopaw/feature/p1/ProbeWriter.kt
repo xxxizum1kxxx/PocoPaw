@@ -13,7 +13,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** Where the captures live: `<root>/<item>/<item>[_<variant>]_<yyyyMMdd_HHmmss>/`, one burst per folder. */
+/** Where the captures live: `<root>/<item>/<item>_<yyyyMMdd_HHmmss>/`, one burst per folder. */
 class P1Store(context: Context) {
     val root: File = File(context.getExternalFilesDir(null), "p1")
 
@@ -23,12 +23,8 @@ class P1Store(context: Context) {
     fun sets(item: P1Item): List<File> =
         itemDir(item).listFiles()?.filter { File(it, META).isFile }?.sortedBy { it.name }.orEmpty()
 
-    fun count(item: P1Item, variant: P1Variant): Int =
-        if (item.variants.size == 1) sets(item).size else sets(item).count { it.name.startsWith("${item.name}_${variant.key}_") }
-
-    fun newSet(item: P1Item, variant: P1Variant, time: Date = Date()): File {
-        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(time)
-        val base = if (item.variants.size == 1) "${item.name}_$stamp" else "${item.name}_${variant.key}_$stamp"
+    fun newSet(item: P1Item, time: Date = Date()): File {
+        val base = "${item.name}_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(time)
         var dir = File(itemDir(item), base)
         var k = 2
         while (dir.exists()) dir = File(itemDir(item), "${base}_${k++}")
@@ -70,8 +66,9 @@ class ProbeWriter(val dir: File) {
         shots += Shot(frame.exposureNs, frame.iso, frame.timestampNs)
     }
 
-    fun finish(item: P1Item, variant: P1Variant, cam: CameraInfo, meter: LiveExposure, gyroRms: Double) {
+    fun finish(item: P1Item, cam: CameraInfo, meter: LiveExposure, gyroRms: Double) {
         val r0 = first ?: return
+        val variant = item.variant
         val cc = cam.characteristics
         val j = StringBuilder("{\n")
         fun kv(k: String, v: Any?) {
@@ -111,7 +108,6 @@ class ProbeWriter(val dir: File) {
         kv("gyroRms", String.format(Locale.US, "%.5f", gyroRms))
         variant.bracket?.let { kv("bracket", it.joinToString(", ", "[", "]")) }
         kv("item", "\"${item.name}\"")
-        kv("variant", "\"${variant.key}\"")
         j.append("  \"frames\": [")
         shots.forEachIndexed { i, s ->
             if (i > 0) j.append(",\n    ")

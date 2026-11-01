@@ -17,17 +17,6 @@ internal fun evText(ev: Double): String {
     }
 }
 
-/** Short name for the variant switch. */
-@Composable
-internal fun variantLabel(v: P1Variant): String = when {
-    v.mode == P1Mode.NIGHT -> stringResource(R.string.p1_v_night)
-    v.mode == P1Mode.DARK -> stringResource(R.string.p1_v_dark)
-    v.bracket != null -> stringResource(R.string.p1_v_bracket)
-    v.iso != null -> "ISO ${v.iso}"
-    abs(v.ev) < 1e-6 -> stringResource(R.string.p1_v_normal)
-    else -> "${evText(v.ev)} EV"
-}
-
 /** What one press captures, frame by frame. */
 @Composable
 internal fun variantDescription(v: P1Variant): String = when {

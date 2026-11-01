@@ -142,12 +142,6 @@
     <string name="p1_lens_main">主摄</string>
     <string name="p1_lens_uw">超广角</string>
     <string name="p1_sets">已采 %d 组</string>
-    <string name="p1_required">文档要求</string>
-    <string name="p1_optional">可选</string>
-    <string name="p1_v_normal">正常</string>
-    <string name="p1_v_bracket">包围</string>
-    <string name="p1_v_night">夜景</string>
-    <string name="p1_v_dark">暗场</string>
     <string name="p1_d_ev">%1$d 帧，全部 %2$s EV</string>
     <string name="p1_d_bracket">%1$d 帧：%2$d 张 %3$s EV + %4$d 张 %5$s EV，按 %6$s 循环</string>
     <string name="p1_d_iso">%1$d 帧，固定 ISO %2$d，%3$s EV</string>
@@ -156,17 +150,21 @@
     <string name="p1_metering">等待测光…</string>
     <string name="p1_writing">写入 %1$d / %2$d</string>
     <string name="p1_failed">采集失败</string>
-    <string name="p1_result">%1$s · ISO %2$d · %3$s · 陀螺仪 %4$s rad/s</string>
+    <string name="p1_result">%1$s\n%2$d 帧 · ISO %3$d · %4$s · 陀螺仪 %5$s rad/s</string>
     <string name="p1_export">导出 zip</string>
     <string name="p1_export_value">%1$d 组 · %2$s</string>
     <string name="p1_exporting">正在导出 %d%%</string>
     <string name="p1_export_done">已导出 %s</string>
     <string name="p1_export_failed">导出失败</string>
     <string name="p1_export_pick">导出哪些项目</string>
-    <string name="p1_clear">清空已采集</string>
     <string name="p1_clear_confirm">删除手机上所有 P1 采集数据？</string>
     <string name="p1_adb">或用 adb pull %s</string>
     <string name="p1_empty">还没有采集数据</string>
+    <string name="p1_keep_title">保留这组素材？</string>
+    <string name="p1_keep">保留</string>
+    <string name="p1_discard">丢弃</string>
+    <string name="p1_discarded">已丢弃这组</string>
+    <string name="p1_reset">重置并清除全部素材</string>
     <string name="action_delete">删除</string>
     <string name="action_cancel">取消</string>
 </resources>
