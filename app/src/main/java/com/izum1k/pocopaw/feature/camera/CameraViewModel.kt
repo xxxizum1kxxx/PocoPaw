@@ -254,8 +254,8 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
 
     /**
      * A tap at normalised texture coordinates (portrait, as displayed). With nothing locked it locks
-     * AF and AE at that point for [FOCUS_HOLD_MS]; a tap on that lock's ring holds it until a photo is
-     * taken; a tap anywhere else releases it.
+     * AF and AE at that point for [FOCUS_HOLD_MS], with EV and white balance back at 0; a tap on that
+     * lock's ring holds it until a photo is taken; a tap anywhere else releases it.
      */
     fun tapFocus(x: Float, y: Float, onRing: Boolean) {
         val s = _ui.value
@@ -270,6 +270,10 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
         }
         val cam = s.current ?: return
         val (u, v) = viewToSensor(x, y, cam.sensorOrientation, cam.facing == LensFacing.FRONT)
+        if (s.evIndex != 0 || s.wbShift != 0) {
+            _ui.update { it.copy(evIndex = 0, wbShift = 0) }
+            pushControls()
+        }
         controller.focusAt(u, v)
         _ui.update { it.copy(focus = FocusPoint(x, y, ++focusSeq), focusHeld = false) }
         focusResetJob?.cancel()

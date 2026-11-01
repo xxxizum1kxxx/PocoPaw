@@ -507,12 +507,23 @@ fun AfChip(live: LiveExposure, rotation: Float, modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun EvChip(label: String, rotation: Float, modifier: Modifier = Modifier, tag: String = "EV") {
+fun EvChip(label: String, rotation: Float, modifier: Modifier = Modifier, tag: String = "EV", onClick: (() -> Unit)? = null) {
+    val haptics = LocalHapticFeedback.current
     Row(
         modifier
             .graphicsLayer { rotationZ = rotation }
             .clip(PillShape)
             .background(controlContainer())
+            .then(
+                if (onClick == null) {
+                    Modifier
+                } else {
+                    Modifier.clickable {
+                        haptics.performHapticFeedback(HapticFeedbackType.SegmentTick)
+                        onClick()
+                    }
+                },
+            )
             .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {

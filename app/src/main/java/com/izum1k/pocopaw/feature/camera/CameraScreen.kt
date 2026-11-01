@@ -192,8 +192,8 @@ private fun CameraContent(vm: CameraViewModel) {
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     PillReveal(settings.developerInfo && live.focusDioptres != null) { AfChip(live, rotation) }
-                    PillReveal(evLabel != null && ui.focus == null) { EvChip(evChip, rotation) }
-                    PillReveal(ui.wbShift != 0) { EvChip(wbChip, rotation, tag = "WB") }
+                    PillReveal(evLabel != null && ui.focus == null) { EvChip(evChip, rotation) { vm.setEv(0) } }
+                    PillReveal(ui.wbShift != 0) { EvChip(wbChip, rotation, tag = "WB") { vm.setWb(0) } }
                 }
             },
         )
