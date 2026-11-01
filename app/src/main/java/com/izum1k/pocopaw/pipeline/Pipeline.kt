@@ -28,6 +28,9 @@ object PipelineKeys {
 
     /** The finished full-resolution image in the sensor's orientation. */
     val Rendered = PipelineKey<Bitmap>("rendered")
+
+    /** The same image as an Ultra HDR JPEG file (SDR base + gain map), when the run asked for it. */
+    val UltraHdrJpeg = PipelineKey<ByteArray>("ultraHdrJpeg")
 }
 
 /** Working state of one pipeline run: the burst, intermediate results, and what was written. */
@@ -126,12 +129,19 @@ open class StagedPipeline(
     }
 }
 
+/** What the burst is captured for: one exposure (auto), an exposure bracket, or long night frames. */
+enum class BurstScene { AUTO, BRACKET, NIGHT }
+
 /** How a pipeline was asked to run: frames per press and which files to write. */
 data class PipelineOptions(
     val frames: Int = HdrPlusPipeline.DEFAULT_FRAMES,
     val writeJpeg: Boolean = true,
     val writeDng: Boolean = false,
     val look: BurstLook = BurstLook(),
+    val scene: BurstScene = BurstScene.AUTO,
+    val ultraHdr: Boolean = false,
+    /** Lateral CA of the capturing lens, applied by the kernel-regression merge. */
+    val lca: LensLca? = null,
 )
 
 /** The single-frame pipeline: quick look, then the reference frame written as DNG unchanged. */
@@ -147,6 +157,9 @@ class DngPassthroughPipeline : StagedPipeline(ID, listOf(QuickLookStage(), DngWr
  * handheld super-resolution kernel-regression merge at 1x (true), then LSC / WB, CCM, chroma
  * denoise, synthetic-exposure fusion, tone curve, sharpening and JPEG. With [PipelineOptions.writeDng]
  * the reference frame is also saved as DNG, before the merge so the RAW is safe early.
+ * [BurstScene.BRACKET] captures two short frames per long one (merged on the short frame's scale);
+ * [BurstScene.NIGHT] meters a motion-limited shutter, merges in the frequency domain (classic path)
+ * and finishes with the night look.
  */
 class HdrPlusPipeline(
     id: String,
@@ -158,8 +171,12 @@ class HdrPlusPipeline(
 
     override fun exposureFor(requested: ExposurePlan, live: LiveExposure, camera: CameraInfo): ExposurePlan =
         when (requested) {
-            is ExposurePlan.Auto -> if (options.frames > 1) BurstExposure.plan(live, camera, requested.evIndex) ?: requested else requested
-            is ExposurePlan.Manual -> requested
+            is ExposurePlan.Auto -> if (options.frames <= 1) requested else when (options.scene) {
+                BurstScene.AUTO -> BurstExposure.plan(live, camera, requested.evIndex)
+                BurstScene.BRACKET -> BurstExposure.bracket(live, camera, requested.evIndex)
+                BurstScene.NIGHT -> BurstExposure.night(live, camera, requested.evIndex)
+            } ?: requested
+            is ExposurePlan.Manual, is ExposurePlan.PerFrame -> requested
         }
 
     companion object {
@@ -172,9 +189,10 @@ class HdrPlusPipeline(
                 add(QuickLookStage())
                 add(DngWriteStage())
             }
+            val night = o.scene == BurstScene.NIGHT
             add(AlignStage())
-            add(MergeStage(kernelRegression))
-            add(FinishStage(o.look))
+            add(MergeStage(MergeOptions(kernelRegression = kernelRegression, frequencyMerge = night, lca = o.lca)))
+            add(FinishStage(if (night) o.look.copy(style = "night") else o.look, o.ultraHdr))
             if (o.writeJpeg) add(JpegWriteStage())
         }
     }

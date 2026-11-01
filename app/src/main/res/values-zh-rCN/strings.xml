@@ -58,6 +58,15 @@
     <string name="pipeline_hdrplus_kr">核回归合并（细节更好，较慢）</string>
     <string name="settings_burst_frames">连拍帧数</string>
     <string name="burst_frames_value">%1$d 帧</string>
+    <string name="settings_scene">场景</string>
+    <string name="scene_auto">自动</string>
+    <string name="scene_bracket">包围曝光 HDR（逆光）</string>
+    <string name="scene_night">夜景（长曝光帧，按手抖测光）</string>
+    <string name="settings_look">风格</string>
+    <string name="look_standard">标准</string>
+    <string name="look_pixel">Pixel 风格</string>
+    <string name="settings_ultra_hdr">Ultra HDR</string>
+    <string name="settings_ultra_hdr_value">带增益图的 JPEG，HDR 屏上高光更亮</string>
     <string name="dev_processed">%1$d 帧 · %2$.1f 秒</string>
 
     <string name="grid_thirds">三分线</string>

@@ -26,22 +26,29 @@ class AlignStage : PipelineStage {
     }
 }
 
-/** Robust merge of the aligned frames: spatial-domain tiles on the Bayer mosaic, or kernel regression straight to RGB. */
-class MergeStage(private val kernelRegression: Boolean) : PipelineStage {
-    override val name = if (kernelRegression) "merge_kr" else "merge"
+/**
+ * Robust merge of the aligned frames: spatial- or frequency-domain tiles on the Bayer mosaic, or
+ * kernel regression straight to RGB.
+ */
+class MergeStage(private val options: MergeOptions) : PipelineStage {
+    override val name = if (options.kernelRegression) "merge_kr" else "merge"
 
     override suspend fun run(ctx: PipelineContext) {
-        ctx.require(PipelineKeys.Native).merge(kernelRegression)
+        ctx.require(PipelineKeys.Native).merge(options)
     }
 }
 
-/** LSC / WB, demosaic (classic merge only), CCM, chroma denoise, local tone mapping, look and sharpening; then the bitmap. */
-class FinishStage(private val look: BurstLook) : PipelineStage {
+/**
+ * LSC / WB, demosaic (classic merge only), CCM, chroma denoise, local tone mapping, look and
+ * sharpening; then the bitmap, and with [ultraHdr] the Ultra HDR JPEG as well.
+ */
+class FinishStage(private val look: BurstLook, private val ultraHdr: Boolean = false) : PipelineStage {
     override val name = "finish"
 
     override suspend fun run(ctx: PipelineContext) {
         val native = ctx.require(PipelineKeys.Native)
-        native.finish(look)
+        native.finish(look, keepHdr = ultraHdr)
+        if (ultraHdr) native.encodeUltraHdr()?.let { ctx[PipelineKeys.UltraHdrJpeg] = it }
         val rendered = native.render()
         Log.i(TAG, native.summary())
         native.close()
@@ -64,9 +71,10 @@ class FinishStage(private val look: BurstLook) : PipelineStage {
 }
 
 /**
- * Encodes the rendered image with the platform's JPEG encoder (libjpeg-turbo) and tags it with
- * orientation and exposure. ExifInterface can only rewrite a seekable file, so the JPEG goes
- * through a temporary file before the sink.
+ * Encodes the rendered image with the platform's JPEG encoder (libjpeg-turbo), or takes the Ultra
+ * HDR file the finish stage made, and tags it with orientation and exposure. ExifInterface can only
+ * rewrite a seekable file, so the JPEG goes through a temporary file before the sink; it rewrites
+ * only the primary image's EXIF segment, the gain map after it is copied unchanged.
  */
 class JpegWriteStage(private val quality: Int = 95) : PipelineStage {
     override val name = "jpeg"
@@ -76,7 +84,9 @@ class JpegWriteStage(private val quality: Int = 95) : PipelineStage {
         val meta = ctx.burst.metadata
         val tmp = File.createTempFile("pocopaw", ".jpg")
         try {
-            tmp.outputStream().buffered().use { rendered.compress(Bitmap.CompressFormat.JPEG, quality, it) }
+            val ultraHdr = ctx[PipelineKeys.UltraHdrJpeg]
+            if (ultraHdr != null) tmp.writeBytes(ultraHdr)
+            else tmp.outputStream().buffered().use { rendered.compress(Bitmap.CompressFormat.JPEG, quality, it) }
             writeExif(tmp, ctx)
             val saved = ctx.sink.write(OutputKind.JPEG, MediaStoreWriter.baseName(meta.captureTimeMillis), meta.captureTimeMillis) { out ->
                 tmp.inputStream().use { it.copyTo(out, BUFFER) }

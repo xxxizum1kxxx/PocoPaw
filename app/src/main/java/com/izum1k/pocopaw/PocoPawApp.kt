@@ -2,9 +2,11 @@ package com.izum1k.pocopaw
 
 import android.app.Application
 import android.content.Context
+import android.hardware.SensorManager
 import android.hardware.camera2.CameraManager
 import com.izum1k.pocopaw.camera.CameraCatalog
 import com.izum1k.pocopaw.camera.CameraController
+import com.izum1k.pocopaw.camera.MotionMeter
 import com.izum1k.pocopaw.data.SettingsRepository
 import com.izum1k.pocopaw.pipeline.MediaStoreWriter
 import kotlinx.coroutines.CoroutineScope
@@ -22,6 +24,7 @@ class AppContainer(context: Context) {
     private val cameraManager = context.getSystemService(CameraManager::class.java)
     val catalog = CameraCatalog(cameraManager)
     val controller = CameraController(cameraManager)
+    val motion = MotionMeter(context.getSystemService(SensorManager::class.java))
     val output = MediaStoreWriter(context)
 }
 

@@ -13,12 +13,15 @@
 | 本文内容 | PocoPaw 状态 |
 |---|---|
 | 核回归合并 1x（LK 细化、GAT 结构张量、各向异性核、鲁棒权重） | **[App 已实现]**：设置“处理方式 → 核回归合并”，管线 id `hdrplus_kr`。主摄 8 帧 6.4 s，超广角 8 帧 3.4 s |
-| 核回归 2x 超分 | **[仅原型]**：App 固定 1x 输出 |
-| 相位覆盖率指标 | **[仅原型]**：App 内仍会计算（`KrStats`），但不参与决策，也不显示 |
+| 核回归 2x 超分 | **[仅原型]**：App 固定 1x 输出（2x 浮点 RGB 约 600 MB） |
+| 相位覆盖率指标 → 亚像素多样性、自动 2x | **[仅原型]**：P1 改为 `subpixel_diversity`，原型 `--scale auto` 使用 |
+| 核回归 NEON、LCA 校正 | **[App 已实现]**：超广角自动校正 LCA（`LensCalibration`） |
 | 噪声自适应色度降噪 | **[App 已实现]**：两种处理方式都使用 |
 | `--save-merged` 前后端拆分 | **[仅原型]** |
-| PMRID 学习式降噪 | **[仅原型]**：需要 ONNX Runtime，本版不接入 |
-| C5 / FFCC 白平衡、HDRnet 色调、libultrahdr、RAFT 等候选 | **[未实现]** |
+| PMRID 学习式降噪、本机微调 | **[仅原型]**：需要 ONNX Runtime，本版不接入；微调结果见 [`P1_REPORT.md`](P1_REPORT.md) 第 12 节 |
+| C5 / FFCC 白平衡 | **[仅原型]**：见 P1 报告第 11 节 |
+| libultrahdr 增益图 | **[App 已实现]**：设置“Ultra HDR” |
+| HDRnet 色调、RAFT 等候选 | **[未实现]** |
 
 ---
 
@@ -248,7 +251,8 @@ PocoPaw 中这条推荐管线的落地情况：
 
 - 分块匹配、LK 细化、噪声自标定、核回归合并 1x、镜头阴影补偿 / CCM / 自适应色度降噪、Mertens 色调、锐化、JPEG 输出：**[App 已实现]**。
 - 2x 输出、PMRID 门控：**[仅原型]**。
-- SEA-RAFT、C5、HDRnet、libultrahdr 增益图：**[未实现]**。
+- libultrahdr 增益图、NEON、LCA：**[App 已实现]**。C5、FFCC、PMRID 微调：**[仅原型]**（P1）。
+- SEA-RAFT、HDRnet：**[未实现]**。
 
 预计耗时（手机 CPU，暂无 GPU/NPU）：
 
@@ -265,11 +269,11 @@ PocoPaw 实测（不含 PMRID，含 DNG 与 JPEG 写出）：超广角 8 帧核�
 
 1. **噪声标定（P0）**：按 ISO 采集暗场和平场，拟合 k(ISO)、σ(ISO)，替代每次的帧间估计，单帧时也能用。 PocoPaw：**[未实现]**。
 2. **PMRID 门控与混合（P0）**：按 k_eff 区间设定混合曲线；保留负值、改为在 K-Sigma 域截断，修正偏粉的问题。 PocoPaw：**[未实现]**。
-3. **在本机传感器上微调 PMRID（P1）**：用三脚架 64 帧平均作为干净真值，配合标定好的噪声模型合成训练对。 PocoPaw：**[未实现]**。
-4. **改进相位覆盖率指标（P1）**：按 LK 置信度加权，并与 LK 噪声误差比较，用来自动选择 1x 或 2x。 PocoPaw：**[未实现]**。
-5. **核回归 NEON 向量化（P1）**：目标是把超广角 1x 合并压到 1 s 以内。 PocoPaw：**[未实现]**。
-6. **横向色差（LCA）校正（P1）**：在核回归累加时对 R、B 通道加按半径变化的位移，2x 输出边缘的彩边会更少。 PocoPaw：**[未实现]**。
-7. **C5 白平衡（P1）**：直接用预训练权重，与 HAL AWB 对比。 PocoPaw：**[未实现]**。
+3. **在本机传感器上微调 PMRID（P1）**：用三脚架 64 帧平均作为干净真值，配合标定好的噪声模型合成训练对。 PocoPaw：**[仅原型]**（`tools/pmrid_finetune.py`，Cube++ 合成训练对；三脚架真值待拍）。
+4. **改进相位覆盖率指标（P1）**：按 LK 置信度加权，并与 LK 噪声误差比较，用来自动选择 1x 或 2x。 PocoPaw：**[仅原型]**（`subpixel_diversity`，App 不做 2x）。
+5. **核回归 NEON 向量化（P1）**：目标是把超广角 1x 合并压到 1 s 以内。 PocoPaw：**[App 已实现]**（超广角合并 683 ms）。
+6. **横向色差（LCA）校正（P1）**：在核回归累加时对 R、B 通道加按半径变化的位移，2x 输出边缘的彩边会更少。 PocoPaw：**[App 已实现]**（超广角）。
+7. **C5 白平衡（P1）**：直接用预训练权重，与 HAL AWB 对比。 PocoPaw：**[仅原型]**（手机 ONNX Runtime 推理 5 ms）。
 8. **学习式色调（P2）**：用 Pixel 同场景成片训练 HDRnet，实现“Pixel 风格”色调。 PocoPaw：**[未实现]**。
 9. **加速（P2）**：PMRID 改用 int8 量化或 QNN/NNAPI；尝试尺度等变的超分网络，作为 2x 之后的细节增强（JSR 思路的延伸）。 PocoPaw：**[未实现]**。
 

@@ -22,7 +22,11 @@ import com.izum1k.pocopaw.data.FlashMode
 import com.izum1k.pocopaw.data.OutputFormat
 import com.izum1k.pocopaw.data.Processing
 import com.izum1k.pocopaw.data.TimerMode
+import com.izum1k.pocopaw.data.SceneMode
+import com.izum1k.pocopaw.pipeline.BurstLook
+import com.izum1k.pocopaw.pipeline.BurstScene
 import com.izum1k.pocopaw.pipeline.DngPassthroughPipeline
+import com.izum1k.pocopaw.pipeline.LensCalibration
 import com.izum1k.pocopaw.pipeline.HdrPlusPipeline
 import com.izum1k.pocopaw.pipeline.ImagePipeline
 import com.izum1k.pocopaw.pipeline.PipelineOptions
@@ -76,6 +80,7 @@ data class CameraUiState(
 
 class CameraViewModel(private val container: AppContainer) : ViewModel() {
     private val controller = container.controller
+    private val motion = container.motion
     private val settingsRepo = container.settings
 
     val settings: StateFlow<CameraSettings> = settingsRepo.settings
@@ -97,6 +102,9 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
 
     init {
         val catalog = container.catalog
+        viewModelScope.launch {
+            settings.collect { if (it.scene == SceneMode.NIGHT) motion.start() else motion.stop() }
+        }
         viewModelScope.launch {
             val cameras = withContext(Dispatchers.IO) { catalog.cameras }
             val initial = catalog.byId(settings.value.lastCameraId) ?: catalog.default()
@@ -265,7 +273,7 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
         if (settings.value.shutterSound) sound.play(MediaActionSound.SHUTTER_CLICK)
         val spec = CaptureSpec(
             frameCount = pipeline.framesPerCapture,
-            exposure = pipeline.exposureFor(exposurePlan(s), live.value, cam),
+            exposure = pipeline.exposureFor(exposurePlan(s), live.value.copy(motionRadPerSec = motion.rms()), cam),
             flash = settings.value.flash,
             deviceRotation = deviceRotation,
             zoomRatio = s.zoom,
@@ -313,6 +321,14 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
                 frames = if (flash) 1 else cfg.burstFrames.count,
                 writeJpeg = true,
                 writeDng = cfg.output == OutputFormat.DNG_JPEG,
+                look = BurstLook(style = cfg.look.preset),
+                scene = if (flash) BurstScene.AUTO else when (cfg.scene) {
+                    SceneMode.AUTO -> BurstScene.AUTO
+                    SceneMode.BRACKET -> BurstScene.BRACKET
+                    SceneMode.NIGHT -> BurstScene.NIGHT
+                },
+                ultraHdr = cfg.ultraHdr,
+                lca = LensCalibration.lca(cam.id),
             ),
         )
     }
@@ -336,6 +352,7 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
     }
 
     override fun onCleared() {
+        motion.stop()
         sound.release()
     }
 

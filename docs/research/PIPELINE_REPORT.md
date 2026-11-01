@@ -26,6 +26,7 @@
   - 连拍帧数：4 / 8 / 16，默认 8。
 - 曝光规划 `BurstExposure` 已实现：用预览 AE 的“曝光 × ISO”，减 1 EV，优先最低 ISO，快门上限有 OIS 时 66 ms、无 OIS 时 33 ms。实拍中，预览 ISO 876 / 10 ms 被换算为连拍 ISO 67 / 66 ms。
 - App 内实测见第 7.4 节。各模块的状态标在第 4 节和第 8 节的表格里。
+- **P1 更新（2026-11-01）**：第 8 节 P1 表的条目都已实现，结果与取舍见 [`P1_REPORT.md`](P1_REPORT.md)。App 新增设置“场景”（自动 / 包围曝光 HDR / 夜景）、“风格”（标准 / Pixel 风格）和“Ultra HDR”；经典路径默认 RCD 去马赛克，两条合并路径都加了运动掩膜膨胀。原型与 App 的算法源文件现在逐字节相同。
 
 ## 0. 结论摘要
 
@@ -163,19 +164,19 @@ flowchart LR
 
 | 阶段 | 原型采用 | 可替换 / 进阶方案 | 开源参考 | PocoPaw |
 |---|---|---|---|---|
-| 曝光规划 | 测光后按“曝光×ISO 守恒”换算，最长 66 ms，`ev` 控制欠曝档数 | Night Sight 式运动测光；包围曝光（短参考 + 长帧） | — | **[App 已实现]** `BurstExposure`（−1 EV，OIS 66 ms / 无 OIS 33 ms）；运动测光、包围曝光 **[未实现]** |
+| 曝光规划 | 测光后按“曝光×ISO 守恒”换算，最长 66 ms，`ev` 控制欠曝档数 | Night Sight 式运动测光；包围曝光（短参考 + 长帧） | — | **[App 已实现]** `BurstExposure`：自动（−1 EV，OIS 66 ms / 无 OIS 33 ms）、包围曝光（2 帧 −2 EV + 1 帧 0 EV）、夜景运动测光（陀螺仪，33–333 ms） |
 | 参考帧选择 | 固定第 0 帧（`-r` 可指定） | 前 3 帧按梯度能量选最锐利 | HDR+ 论文 | 固定第 0 帧；最锐帧选择 **[未实现]** |
 | 对齐 | HDR+ 4 级金字塔块匹配（16/16/16/8，半径 1/4/4/4，L1/L2） | 亚像素精修（二次曲面拟合）；Lucas-Kanade 精修（超分需要） | [hdrplus-python (IPOL)](https://www.ipol.im/pub/art/2021/336/)、[timothybrooks/hdr-plus](https://github.com/timothybrooks/hdr-plus)、[hdr-plus-swift](https://github.com/martin-marek/hdr-plus-swift) | **[App 已实现]**；LK 亚像素精修仅在核回归模式中使用 |
 | 噪声模型 | 从“参考帧 − 对齐帧”残差自标定 `var = a·S + b` | 离线按 ISO 标定查表（补上缺失的 `noiseProfile`） | — | **[App 已实现]**（自标定）；按 ISO 查表 **[未实现]** |
-| 合并 | 空间域鲁棒合并：重叠块 + 升余弦窗，按 3×3 局部均值偏差（z 分数）给权重 | 频域 Wiener 合并；核回归超分合并 | hdr-plus-swift（两种合并都有）、[Handheld Multi-Frame SR](https://github.com/Jamy-L/Handheld-Multi-Frame-Super-Resolution)（[IPOL 2023](https://www.ipol.im/pub/art/2023/460/)） | 空间域合并、核回归 1x **[App 已实现]**；核回归 2x **[仅原型]**；频域合并 **[未实现]** |
-| 镜头阴影 / WB | HAL 提供的 13×17 阴影图双线性插值，亮度部分补偿；HAL AWB 增益 | FFCC 学习式 AWB | [google/ffcc](https://github.com/google/ffcc) | **[App 已实现]**（HAL 阴影图 + HAL AWB）；FFCC **[未实现]** |
-| 去马赛克 | Malvar-He-Cutler 5×5 线性滤波 | RCD、AMaZE（细节更好，慢 3 到 10 倍） | [RCD](https://github.com/LuisSR/RCD-Demosaicing)、[librtprocess](https://github.com/CarVac/librtprocess) | MHC **[App 已实现]**；RCD / AMaZE **[未实现]**（GPL，不集成） |
+| 合并 | 空间域鲁棒合并：重叠块 + 升余弦窗，按 3×3 局部均值偏差（z 分数）给权重 | 频域 Wiener 合并；核回归超分合并 | hdr-plus-swift（两种合并都有）、[Handheld Multi-Frame SR](https://github.com/Jamy-L/Handheld-Multi-Frame-Super-Resolution)（[IPOL 2023](https://www.ipol.im/pub/art/2023/460/)） | 空间域合并（含包围曝光加权、运动掩膜膨胀）、核回归 1x、频域合并（夜景）**[App 已实现]**；核回归 2x **[仅原型]** |
+| 镜头阴影 / WB | HAL 提供的 13×17 阴影图双线性插值，亮度部分补偿；HAL AWB 增益 | FFCC 学习式 AWB | [google/ffcc](https://github.com/google/ffcc) | **[App 已实现]**（HAL 阴影图 + HAL AWB）；FFCC、C5 **[仅原型]**（见 P1 报告第 11 节） |
+| 去马赛克 | Malvar-He-Cutler 5×5 线性滤波 | RCD、AMaZE（细节更好，慢 3 到 10 倍） | [RCD](https://github.com/LuisSR/RCD-Demosaicing)、[librtprocess](https://github.com/CarVac/librtprocess) | MHC、RCD（默认）、AMaZE **[App 已实现]**（librtprocess，GPL-3，与本仓库一致；AMaZE 只在原生接口中可选） |
 | 色彩 | HAL 给的 CCM（相机 RGB → 线性 sRGB） | DNG 双光源插值（ColorMatrix1/2 + ForwardMatrix） | Adobe DNG 规范 | HAL CCM **[App 已实现]**；DNG 双光源插值 **[未实现]** |
 | 色度降噪 | YCbCr，Cb/Cr 下采样 4 倍后高斯模糊再上采样 | 按噪声水平自适应强度；引导滤波；非局部均值 | — | **[App 已实现]**，已按可见噪声自适应 |
 | 局部色调映射 | 两档合成曝光（长曝光按对数平均亮度定增益，短曝光按 99.5 百分位定增益）+ Mertens 权重 + 拉普拉斯金字塔融合 | 局部拉普拉斯滤波；低分辨率计算 + 双边网格上采样（HDRnet 思路） | Mertens 2007；[Fast Local Laplacian (Aubry 2014)](https://people.csail.mit.edu/sparis/publi/2014/tog/Aubry_14-Fast_Local_Laplacian_Filters.pdf) | **[App 已实现]**（全分辨率）；低分辨率 + 引导上采样 **[未实现]** |
-| 全局外观 | 高光去饱和、sRGB、smoothstep S 曲线、自然饱和度（vibrance） | 按色相调整；3D LUT | — | **[App 已实现]**；按色相调整、3D LUT **[未实现]** |
+| 全局外观 | 高光去饱和、sRGB、smoothstep S 曲线、自然饱和度（vibrance） | 按色相调整；3D LUT | — | **[App 已实现]**，含 Pixel 风格预设（按色相调整天空、肤色）；3D LUT **[未实现]** |
 | 锐化 | 亮度 USM，带噪声阈值（coring） | 多尺度细节增强 | — | **[App 已实现]** |
-| 输出 | `stb_image_write` JPEG q95（带抖动） | libjpeg-turbo（SIMD 快 5 到 10 倍）；Ultra HDR 增益图；合成 DNG | [libjpeg-turbo](https://github.com/libjpeg-turbo/libjpeg-turbo)、[libultrahdr](https://github.com/google/libultrahdr) | **[App 已实现]** 系统 JPEG 编码（libjpeg-turbo）q95 + EXIF；Ultra HDR、合成 DNG **[未实现]** |
+| 输出 | `stb_image_write` JPEG q95（带抖动） | libjpeg-turbo（SIMD 快 5 到 10 倍）；Ultra HDR 增益图；合成 DNG | [libjpeg-turbo](https://github.com/libjpeg-turbo/libjpeg-turbo)、[libultrahdr](https://github.com/google/libultrahdr) | **[App 已实现]** 系统 JPEG 编码（libjpeg-turbo）q95 + EXIF；Ultra HDR 增益图 **[App 已实现]**（libultrahdr）；合成 DNG **[未实现]** |
 
 ---
 
@@ -346,14 +347,14 @@ flowchart LR
 
 | 项目 | 说明 | PocoPaw |
 |---|---|---|
-| 手持与运动测试 | 当前只验证了静态场景。需要手持、运动物体场景来调鲁棒性阈值 `--robust`，必要时加入运动掩膜扩张。 | **[未实现]**（App 已手持实拍，但鲁棒性阈值未专门调） |
-| 包围曝光 | 短曝光做参考 + 长曝光补暗部（HDR+ with Bracketing）。本机支持逐帧改曝光，空间域合并已能处理不同曝光（需要按曝光比归一化）。 | **[未实现]** |
-| 夜景模式 | 运动测光（取景时估计抖动）决定单帧曝光和帧数；主摄有 OIS，可尝试 1/4 s 以上单帧；夜景专用色调曲线。 | **[未实现]** |
-| 频域合并 | 作为可选路径与空间域合并对比（hdr-plus-swift 两种都有）。 | **[未实现]** |
-| 学习式 AWB | 移植 FFCC（模型很小，CPU 毫秒级），替代 HAL AWB。 | **[未实现]** |
-| 更好的去马赛克 | RCD（便宜）或 AMaZE（贵），改善细纹理的伪色。 | **[未实现]** |
-| Ultra HDR 输出 | 用 libultrahdr 把“短曝光档”与 SDR 结果生成增益图。 | **[未实现]** |
-| Pixel 风格调参 | 目标亮度提高到约 0.22，压缩比 4 到 8，局部对比与锐化加强，略偏冷的白平衡偏移，按色相微调（天空蓝、肤色）。 | **[未实现]**（App 使用原型默认参数） |
+| 手持与运动测试 | 当前只验证了静态场景。需要手持、运动物体场景来调鲁棒性阈值 `--robust`，必要时加入运动掩膜扩张。 | **[App 已实现]**：合成运动测试后保持阈值 2 / 4.5，两条路径默认膨胀 1；真实运动素材待拍 |
+| 包围曝光 | 短曝光做参考 + 长曝光补暗部（HDR+ with Bracketing）。本机支持逐帧改曝光，空间域合并已能处理不同曝光（需要按曝光比归一化）。 | **[App 已实现]**：设置“场景 → 包围曝光 HDR”；真逆光素材待拍 |
+| 夜景模式 | 运动测光（取景时估计抖动）决定单帧曝光和帧数；主摄有 OIS，可尝试 1/4 s 以上单帧；夜景专用色调曲线。 | **[App 已实现]**：设置“场景 → 夜景”（运动测光 + 频域合并 + 夜景风格）；真实夜景素材待拍 |
+| 频域合并 | 作为可选路径与空间域合并对比（hdr-plus-swift 两种都有）。 | **[App 已实现]**：夜景模式使用 |
+| 学习式 AWB | 移植 FFCC（模型很小，CPU 毫秒级），替代 HAL AWB。 | **[仅原型]**：FFCC 与 C5，见 P1 报告第 11 节 |
+| 更好的去马赛克 | RCD（便宜）或 AMaZE（贵），改善细纹理的伪色。 | **[App 已实现]**：默认 RCD |
+| Ultra HDR 输出 | 用 libultrahdr 把“短曝光档”与 SDR 结果生成增益图。 | **[App 已实现]**：设置“Ultra HDR” |
+| Pixel 风格调参 | 目标亮度提高到约 0.22，压缩比 4 到 8，局部对比与锐化加强，略偏冷的白平衡偏移，按色相微调（天空蓝、肤色）。 | **[App 已实现]**：设置“风格 → Pixel 风格” |
 
 ### P2：进阶
 

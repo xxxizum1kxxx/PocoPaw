@@ -3,25 +3,82 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
 extern int g_threads;
 
+// Persistent workers: spawning threads for every parallel region cost several ms per stage on the
+// phone. The caller participates; nested regions run inline.
+class ThreadPool {
+public:
+    static ThreadPool& get() { static ThreadPool p; return p; }
+    ~ThreadPool() { resize(0); }
+
+    void run(int n, int nt, const std::function<void(int)>& f) {
+        if (inside_ || nt <= 1) { for (int i = 0; i < n; i++) f(i); return; }
+        std::lock_guard<std::mutex> call(callMu_);
+        resize(nt - 1);
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            job_ = &f; n_ = n; next_ = 0; busy_ = (int)workers_.size(); gen_++;
+        }
+        cv_.notify_all();
+        inside_ = true;
+        for (int i; (i = next_.fetch_add(1)) < n;) f(i);
+        inside_ = false;
+        std::unique_lock<std::mutex> lk(mu_);
+        doneCv_.wait(lk, [&] { return busy_ == 0; });
+    }
+
+private:
+    void resize(int count) {
+        if ((int)workers_.size() == count) return;
+        { std::lock_guard<std::mutex> lk(mu_); stop_ = true; }
+        cv_.notify_all();
+        for (auto& t : workers_) t.join();
+        workers_.clear();
+        stop_ = false;
+        for (int t = 0; t < count; t++) workers_.emplace_back([this, g = gen_] { loop(g); });
+    }
+    void loop(uint64_t seen) {
+        inside_ = true;
+        for (;;) {
+            std::unique_lock<std::mutex> lk(mu_);
+            cv_.wait(lk, [&] { return stop_ || gen_ != seen; });
+            if (stop_) return;
+            seen = gen_;
+            const std::function<void(int)>* f = job_;
+            int n = n_;
+            lk.unlock();
+            for (int i; (i = next_.fetch_add(1)) < n;) (*f)(i);
+            lk.lock();
+            if (--busy_ == 0) doneCv_.notify_one();
+        }
+    }
+    std::vector<std::thread> workers_;
+    std::mutex callMu_, mu_;
+    std::condition_variable cv_, doneCv_;
+    const std::function<void(int)>* job_ = nullptr;
+    int n_ = 0, busy_ = 0;
+    std::atomic<int> next_{0};
+    uint64_t gen_ = 0;
+    bool stop_ = false;
+    static inline thread_local bool inside_ = false;
+};
+
 template <class F>
 void parallel_for(int n, F&& f) {
     int nt = std::max(1, std::min(g_threads, n));
     if (nt == 1) { for (int i = 0; i < n; i++) f(i); return; }
-    std::atomic<int> next(0);
-    std::vector<std::thread> ts;
-    ts.reserve(nt);
-    for (int t = 0; t < nt; t++)
-        ts.emplace_back([&] { for (int i; (i = next.fetch_add(1)) < n;) f(i); });
-    for (auto& t : ts) t.join();
+    ThreadPool::get().run(n, nt, std::function<void(int)>(std::ref(f)));
 }
 
 struct Timer {
@@ -75,11 +132,20 @@ struct ImageF {
 };
 
 // A view of one tightly packed RAW16 frame; the samples are owned by the caller (a direct
-// ByteBuffer on Android) and must outlive every use of the view.
+// ByteBuffer on Android) and must outlive every use of the view. Stages that rewrite samples
+// (bracket exposure scaling) call make_writable() first, which moves the view onto a private copy.
 struct Raw {
     int w = 0, h = 0;
     const uint16_t* d = nullptr;
+    std::shared_ptr<std::vector<uint16_t>> own;
+    void make_writable() {
+        if (own) return;
+        own = std::make_shared<std::vector<uint16_t>>(d, d + (size_t)w * h);
+        d = own->data();
+    }
     uint16_t at(int x, int y) const { return d[(size_t)y * w + x]; }
+    uint16_t* row(int y) { return own->data() + (size_t)y * w; }
+    const uint16_t* row(int y) const { return d + (size_t)y * w; }
 };
 
 struct Meta {
@@ -93,6 +159,7 @@ struct Meta {
     float ev = 0;
     std::vector<double> exposureNs;
     std::vector<int> iso;
+    std::string camera;
 };
 
 // Bayer channel index (0=R,1=G_even,2=G_odd,3=B) at (x,y) for a Camera2 CFA enum

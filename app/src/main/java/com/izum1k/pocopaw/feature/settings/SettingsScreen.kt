@@ -13,8 +13,10 @@ import com.izum1k.pocopaw.container
 import com.izum1k.pocopaw.data.BurstFrames
 import com.izum1k.pocopaw.data.ColorStyle
 import com.izum1k.pocopaw.data.GridStyle
+import com.izum1k.pocopaw.data.LookStyle
 import com.izum1k.pocopaw.data.OutputFormat
 import com.izum1k.pocopaw.data.Processing
+import com.izum1k.pocopaw.data.SceneMode
 import com.izum1k.pocopaw.ui.component.ChoiceRow
 import com.izum1k.pocopaw.ui.component.PawPage
 import com.izum1k.pocopaw.ui.component.Section
@@ -60,6 +62,28 @@ fun SettingsScreen() {
                     label = { stringResource(R.string.burst_frames_value, it.count) },
                     onSelect = { scope.launch { repo.setBurstFrames(it) } },
                     enabled = settings.output != OutputFormat.DNG,
+                )
+                ChoiceRow(
+                    title = stringResource(R.string.settings_scene),
+                    options = SceneMode.entries,
+                    selected = settings.scene,
+                    label = { stringResource(sceneLabel(it)) },
+                    onSelect = { scope.launch { repo.setScene(it) } },
+                    enabled = settings.output != OutputFormat.DNG,
+                )
+                ChoiceRow(
+                    title = stringResource(R.string.settings_look),
+                    options = LookStyle.entries,
+                    selected = settings.look,
+                    label = { stringResource(if (it == LookStyle.PIXEL) R.string.look_pixel else R.string.look_standard) },
+                    onSelect = { scope.launch { repo.setLook(it) } },
+                    enabled = settings.output != OutputFormat.DNG,
+                )
+                SwitchRow(
+                    title = stringResource(R.string.settings_ultra_hdr),
+                    value = stringResource(R.string.settings_ultra_hdr_value),
+                    checked = settings.ultraHdr,
+                    onCheckedChange = { scope.launch { repo.setUltraHdr(it) } },
                 )
                 ChoiceRow(
                     title = stringResource(R.string.settings_grid_style),
@@ -132,6 +156,12 @@ private fun outputLabel(f: OutputFormat): Int = when (f) {
 private fun processingLabel(p: Processing): Int = when (p) {
     Processing.HDR_PLUS -> R.string.pipeline_hdrplus
     Processing.HDR_PLUS_KR -> R.string.pipeline_hdrplus_kr
+}
+
+private fun sceneLabel(s: SceneMode): Int = when (s) {
+    SceneMode.AUTO -> R.string.scene_auto
+    SceneMode.BRACKET -> R.string.scene_bracket
+    SceneMode.NIGHT -> R.string.scene_night
 }
 
 private fun gridLabel(g: GridStyle): Int = when (g) {

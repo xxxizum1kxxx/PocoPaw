@@ -30,6 +30,12 @@ enum class Processing { HDR_PLUS, HDR_PLUS_KR }
 
 enum class BurstFrames(val count: Int) { FOUR(4), EIGHT(8), SIXTEEN(16) }
 
+/** Finishing look of the burst pipeline: the original tuning or the Pixel-like preset. */
+enum class LookStyle(val preset: String) { STANDARD("default"), PIXEL("pixel") }
+
+/** What a burst is captured for: one exposure, an exposure bracket, or long motion-metered night frames. */
+enum class SceneMode { AUTO, BRACKET, NIGHT }
+
 data class CameraSettings(
     val colorStyle: ColorStyle = ColorStyle.EXPRESSIVE,
     val flash: FlashMode = FlashMode.OFF,
@@ -43,6 +49,9 @@ data class CameraSettings(
     val output: OutputFormat = OutputFormat.DNG_JPEG,
     val processing: Processing = Processing.HDR_PLUS,
     val burstFrames: BurstFrames = BurstFrames.EIGHT,
+    val look: LookStyle = LookStyle.STANDARD,
+    val scene: SceneMode = SceneMode.AUTO,
+    val ultraHdr: Boolean = false,
     val lastCameraId: String? = null,
 )
 
@@ -64,6 +73,9 @@ class SettingsRepository(context: Context, scope: CoroutineScope) {
         val output = stringPreferencesKey("output")
         val processing = stringPreferencesKey("processing")
         val burstFrames = stringPreferencesKey("burst_frames")
+        val look = stringPreferencesKey("look")
+        val scene = stringPreferencesKey("scene")
+        val ultraHdr = booleanPreferencesKey("ultra_hdr")
         val lastCameraId = stringPreferencesKey("last_camera_id")
     }
 
@@ -82,6 +94,9 @@ class SettingsRepository(context: Context, scope: CoroutineScope) {
             output = p[Keys.output].toEnum(d.output).takeIf { it.available } ?: d.output,
             processing = p[Keys.processing].toEnum(d.processing),
             burstFrames = p[Keys.burstFrames].toEnum(d.burstFrames),
+            look = p[Keys.look].toEnum(d.look),
+            scene = p[Keys.scene].toEnum(d.scene),
+            ultraHdr = p[Keys.ultraHdr] ?: d.ultraHdr,
             lastCameraId = p[Keys.lastCameraId],
         )
     }.stateIn(scope, SharingStarted.Eagerly, CameraSettings())
@@ -98,6 +113,9 @@ class SettingsRepository(context: Context, scope: CoroutineScope) {
     suspend fun setOutput(v: OutputFormat) = put(Keys.output, v.name)
     suspend fun setProcessing(v: Processing) = put(Keys.processing, v.name)
     suspend fun setBurstFrames(v: BurstFrames) = put(Keys.burstFrames, v.name)
+    suspend fun setLook(v: LookStyle) = put(Keys.look, v.name)
+    suspend fun setScene(v: SceneMode) = put(Keys.scene, v.name)
+    suspend fun setUltraHdr(v: Boolean) = put(Keys.ultraHdr, v)
     suspend fun setLastCameraId(v: String) = put(Keys.lastCameraId, v)
 
     private suspend fun <T> put(key: Preferences.Key<T>, value: T) {

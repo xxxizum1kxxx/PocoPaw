@@ -8,8 +8,10 @@ import java.nio.ByteBuffer
 /**
  * Finishing parameters of the native pipeline (`LookParams` in `cpp/burstpipe/finish.h`).
  * [chromaDenoise] < 0 scales with the measured noise; [compression] 0 picks the ratio from the scene.
+ * A [style] other than "default" ("pixel", "night") replaces every other field with that preset.
  */
 data class BurstLook(
+    val style: String = "default",
     val lscLumaStrength: Float = 0.85f,
     val chromaDenoise: Float = -1f,
     val compression: Float = 0f,
@@ -20,6 +22,35 @@ data class BurstLook(
     val sharpenRadius: Float = 1f,
 ) {
     internal fun toArray() = floatArrayOf(lscLumaStrength, chromaDenoise, compression, targetKey, contrast, saturation, sharpen, sharpenRadius)
+}
+
+/** Demosaic of the classic merge; RCD is the default (pipeline/out/p1/RESULTS.md). */
+enum class DemosaicMethod { MHC, RCD, AMAZE }
+
+/**
+ * Lateral chromatic aberration of one lens (tools/lca_calib.py): red / blue are sampled at
+ * p + (p − c)(k1 + k2 (r / rmax)²). Only the kernel-regression merge applies it.
+ */
+data class LensLca(val kr1: Float, val kr2: Float, val kb1: Float, val kb2: Float)
+
+/** How [NativeBurst.merge] combines the frames (`BurstOptions` in `cpp/burstpipe/burst.h`). */
+data class MergeOptions(
+    val kernelRegression: Boolean = false,
+    val robustLo: Float = 2f,
+    val robustHi: Float = 4.5f,
+    val motionDilate: Int = 1,
+    val demosaic: DemosaicMethod = DemosaicMethod.RCD,
+    /** Frequency-domain Wiener merge (classic path); the night mode uses it with spatial shrinkage 2. */
+    val frequencyMerge: Boolean = false,
+    val frequencyC: Float = 64f,
+    val frequencySpatial: Float = 2f,
+    val lca: LensLca? = null,
+) {
+    internal fun toArray() = floatArrayOf(
+        if (kernelRegression) 1f else 0f, robustLo, robustHi, motionDilate.toFloat(), demosaic.ordinal.toFloat(),
+        if (frequencyMerge) 1f else 0f, frequencyC, frequencySpatial,
+        lca?.kr1 ?: 0f, lca?.kr2 ?: 0f, lca?.kb1 ?: 0f, lca?.kb2 ?: 0f,
+    )
 }
 
 /**
@@ -65,22 +96,27 @@ class NativeBurst(private val burst: RawBurst) : Closeable {
             this[22] = (lsc?.columnCount ?: 0).toFloat()
         }
         val buffers = Array<ByteBuffer>(burst.size) { burst.frames[it].data }
-        handle = nativeCreate(array, lscGains, buffers, burst.referenceIndex)
+        val exposures = LongArray(burst.size) { burst.frames[it].exposureNs ?: 0L }
+        val isos = IntArray(burst.size) { burst.frames[it].iso ?: 100 }
+        handle = nativeCreate(array, lscGains, buffers, burst.referenceIndex, exposures, isos)
     }
 
     fun align() = nativeAlign(live())
 
-    fun merge(kernelRegression: Boolean, robustLo: Float = 2f, robustHi: Float = 4.5f) =
-        nativeMerge(live(), kernelRegression, robustLo, robustHi)
+    fun merge(options: MergeOptions) = nativeMerge(live(), options.toArray())
 
-    fun finish(look: BurstLook) {
-        val size = nativeFinish(live(), look.toArray())
+    /** [keepHdr] keeps the scene-linear luminance [encodeUltraHdr] needs. */
+    fun finish(look: BurstLook, keepHdr: Boolean = false) {
+        val size = nativeFinish(live(), look.style, look.toArray(), keepHdr)
         width = (size ushr 32).toInt()
         height = (size and 0xFFFFFFFFL).toInt()
     }
 
     /** The finished image in the sensor's orientation. */
     fun render(): Bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also { nativeRender(live(), it) }
+
+    /** The finished image as an Ultra HDR JPEG (SDR base + gain map up to [headroom]× SDR white), or null. */
+    fun encodeUltraHdr(quality: Int = 95, headroom: Float = 4f): ByteArray? = nativeEncodeUltraHdr(live(), quality, headroom)
 
     fun summary(): String = nativeSummary(live())
 
@@ -107,10 +143,13 @@ class NativeBurst(private val burst: RawBurst) : Closeable {
             return if (ch == 1 || ch == 2) (if (y and 1 == 1) 2 else 1) else ch
         }
 
-        @JvmStatic external fun nativeCreate(meta: FloatArray, lsc: FloatArray?, frames: Array<ByteBuffer>, ref: Int): Long
+        @JvmStatic external fun nativeCreate(
+            meta: FloatArray, lsc: FloatArray?, frames: Array<ByteBuffer>, ref: Int, exposureNs: LongArray, iso: IntArray,
+        ): Long
         @JvmStatic external fun nativeAlign(handle: Long)
-        @JvmStatic external fun nativeMerge(handle: Long, kernelRegression: Boolean, robustLo: Float, robustHi: Float)
-        @JvmStatic external fun nativeFinish(handle: Long, look: FloatArray): Long
+        @JvmStatic external fun nativeMerge(handle: Long, options: FloatArray)
+        @JvmStatic external fun nativeFinish(handle: Long, style: String, look: FloatArray, keepHdr: Boolean): Long
+        @JvmStatic external fun nativeEncodeUltraHdr(handle: Long, quality: Int, headroom: Float): ByteArray?
         @JvmStatic external fun nativeRender(handle: Long, bitmap: Bitmap)
         @JvmStatic external fun nativeSummary(handle: Long): String
         @JvmStatic external fun nativeRelease(handle: Long)

@@ -1,5 +1,7 @@
 #include "finish.h"
 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "third_party/stb_image_write.h"
 
 namespace {
 
@@ -81,6 +83,35 @@ ImageF gaussian_blur(const ImageF& in, float sigma) {
         for (int x = 0; x < in.w; x++) { float a = 0; for (int i = -r; i <= r; i++) a += k[i + r] * t.atc(x, y + i); o.at(x, y) = a; }
     });
     return o;
+}
+
+// box mean of a single-channel image, radius r (clamped borders), separable running sums
+ImageF box_mean(const ImageF& in, int r) {
+    ImageF tmp(in.w, in.h), out(in.w, in.h);
+    const float inv = 1.f / (2 * r + 1);
+    parallel_for(in.h, [&](int y) {
+        const float* s = in.row(y);
+        float* d = tmp.row(y);
+        float acc = 0;
+        for (int x = -r - 1; x < r; x++) acc += s[clampi(x, 0, in.w - 1)];
+        for (int x = 0; x < in.w; x++) {
+            acc += s[clampi(x + r, 0, in.w - 1)] - s[clampi(x - r - 1, 0, in.w - 1)];
+            d[x] = acc * inv;
+        }
+    });
+    const int bands = 64;
+    parallel_for(bands, [&](int b) {
+        int x0 = in.w * b / bands, x1 = in.w * (b + 1) / bands;
+        std::vector<float> acc(x1 - x0, 0.f);
+        for (int y = -r - 1; y < r; y++) { const float* s = tmp.row(clampi(y, 0, in.h - 1)); for (int x = x0; x < x1; x++) acc[x - x0] += s[x]; }
+        for (int y = 0; y < in.h; y++) {
+            const float* a = tmp.row(clampi(y + r, 0, in.h - 1));
+            const float* s = tmp.row(clampi(y - r - 1, 0, in.h - 1));
+            float* d = out.row(y);
+            for (int x = x0; x < x1; x++) { acc[x - x0] += a[x] - s[x]; d[x] = acc[x - x0] * inv; }
+        }
+    });
+    return out;
 }
 
 }  // namespace
@@ -330,6 +361,161 @@ void sharpen_luma(ImageF& rgb, float amount, float radius) {
             for (int c = 0; c < 3; c++) q[c] = clampf(q[c] + delta, 0.f, 1.f);
         }
     });
+}
+
+std::vector<uint8_t> to_rgb8(const ImageF& rgb, int ds, int& w, int& h) {
+    ds = std::max(1, ds);
+    w = rgb.w / ds; h = rgb.h / ds;
+    std::vector<uint8_t> buf((size_t)w * h * 3);
+    parallel_for(h, [&](int y) {
+        uint32_t seed = 0x9E3779B9u * (y + 1);
+        for (int x = 0; x < w; x++)
+            for (int c = 0; c < 3; c++) {
+                float s = 0;
+                for (int v = 0; v < ds; v++) for (int u = 0; u < ds; u++) s += rgb.at(x * ds + u, y * ds + v, c);
+                s /= ds * ds;
+                seed = seed * 1664525u + 1013904223u;
+                float dither = ((seed >> 8) & 0xFFFF) / 65535.f - 0.5f;
+                buf[((size_t)y * w + x) * 3 + c] = (uint8_t)clampi((int)std::lround(s * 255.f + dither), 0, 255);
+            }
+    });
+    return buf;
+}
+
+std::vector<uint8_t> encode_jpeg(const uint8_t* px, int w, int h, int channels, int quality) {
+    std::vector<uint8_t> out;
+    stbi_write_jpg_to_func([](void* ctx, void* data, int size) {
+        auto* o = static_cast<std::vector<uint8_t>*>(ctx);
+        o->insert(o->end(), (uint8_t*)data, (uint8_t*)data + size);
+    }, &out, w, h, channels, px, quality);
+    return out;
+}
+
+bool write_jpeg(const std::string& path, const ImageF& rgb, int quality, int ds) {
+    int w, h;
+    std::vector<uint8_t> buf = to_rgb8(rgb, ds, w, h);
+    return stbi_write_jpg(path.c_str(), w, h, 3, buf.data(), quality) != 0;
+}
+
+void wb_shift(ImageF& rgb, float cool) {
+    if (cool == 0) return;
+    // linear sRGB: trade red for blue at constant Rec.709 luminance
+    float r = 1 - cool, b = 1 + cool;
+    float g = (1 - 0.2126f * r - 0.0722f * b) / 0.7152f;
+    parallel_for(rgb.h, [&](int y) {
+        float* q = rgb.row(y);
+        for (int x = 0; x < rgb.w; x++, q += 3) { q[0] *= r; q[1] *= g; q[2] *= b; }
+    });
+}
+
+void local_contrast(ImageF& rgb, float amount, float radiusFrac) {
+    if (amount <= 0) return;
+    // self-guided filter (He et al. 2010) on display luma: edge-preserving base, so boosting the
+    // detail layer adds clarity without halos around strong edges
+    ImageF L(rgb.w, rgb.h);
+    parallel_for(rgb.h, [&](int y) { const float* q = rgb.row(y); float* o = L.row(y); for (int x = 0; x < rgb.w; x++, q += 3) o[x] = luma709(q[0], q[1], q[2]); });
+    // fast guided filter (He & Sun 2015): coefficients on a 4x subsampled grid, upsampled bilinearly
+    constexpr int kSub = 4;
+    const int sw = (rgb.w + kSub - 1) / kSub, sh = (rgb.h + kSub - 1) / kSub;
+    int r = std::max(1, (int)std::lround(radiusFrac * std::max(rgb.w, rgb.h) / kSub));
+    const float eps = 0.01f * 0.01f * 25;
+    ImageF Ls(sw, sh), LL(sw, sh);
+    parallel_for(sh, [&](int y) {
+        for (int x = 0; x < sw; x++) {
+            float acc = 0; int cnt = 0;
+            for (int v = 0; v < kSub; v++) for (int u = 0; u < kSub; u++) {
+                int X = x * kSub + u, Y = y * kSub + v;
+                if (X < rgb.w && Y < rgb.h) { acc += L.at(X, Y); cnt++; }
+            }
+            float m = acc / cnt;
+            Ls.at(x, y) = m; LL.at(x, y) = m * m;
+        }
+    });
+    ImageF mI = box_mean(Ls, r), mII = box_mean(LL, r);
+    ImageF A(sw, sh), B(sw, sh);
+    parallel_for(sh, [&](int y) {
+        for (int x = 0; x < sw; x++) {
+            float m = mI.at(x, y), v = std::max(0.f, mII.at(x, y) - m * m);
+            float a = v / (v + eps);
+            A.at(x, y) = a; B.at(x, y) = m - a * m;
+        }
+    });
+    ImageF mA = box_mean(A, r), mB = box_mean(B, r);
+    auto up = [&](const ImageF& im, int x, int y) {
+        float fx = clampf((x + 0.5f) / kSub - 0.5f, 0.f, sw - 1.001f), fy = clampf((y + 0.5f) / kSub - 0.5f, 0.f, sh - 1.001f);
+        int x0 = (int)fx, y0 = (int)fy;
+        float ax = fx - x0, ay = fy - y0;
+        int x1 = std::min(x0 + 1, sw - 1), y1 = std::min(y0 + 1, sh - 1);
+        return (1 - ay) * ((1 - ax) * im.at(x0, y0) + ax * im.at(x1, y0)) + ay * ((1 - ax) * im.at(x0, y1) + ax * im.at(x1, y1));
+    };
+    parallel_for(rgb.h, [&](int y) {
+        float* q = rgb.row(y);
+        for (int x = 0; x < rgb.w; x++, q += 3) {
+            float l = L.at(x, y), base = up(mA, x, y) * l + up(mB, x, y);
+            // fade the boost out in deep shadows (noise) and near white (clipping)
+            float fade = clampf(l / 0.08f, 0.f, 1.f) * clampf((1.f - l) / 0.1f, 0.f, 1.f);
+            float delta = amount * fade * (l - base);
+            for (int c = 0; c < 3; c++) q[c] = clampf(q[c] + delta, 0.f, 1.f);
+        }
+    });
+}
+
+void hue_tune(ImageF& rgb, const LookParams& p) {
+    if (p.skySat == 1 && p.skinSat == 1 && p.skyHue == 0 && p.skinHue == 0) return;
+    // hue windows in the display-referred BT.709 CbCr plane (Cb axis = 0 deg, Cr axis = 90 deg):
+    // sky blue around -30 deg (+-40), skin around 122 deg (+-30). Trig-free: the window is a smoothstep
+    // of cos(hue - centre) from the chroma direction's dot product with the centre direction.
+    struct Win { float cx, cy, c0; };
+    auto mk = [](float centre, float half) {
+        float r = centre * (float)M_PI / 180.f;
+        return Win{std::cos(r), std::sin(r), std::cos(half * (float)M_PI / 180.f)};
+    };
+    const Win sky = mk(-30.f, 40.f), skin = mk(122.f, 30.f);
+    auto weight = [](const Win& w, float ux, float uy) {
+        float t = clampf((ux * w.cx + uy * w.cy - w.c0) / (1.f - w.c0), 0.f, 1.f);
+        return t * t * (3 - 2 * t);
+    };
+    const float skyRot = p.skyHue * (float)M_PI / 180.f, skinRot = p.skinHue * (float)M_PI / 180.f;
+    parallel_for(rgb.h, [&](int y) {
+        float* q = rgb.row(y);
+        for (int x = 0; x < rgb.w; x++, q += 3) {
+            float Y = luma709(q[0], q[1], q[2]);
+            float cb = (q[2] - Y) / 1.8556f, cr = (q[0] - Y) / 1.5748f;
+            float c2 = cb * cb + cr * cr;
+            if (c2 < 1e-8f) continue;
+            float inv = 1.f / std::sqrt(c2), chroma = c2 * inv;
+            float cw = clampf(chroma / 0.04f, 0.f, 1.f);
+            float ws = weight(sky, cb * inv, cr * inv) * cw, wk = weight(skin, cb * inv, cr * inv) * cw;
+            if (ws + wk <= 0.f) continue;
+            float sat = 1 + ws * (p.skySat - 1) + wk * (p.skinSat - 1);
+            float th = ws * skyRot + wk * skinRot;  // a few degrees: first-order rotation is enough
+            float ncb = sat * (cb - th * cr), ncr = sat * (cr + th * cb);
+            float r = Y + 1.5748f * ncr, b = Y + 1.8556f * ncb;
+            float g = (Y - 0.2126f * r - 0.0722f * b) / 0.7152f;
+            q[0] = clampf(r, 0.f, 1.f); q[1] = clampf(g, 0.f, 1.f); q[2] = clampf(b, 0.f, 1.f);
+        }
+    });
+}
+
+bool apply_look_preset(const std::string& name, LookParams& p) {
+    if (name == "default") { p = LookParams(); return true; }
+    if (name == "pixel") {
+        // brighter mid-tones, stronger compression and local contrast, crisper, slightly cool,
+        // deeper sky blue and gentler skin saturation
+        p = LookParams();
+        p.targetKey = 0.22f; p.compression = 6.f; p.contrast = 0.26f; p.saturation = 1.24f;
+        p.sharpen = 0.9f; p.localContrast = 0.6f; p.wbCool = 0.025f;
+        p.skySat = 1.18f; p.skyHue = -4.f; p.skinSat = 0.92f; p.skinHue = 3.f;
+        return true;
+    }
+    if (name == "night") {
+        // keep night dark: lower key, softer compression, stronger chroma denoise, gentle sharpening
+        p = LookParams();
+        p.targetKey = 0.11f; p.compression = 4.f; p.contrast = 0.18f; p.saturation = 1.05f;
+        p.sharpen = 0.4f; p.localContrast = 0.15f; p.chromaDenoiseScale = 1.6f;
+        return true;
+    }
+    return false;
 }
 
 void to_rgba8888(const ImageF& rgb, uint8_t* out, size_t stride) {

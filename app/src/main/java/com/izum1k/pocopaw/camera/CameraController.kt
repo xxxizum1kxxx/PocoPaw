@@ -187,7 +187,7 @@ class CameraController(private val manager: CameraManager) {
             try {
                 val fires = info.hasFlash && spec.flash != FlashMode.OFF && spec.exposure is ExposurePlan.Auto
                 if (fires) runPrecapture(s)
-                val requests = List(spec.frameCount) { stillRequest(info, spec, reader.surface) }
+                val requests = List(spec.frameCount) { stillRequest(info, spec, reader.surface, it) }
                 val collector = CaptureCollector(spec.frameCount)
                 activeCapture = collector
                 generateSequence { reader.acquireNextImage() }.forEach { it.close() }
@@ -351,12 +351,13 @@ class CameraController(private val manager: CameraManager) {
         }
     }
 
-    private fun stillRequest(info: CameraInfo, spec: CaptureSpec, raw: Surface): CaptureRequest {
+    private fun stillRequest(info: CameraInfo, spec: CaptureSpec, raw: Surface, frame: Int): CaptureRequest {
         val d = device ?: throw CameraFailure(Reason.UNKNOWN)
         return d.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
             previewSurface?.let(::addTarget)
             addTarget(raw)
-            applyCommon(this, info, spec.exposure, spec.flash, spec.zoomRatio, preview = false)
+            val exposure = (spec.exposure as? ExposurePlan.PerFrame)?.let { ExposurePlan.Manual(it.at(frame)) } ?: spec.exposure
+            applyCommon(this, info, exposure, spec.flash, spec.zoomRatio, preview = false)
             set(CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE, CameraMetadata.STATISTICS_LENS_SHADING_MAP_MODE_ON)
         }.build()
     }
@@ -396,8 +397,9 @@ class CameraController(private val manager: CameraManager) {
                 b.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, exposure.evIndex.coerceIn(info.evRange.lower, info.evRange.upper))
                 b.set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_OFF)
             }
-            is ExposurePlan.Manual -> {
-                val (iso, exp) = if (preview) previewExposure(info, exposure.exposure) else exposure.exposure.iso to exposure.exposure.exposureNs
+            is ExposurePlan.Manual, is ExposurePlan.PerFrame -> {
+                val m = if (exposure is ExposurePlan.Manual) exposure.exposure else (exposure as ExposurePlan.PerFrame).at(0)
+                val (iso, exp) = if (preview) previewExposure(info, m) else m.iso to m.exposureNs
                 b.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
                 b.set(CaptureRequest.SENSOR_SENSITIVITY, iso)
                 b.set(CaptureRequest.SENSOR_EXPOSURE_TIME, exp)
@@ -468,7 +470,11 @@ class CameraController(private val manager: CameraManager) {
     }
 
     private fun captureTimeoutMs(spec: CaptureSpec): Long {
-        val expMs = (spec.exposure as? ExposurePlan.Manual)?.exposure?.exposureNs?.div(1_000_000) ?: 0L
+        val expMs = when (val e = spec.exposure) {
+            is ExposurePlan.Manual -> e.exposure.exposureNs / 1_000_000
+            is ExposurePlan.PerFrame -> e.frames.maxOf { it.exposureNs } / 1_000_000
+            is ExposurePlan.Auto -> 0L
+        }
         return 4_000L + spec.frameCount * max(100L, expMs * 2)
     }
 

@@ -10,6 +10,12 @@ struct LookParams {
     float saturation = 1.12f;       // vibrance-style boost
     float sharpen = 0.6f;
     float sharpenRadius = 1.0f;
+    float localContrast = 0.f;      // guided-filter detail boost on display luma
+    float localRadius = 0.01f;      // as a fraction of the long image side
+    float wbCool = 0.f;             // > 0 shifts white balance toward blue (linear sRGB, constant luma)
+    float skySat = 1.f, skyHue = 0.f;    // hue-selective saturation / rotation (degrees) for sky blues
+    float skinSat = 1.f, skinHue = 0.f;  // ... and for skin tones
+    float chromaDenoiseScale = 1.f; // multiplies the automatic chroma denoise strength
 };
 
 struct FinishTimes { double lscwb = 0, demosaic = 0, color = 0, chroma = 0, tonemap = 0, look = 0, sharpen = 0; };
@@ -25,5 +31,12 @@ struct ToneInfo { float gainShort, gainLong, keyBefore; };
 ToneInfo local_tonemap(ImageF& rgb, const LookParams& p);    // HDR+ synthetic exposure fusion, in-place, output linear
 void pixel_look(ImageF& rgb, const LookParams& p);          // sRGB OETF + S-curve + vibrance, output display-referred
 void sharpen_luma(ImageF& rgb, float amount, float radius);
+void wb_shift(ImageF& rgb, float cool);                      // linear sRGB
+void local_contrast(ImageF& rgb, float amount, float radiusFrac);  // display referred
+void hue_tune(ImageF& rgb, const LookParams& p);            // display referred
+bool apply_look_preset(const std::string& name, LookParams& p);   // default | pixel | night
+bool write_jpeg(const std::string& path, const ImageF& rgb, int quality, int downscale);
+std::vector<uint8_t> to_rgb8(const ImageF& rgb, int downscale, int& w, int& h);  // dithered, box-downscaled
 // Display-referred RGB -> RGBA8888 rows (Android ARGB_8888 memory order), dithered
 void to_rgba8888(const ImageF& rgb, uint8_t* out, size_t stride);
+std::vector<uint8_t> encode_jpeg(const uint8_t* px, int w, int h, int channels, int quality);

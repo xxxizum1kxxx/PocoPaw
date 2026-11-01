@@ -58,7 +58,7 @@ float tile_cost(const ImageF& ref, const ImageF& alt, int x0, int y0, int t, int
 ImageF gray_from_raw(const Raw& r) {
     ImageF g(r.w / 2, r.h / 2);
     parallel_for(g.h, [&](int y) {
-        const uint16_t* a = r.d + (size_t)(2 * y) * r.w;
+        const uint16_t* a = r.row(2 * y);
         const uint16_t* b = a + r.w;
         float* o = g.row(y);
         for (int x = 0; x < g.w; x++) o[x] = (float)a[2 * x] + a[2 * x + 1] + b[2 * x] + b[2 * x + 1];

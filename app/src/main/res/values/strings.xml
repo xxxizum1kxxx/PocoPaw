@@ -60,6 +60,15 @@
     <string name="pipeline_hdrplus_kr">Kernel regression merge (finer, slower)</string>
     <string name="settings_burst_frames">Burst frames</string>
     <string name="burst_frames_value">%1$d frames</string>
+    <string name="settings_scene">Scene</string>
+    <string name="scene_auto">Auto</string>
+    <string name="scene_bracket">HDR bracket (backlit scenes)</string>
+    <string name="scene_night">Night (long frames, motion metered)</string>
+    <string name="settings_look">Look</string>
+    <string name="look_standard">Standard</string>
+    <string name="look_pixel">Pixel style</string>
+    <string name="settings_ultra_hdr">Ultra HDR</string>
+    <string name="settings_ultra_hdr_value">JPEG with a gain map; brighter highlights on HDR screens</string>
     <string name="dev_processed">%1$d f · %2$.1f s</string>
 
     <string name="grid_thirds">Thirds</string>

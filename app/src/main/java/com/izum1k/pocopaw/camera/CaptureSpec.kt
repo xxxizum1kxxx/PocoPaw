@@ -9,12 +9,20 @@ sealed interface ExposurePlan {
     data class Auto(val evIndex: Int = 0) : ExposurePlan
 
     data class Manual(val exposure: ManualExposure) : ExposurePlan
+
+    /** Manual exposure per frame of the burst (bracketing); frame i uses `frames[i % frames.size]`. */
+    data class PerFrame(val frames: List<ManualExposure>) : ExposurePlan {
+        init {
+            require(frames.isNotEmpty())
+        }
+
+        fun at(i: Int): ManualExposure = frames[i % frames.size]
+    }
 }
 
 /**
- * What one shutter press asks for. Only one frame today; the shape is a burst so a multi-frame
- * pipeline can ask for more (up to [RawRequestBudget.DEFAULT_LIMIT] per opened device), and later
- * per-frame exposures for bracketing.
+ * What one shutter press asks for: [frameCount] RAW frames (up to [RawRequestBudget.DEFAULT_LIMIT]
+ * per opened device), all with one exposure or, with [ExposurePlan.PerFrame], bracketed.
  */
 data class CaptureSpec(
     val frameCount: Int = 1,
@@ -43,4 +51,6 @@ data class LiveExposure(
     val focusLocked: Boolean = false,
     val focusing: Boolean = false,
     val aeConverged: Boolean = false,
+    /** Gyroscope angular speed RMS over the last second (rad/s), for night exposure; null if unknown. */
+    val motionRadPerSec: Float? = null,
 )
