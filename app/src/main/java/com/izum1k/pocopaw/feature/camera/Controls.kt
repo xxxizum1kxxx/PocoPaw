@@ -84,6 +84,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -98,6 +99,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import kotlinx.coroutines.delay
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.graphics.shapes.Morph
@@ -466,92 +468,113 @@ fun LensSelector(
         delay(FOCAL_SHOW_MS)
         showFocal = false
     }
-    // Laid out at its width with zoom factors, so a wider focal length grows outwards from the
-    // current lens (leftwards from the leftmost, rightwards from the rightmost) rather than moving
-    // the whole selector off centre.
-    val restWidth = remember(lenses.size) { intArrayOf(0) }
-    val currentIndex = lenses.indexOfFirst { it.id == current?.id }
-    val growLeft = when {
-        lenses.size < 2 || currentIndex < 0 -> 0.5f
-        else -> 1f - currentIndex / (lenses.size - 1f)
+    // Centred on its width with zoom factors. A lens showing its focal length grows outwards from
+    // where it sits (the leftmost leftwards, the rightmost rightwards), the pill behind with it.
+    val labelStyle = MaterialTheme.typography.labelMedium.withTabularFigures().copy(fontWeight = FontWeight.SemiBold)
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val sizes = lenses.map { lens ->
+        animateDpAsState(if (lens.id == current?.id) 40.dp else 34.dp, YoinMotion.defaultSpatialSpec(), label = "lensSize")
     }
-    Row(
-        modifier
-            .layout { measurable, constraints ->
-                val placeable = measurable.measure(constraints)
-                if (!showFocal && (restWidth[0] == 0 || placeable.width < restWidth[0])) restWidth[0] = placeable.width
-                val width = if (restWidth[0] == 0) placeable.width else restWidth[0]
-                layout(width, placeable.height) { placeable.place(-((placeable.width - width) * growLeft).roundToInt(), 0) }
-            }
-            .clip(PillShape)
-            .background(controlContainer())
-            .padding(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        lenses.forEach { lens ->
-            val selected = lens.id == current?.id
-            val size by animateDpAsState(if (selected) 40.dp else 34.dp, YoinMotion.defaultSpatialSpec(), label = "lensSize")
-            val container by animateColorAsState(
-                if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
-                YoinMotion.defaultEffectsSpec(),
-                label = "lensContainer",
-            )
-            val content by animateColorAsState(
-                if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
-                YoinMotion.defaultEffectsSpec(),
-                label = "lensContent",
-            )
-            val factor = if (selected) lens.relativeZoom * zoom else lens.relativeZoom
-            val label = if (showFocal && selected) {
-                CameraFormat.equivalentFocal(lens.equivalentFocalMm * zoom)
-            } else {
-                CameraFormat.zoom(factor)
-            }
-            Box(
-                Modifier
-                    .height(size)
-                    .widthIn(min = size)
-                    .clip(PillShape)
-                    .background(container)
-                    .clickable {
-                        haptics.performHapticFeedback(HapticFeedbackType.SegmentTick)
-                        focalTap++
-                        onSelect(lens)
-                    }
-                    .animateContentSize(YoinMotion.defaultSpatialSpec())
-                    .padding(horizontal = 6.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                val effects = YoinMotion.defaultEffectsSpec<Float>()
-                val fastEffects = YoinMotion.fastEffectsSpec<Float>()
-                val spatial = YoinMotion.fastSpatialSpec<Float>()
-                AnimatedContent(
-                    targetState = label,
-                    // Only the swap between focal lengths and zoom factors animates, not a zoom.
-                    transitionSpec = {
-                        if (initialState.endsWith("mm") != targetState.endsWith("mm")) {
-                            (fadeIn(effects) + scaleIn(spatial, 0.8f)) togetherWith fadeOut(fastEffects)
-                        } else {
-                            EnterTransition.None togetherWith ExitTransition.None
-                        }
-                    },
-                    label = "lensLabel",
-                ) { text ->
-                    Text(
-                        text,
-                        style = MaterialTheme.typography.labelMedium.withTabularFigures(),
-                        fontWeight = FontWeight.SemiBold,
-                        color = content,
-                        softWrap = false,
-                        modifier = Modifier.graphicsLayer { rotationZ = rotation },
-                    )
+    val restWidths = lenses.mapIndexed { i, lens ->
+        val factor = if (lens.id == current?.id) lens.relativeZoom * zoom else lens.relativeZoom
+        val text = with(density) { measurer.measure(CameraFormat.zoom(factor), labelStyle).size.width.toDp() }
+        maxOf(sizes[i].value, text + LENS_LABEL_PADDING * 2)
+    }
+    val pillColor = controlContainer()
+    Layout(
+        modifier = modifier,
+        content = {
+            Box(Modifier.clip(PillShape).background(pillColor))
+            lenses.forEachIndexed { i, lens ->
+                val selected = lens.id == current?.id
+                val size by sizes[i]
+                val container by animateColorAsState(
+                    if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                    YoinMotion.defaultEffectsSpec(),
+                    label = "lensContainer",
+                )
+                val content by animateColorAsState(
+                    if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                    YoinMotion.defaultEffectsSpec(),
+                    label = "lensContent",
+                )
+                val factor = if (selected) lens.relativeZoom * zoom else lens.relativeZoom
+                val label = if (showFocal && selected) {
+                    CameraFormat.equivalentFocal(lens.equivalentFocalMm * zoom)
+                } else {
+                    CameraFormat.zoom(factor)
                 }
+                Box(
+                    Modifier
+                        .height(size)
+                        .widthIn(min = size)
+                        .clip(PillShape)
+                        .background(container)
+                        .clickable {
+                            haptics.performHapticFeedback(HapticFeedbackType.SegmentTick)
+                            focalTap++
+                            onSelect(lens)
+                        }
+                        .animateContentSize(YoinMotion.defaultSpatialSpec())
+                        .padding(horizontal = LENS_LABEL_PADDING),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    val effects = YoinMotion.defaultEffectsSpec<Float>()
+                    val fastEffects = YoinMotion.fastEffectsSpec<Float>()
+                    val spatial = YoinMotion.fastSpatialSpec<Float>()
+                    AnimatedContent(
+                        targetState = label,
+                        // Only the swap between focal lengths and zoom factors animates, not a zoom.
+                        transitionSpec = {
+                            if (initialState.endsWith("mm") != targetState.endsWith("mm")) {
+                                (fadeIn(effects) + scaleIn(spatial, 0.8f)) togetherWith fadeOut(fastEffects)
+                            } else {
+                                EnterTransition.None togetherWith ExitTransition.None
+                            }
+                        },
+                        label = "lensLabel",
+                    ) { text ->
+                        Text(
+                            text,
+                            style = labelStyle,
+                            color = content,
+                            softWrap = false,
+                            modifier = Modifier.graphicsLayer { rotationZ = rotation },
+                        )
+                    }
+                }
+            }
+        },
+    ) { measurables, _ ->
+        val pad = LENS_PILL_PADDING.roundToPx()
+        val gap = LENS_GAP.roundToPx()
+        val buttons = measurables.drop(1).map { it.measure(Constraints()) }
+        val n = buttons.size
+        val rest = restWidths.map { it.roundToPx() }
+        val height = (buttons.maxOfOrNull { it.height } ?: 0) + 2 * pad
+        val spacing = gap * (n - 1).coerceAtLeast(0) + 2 * pad
+        val actual = buttons.sumOf { it.width } + spacing
+        val laidOut = rest.sum() + spacing
+        val shift = buttons.indices.sumOf { i ->
+            val growLeft = if (n < 2) 0.5f else 1f - i / (n - 1f)
+            ((buttons[i].width - rest[i]) * growLeft).roundToInt()
+        }
+        val pill = measurables[0].measure(Constraints.fixed(actual, height))
+        layout(laidOut, height) {
+            pill.place(-shift, 0)
+            var x = -shift + pad
+            buttons.forEach { b ->
+                b.place(x, (height - b.height) / 2)
+                x += b.width + gap
             }
         }
     }
 }
 
+private val LENS_LABEL_PADDING = 6.dp
+private val LENS_PILL_PADDING = 4.dp
+private val LENS_GAP = 4.dp
 private const val FOCAL_SHOW_MS = 5_000L
 
 /** What a shutter press will write and through which pipeline, with the live exposure. */
