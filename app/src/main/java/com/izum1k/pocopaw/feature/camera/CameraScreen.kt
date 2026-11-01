@@ -36,7 +36,6 @@ import androidx.compose.material3.toShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -46,10 +45,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.layout.boundsInRoot
-import androidx.compose.ui.layout.layout
-import androidx.compose.ui.layout.onPlaced
-import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
@@ -133,8 +128,6 @@ private fun CameraContent(vm: CameraViewModel) {
     val frame = rememberAspectFrame(settings.aspect)
     val tallest = remember { AspectRatio.entries.maxOf { it.portraitRatio } }
     val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-    var viewfinderBottom by remember { mutableFloatStateOf(0f) }
-    var controlsTop by remember { mutableFloatStateOf(0f) }
     val evLabel = if (ui.mode == CaptureMode.PHOTO && ui.evIndex != 0 && current != null) CameraFormat.ev(ui.evIndex, current.evStep) else null
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
@@ -164,8 +157,7 @@ private fun CameraContent(vm: CameraViewModel) {
                     val under = (TOP_BAR_HEIGHT + VIEWFINDER_GAP).toPx()
                     IntOffset(0, (statusTop.toPx() + under * (1f - frame.blowUp(tallest))).roundToInt())
                 }
-                .padding(horizontal = SIDE_MARGIN)
-                .onPlaced { viewfinderBottom = it.boundsInRoot().bottom },
+                .padding(horizontal = SIDE_MARGIN),
             topOverlay = {
                 Column(
                     Modifier
@@ -203,22 +195,6 @@ private fun CameraContent(vm: CameraViewModel) {
             modifier = Modifier.statusBarsPadding(),
         )
 
-        ControlsWave(
-            capturing = ui.busy == Busy.CAPTURING,
-            modifier = Modifier
-                .padding(horizontal = SIDE_MARGIN + 12.dp)
-                .layout { measurable, constraints ->
-                    val placeable = measurable.measure(constraints)
-                    layout(placeable.width, placeable.height) {
-                        val gap = controlsTop - viewfinderBottom
-                        val y = viewfinderBottom + (gap - placeable.height) / 2f
-                        val room = gap - placeable.height - 2 * WAVE_MARGIN.toPx()
-                        val shown = (room / WAVE_MARGIN.toPx()).coerceIn(0f, 1f)
-                        placeable.placeWithLayer(0, y.roundToInt()) { alpha = shown }
-                    }
-                },
-        )
-
         Column(
             Modifier
                 .align(Alignment.BottomCenter)
@@ -228,10 +204,7 @@ private fun CameraContent(vm: CameraViewModel) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             SnackbarHost(snackbar, Modifier.align(Alignment.CenterHorizontally))
-            Column(
-                Modifier.onPlaced { controlsTop = it.positionInRoot().y },
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Reveal(ui.mode == CaptureMode.PRO) {
                     ProPanel(
                         camera = current,
@@ -241,6 +214,10 @@ private fun CameraContent(vm: CameraViewModel) {
                         onShutter = vm::setShutter,
                     )
                 }
+                ControlsWave(
+                    capturing = ui.busy == Busy.CAPTURING,
+                    modifier = Modifier.padding(horizontal = SIDE_MARGIN + 12.dp),
+                )
                 ModeBar(ui.mode, vm::setMode)
                 ShutterRow(
                     last = ui.last?.thumbnail,
@@ -307,10 +284,6 @@ private fun PermissionGate(asked: Boolean, onRequest: () -> Unit) {
 private val TOP_BAR_HEIGHT = 72.dp
 private val VIEWFINDER_GAP = 4.dp
 private val SIDE_MARGIN = 12.dp
-
-/** The wave keeps at least this much air above and below; it fades out rather than touch either side. */
-private val WAVE_MARGIN = 4.dp
-
 /** The camera whose frames are on screen; a reopen mid-capture (RAW budget) keeps the busy flag instead. */
 private fun CameraController.State.showing(): String? = when (this) {
     is CameraController.State.Previewing -> cameraId
