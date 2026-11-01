@@ -47,6 +47,8 @@ import androidx.compose.ui.graphics.lerp
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.log2
 import kotlin.math.min
 import kotlin.math.sin
 import androidx.compose.material3.LoadingIndicator
@@ -104,8 +106,6 @@ import com.izum1k.pocopaw.ui.theme.MorphShape
 import com.izum1k.pocopaw.ui.theme.YoinContainerShapes
 import com.izum1k.pocopaw.ui.theme.YoinMotion
 import com.izum1k.pocopaw.ui.theme.withTabularFigures
-import kotlin.math.roundToInt
-
 private const val CONTROL_ALPHA = 0.72f
 
 @Composable
@@ -574,7 +574,8 @@ private fun Modes(mode: CaptureMode, onMode: (CaptureMode) -> Unit) {
 
 /**
  * ISO and shutter on the camera's own third stops, each with Auto at its left end. The shutter
- * stops are even in exposure, so the bar is logarithmic in time. [metered] is what auto would use.
+ * runs slow to fast like a dial, logarithmic in time, with the handheld range given the most travel.
+ * [metered] is what auto would use.
  */
 @Composable
 fun ProPanel(
@@ -590,7 +591,8 @@ fun ProPanel(
     modifier: Modifier = Modifier,
 ) {
     val isoStops = CameraViewModel.isoStops(camera)
-    val shutterStops = CameraViewModel.shutterStops(camera)
+    val shutterStops = remember(camera) { CameraViewModel.shutterStops(camera).asReversed() }
+    val shutterWeights = remember(shutterStops) { shutterStops.map(::shutterStopWeight) }
     Column(
         modifier
             .fillMaxWidth()
@@ -615,18 +617,39 @@ fun ProPanel(
             clipped = clipped && shutterAuto,
             index = shutterStops.indexOf(CameraViewModel.snapShutter(exposureNs, camera)),
             count = shutterStops.size,
+            weights = shutterWeights,
             onIndex = { onShutter(it?.let(shutterStops::get)) },
         )
     }
 }
 
+/** Full travel within three stops of 1/125 s (1/1000 – 1/15), narrowing to 0.4 at the extremes. */
+private fun shutterStopWeight(ns: Long): Float {
+    val stops = abs(log2(ns / 8_000_000.0)).toFloat()
+    return (1f - 0.2f * (stops - 3f)).coerceIn(0.4f, 1f)
+}
+
 /**
- * Position 0 is Auto (null to [onIndex]), position i the (i − 1)th stop. [clipped]: auto ran out
+ * Position 0 is Auto (null to [onIndex]), position i the (i − 1)th stop. [weights] (one per stop,
+ * Auto counts as 1) sets how much travel each stop gets; uniform when null. [clipped]: auto ran out
  * of range and cannot make up the other one's exposure.
  */
 @Composable
-private fun StopSlider(label: String, value: String, auto: Boolean, clipped: Boolean, index: Int, count: Int, onIndex: (Int?) -> Unit) {
+private fun StopSlider(
+    label: String,
+    value: String,
+    auto: Boolean,
+    clipped: Boolean,
+    index: Int,
+    count: Int,
+    onIndex: (Int?) -> Unit,
+    weights: List<Float>? = null,
+) {
     val haptics = LocalHapticFeedback.current
+    val marks = remember(count, weights) {
+        val w = listOf(1f) + (weights ?: List(count) { 1f })
+        FloatArray(count + 1).also { m -> for (i in 1..count) m[i] = m[i - 1] + (w[i - 1] + w[i]) / 2 }
+    }
     val position = if (auto) 0 else index.coerceAtLeast(0) + 1
     var last by remember { mutableIntStateOf(position) }
     last = position
@@ -665,16 +688,16 @@ private fun StopSlider(label: String, value: String, auto: Boolean, clipped: Boo
             )
         }
         Slider(
-            value = position.toFloat(),
+            value = marks[position.coerceIn(0, count)],
             onValueChange = { v ->
-                val p = v.roundToInt().coerceIn(0, count)
+                val p = marks.indices.minBy { abs(marks[it] - v) }
                 if (p != last) {
                     last = p
                     haptics.performHapticFeedback(if (p == 0) HapticFeedbackType.ToggleOn else HapticFeedbackType.SegmentTick)
                     onIndex(if (p == 0) null else p - 1)
                 }
             },
-            valueRange = 0f..count.toFloat(),
+            valueRange = 0f..marks[count].coerceAtLeast(1f),
             enabled = count > 0,
             modifier = Modifier.weight(1f),
         )
