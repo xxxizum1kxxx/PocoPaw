@@ -23,8 +23,8 @@ class AppContainer(context: Context) {
     val settings = SettingsRepository(context, scope)
     private val cameraManager = context.getSystemService(CameraManager::class.java)
     val catalog = CameraCatalog(cameraManager)
-    val controller = CameraController(cameraManager)
     val motion = MotionMeter(context.getSystemService(SensorManager::class.java))
+    val controller = CameraController(cameraManager, motion)
     val output = MediaStoreWriter(context)
 }
 
