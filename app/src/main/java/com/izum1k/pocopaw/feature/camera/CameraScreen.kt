@@ -148,6 +148,8 @@ private fun CameraContent(vm: CameraViewModel) {
             countdown = ui.countdown,
             shutterTick = ui.shutterTick,
             cameraState = cameraState,
+            processing = ui.busy == Busy.PROCESSING,
+            processingProgress = { ui.progress },
             evDragEnabled = ui.mode == CaptureMode.PHOTO,
             controlRotation = rotation,
             onSurfaceAvailable = vm::onSurfaceAvailable,
@@ -201,8 +203,7 @@ private fun CameraContent(vm: CameraViewModel) {
         )
 
         ControlsWave(
-            live = cameraState is CameraController.State.Previewing || cameraState is CameraController.State.Capturing,
-            busy = ui.busy == Busy.CAPTURING || ui.busy == Busy.PROCESSING,
+            capturing = ui.busy == Busy.CAPTURING,
             modifier = Modifier
                 .padding(horizontal = SIDE_MARGIN + 12.dp)
                 .layout { measurable, constraints ->
@@ -210,7 +211,8 @@ private fun CameraContent(vm: CameraViewModel) {
                     layout(placeable.width, placeable.height) {
                         val gap = controlsTop - viewfinderBottom
                         val y = viewfinderBottom + (gap - placeable.height) / 2f
-                        val shown = ((gap - placeable.height - WAVE_CLEARANCE.toPx()) / WAVE_CLEARANCE.toPx()).coerceIn(0f, 1f)
+                        val room = gap - placeable.height - 2 * WAVE_MARGIN.toPx()
+                        val shown = (room / WAVE_MARGIN.toPx()).coerceIn(0f, 1f)
                         placeable.placeWithLayer(0, y.roundToInt()) { alpha = shown }
                     }
                 },
@@ -221,13 +223,13 @@ private fun CameraContent(vm: CameraViewModel) {
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(bottom = 16.dp),
+                .padding(bottom = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             SnackbarHost(snackbar, Modifier.align(Alignment.CenterHorizontally))
             Column(
                 Modifier.onPlaced { controlsTop = it.positionInRoot().y },
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Reveal(ui.mode == CaptureMode.PRO) {
                     ProPanel(
@@ -305,8 +307,8 @@ private val TOP_BAR_HEIGHT = 72.dp
 private val VIEWFINDER_GAP = 4.dp
 private val SIDE_MARGIN = 12.dp
 
-/** The wave fades in over this much more room than it needs, and is gone with less. */
-private val WAVE_CLEARANCE = 12.dp
+/** The wave keeps at least this much air above and below; it fades out rather than touch either side. */
+private val WAVE_MARGIN = 4.dp
 
 private fun hasCameraPermission(context: Context): Boolean =
     ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED

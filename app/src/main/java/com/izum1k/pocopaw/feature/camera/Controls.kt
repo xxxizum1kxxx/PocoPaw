@@ -32,7 +32,22 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
-import androidx.compose.material3.LinearWavyProgressIndicator
+import androidx.compose.animation.core.Animatable
+import androidx.compose.foundation.Canvas
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.lerp
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
+import kotlin.math.PI
+import kotlin.math.min
+import kotlin.math.sin
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.WavyProgressIndicatorDefaults
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -192,32 +207,69 @@ private fun QuickToggle(caption: String, value: String, checked: Boolean, rotati
 private val QuickTogglePressed = RoundedCornerShape(14.dp)
 
 /**
- * The seam between viewfinder and controls, in PiliPaw's wave (Yoin's WaveProgressBar): M3E's
- * wavy line flowing while the camera is live, hurrying while a shot is taken, flat when closed.
+ * The seam between viewfinder and controls, in PiliPaw's wave (Yoin's WaveProgressBar): a quiet
+ * straight line that swells into M3E's flowing wave while RAW frames are coming off the sensor.
+ * A single frame takes ~100ms, so every capture swells all the way before it settles back.
  */
 @Composable
-fun ControlsWave(live: Boolean, busy: Boolean, modifier: Modifier = Modifier) {
+fun ControlsWave(capturing: Boolean, modifier: Modifier = Modifier) {
     val base = WavyProgressIndicatorDefaults.linearIndicatorStroke
     val stroke = remember(base) { Stroke(width = base.width * 0.92f, cap = base.cap) }
-    val amplitude by animateFloatAsState(if (live) 1f else 0f, YoinMotion.defaultSpatialSpec(), label = "waveAmplitude")
-    LinearWavyProgressIndicator(
-        progress = { 1f },
-        modifier = modifier.fillMaxWidth().height(18.dp),
-        color = MaterialTheme.colorScheme.primary,
-        trackColor = Color.Transparent,
-        stroke = stroke,
-        trackStroke = stroke,
-        gapSize = 0.dp,
-        stopSize = 0.dp,
-        amplitude = { amplitude },
-        wavelength = 24.dp,
-        waveSpeed = when {
-            busy -> 72.dp
-            live -> 24.dp
-            else -> 0.dp
-        },
-    )
+    val amplitude = remember { Animatable(0f) }
+    val current by rememberUpdatedState(capturing)
+    val rise = YoinMotion.fastSpatialSpec<Float>()
+    val settle = YoinMotion.slowSpatialSpec<Float>()
+    LaunchedEffect(amplitude) {
+        while (true) {
+            snapshotFlow { current }.first { it }
+            amplitude.animateTo(1f, rise)
+            snapshotFlow { current }.first { !it }
+            amplitude.animateTo(0f, settle)
+        }
+    }
+    // M3E's indicator eases amplitude on its own clock and only while its progress moves; a
+    // seam that must go flat on cue draws the same wave itself.
+    var phase by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(amplitude) {
+        var last = 0L
+        snapshotFlow { amplitude.value > 0f }.collectLatest { moving ->
+            last = 0L
+            while (moving) {
+                withFrameNanos { now ->
+                    if (last != 0L) phase += (now - last) / 1e9f * WAVE_SPEED_PER_S
+                    last = now
+                }
+            }
+        }
+    }
+    val rest = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+    val active = MaterialTheme.colorScheme.primary
+    val path = remember { Path() }
+    Canvas(modifier.fillMaxWidth().height(WAVE_HEIGHT)) {
+        val a = amplitude.value.coerceIn(0f, 1f)
+        val width = stroke.width
+        val half = width / 2f
+        val mid = size.height / 2f
+        val peak = (size.height - width) / 2f * a
+        val wavelength = WAVE_LENGTH.toPx()
+        val shift = phase * density
+        path.rewind()
+        var x = half
+        path.moveTo(x, mid + peak * sin((x - shift) / wavelength * 2f * PI.toFloat()))
+        val step = 2.dp.toPx()
+        while (x < size.width - half) {
+            x = min(x + step, size.width - half)
+            path.lineTo(x, mid + peak * sin((x - shift) / wavelength * 2f * PI.toFloat()))
+        }
+        drawPath(path, lerp(rest, active, a), style = Stroke(width = width, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    }
 }
+
+val WAVE_HEIGHT = 14.dp
+private val WAVE_LENGTH = 24.dp
+
+/** dp per second the crests travel (PiliPaw's wave scrubber runs at 24, this one hurries). */
+private const val WAVE_SPEED_PER_S = 48f
 
 private fun flashLabel(mode: FlashMode): Int = when (mode) {
     FlashMode.OFF -> R.string.value_off
@@ -353,7 +405,7 @@ fun ModeBar(mode: CaptureMode, onMode: (CaptureMode) -> Unit, modifier: Modifier
                             onMode(m)
                         }
                     }
-                    .padding(horizontal = 20.dp, vertical = 8.dp),
+                    .padding(horizontal = 20.dp, vertical = 6.dp),
             ) {
                 Text(
                     stringResource(if (m == CaptureMode.PHOTO) R.string.mode_photo else R.string.mode_pro),
@@ -461,7 +513,7 @@ private fun Thumbnail(bitmap: Bitmap?, hasLast: Boolean, rotation: Float, onClic
     val haptics = LocalHapticFeedback.current
     Box(
         Modifier
-            .size(56.dp)
+            .size(52.dp)
             .clip(MaterialShapes.Cookie9Sided.toShape())
             .background(MaterialTheme.colorScheme.surfaceContainerHigh)
             .clickable(enabled = hasLast) {
@@ -513,7 +565,7 @@ private fun ShutterButton(busy: Busy, countdown: Int?, onClick: () -> Unit) {
     )
     Box(
         Modifier
-            .size(84.dp)
+            .size(76.dp)
             .clip(CircleShape)
             .background(Color.White.copy(alpha = 0.18f))
             .clickable(interactionSource = interaction, indication = null, enabled = !working) {
@@ -525,7 +577,7 @@ private fun ShutterButton(busy: Busy, countdown: Int?, onClick: () -> Unit) {
     ) {
         Box(
             Modifier
-                .size(68.dp)
+                .size(62.dp)
                 .graphicsLayer {
                     scaleX = scale
                     scaleY = scale
@@ -535,7 +587,7 @@ private fun ShutterButton(busy: Busy, countdown: Int?, onClick: () -> Unit) {
             contentAlignment = Alignment.Center,
         ) {
             when {
-                working -> LoadingIndicator(color = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(40.dp))
+                busy == Busy.PROCESSING -> LoadingIndicator(color = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(36.dp))
                 countdown != null -> Text(
                     countdown.toString(),
                     style = MaterialTheme.typography.titleLarge.withTabularFigures(),
@@ -560,7 +612,7 @@ private fun FlipButton(enabled: Boolean, rotation: Float, onClick: () -> Unit) {
         },
         enabled = enabled,
         shapes = IconButtonDefaults.shapes(),
-        modifier = Modifier.size(56.dp).graphicsLayer { this.alpha = alpha },
+        modifier = Modifier.size(52.dp).graphicsLayer { this.alpha = alpha },
     ) {
         Icon(
             YoinSymbols.Refresh,

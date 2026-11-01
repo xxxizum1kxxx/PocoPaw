@@ -82,6 +82,8 @@ fun Viewfinder(
     countdown: Int?,
     shutterTick: Int,
     cameraState: CameraController.State,
+    processing: Boolean,
+    processingProgress: () -> Float,
     evDragEnabled: Boolean,
     controlRotation: Float,
     onSurfaceAvailable: (SurfaceTexture) -> Unit,
@@ -135,6 +137,8 @@ fun Viewfinder(
             enter = fadeIn(YoinMotion.defaultEffectsSpec()),
             exit = fadeOut(YoinMotion.fastEffectsSpec()),
         ) { LoadingIndicator() }
+
+        ProcessingVeil(processing, processingProgress)
 
         if (cameraState is CameraController.State.Error) ErrorPanel(cameraState.reason, onRetry)
 
@@ -309,6 +313,16 @@ private fun GridOverlay(style: GridStyle, modifier: Modifier) {
             drawLine(c, Offset(0f, size.height * f), Offset(size.width, size.height * f), stroke)
         }
     }
+}
+
+/**
+ * Over the viewfinder while the pipeline merges the shot. A plain dimming for now: the look is
+ * still to be chosen, and [progress] (0..1 from the pipeline) is here for it.
+ */
+@Composable
+private fun ProcessingVeil(visible: Boolean, @Suppress("UNUSED_PARAMETER") progress: () -> Float) {
+    val alpha by animateFloatAsState(if (visible) 0.45f else 0f, YoinMotion.defaultEffectsSpec(), label = "processingVeil")
+    Box(Modifier.fillMaxSize().graphicsLayer { this.alpha = alpha }.background(Color.Black))
 }
 
 @Composable
