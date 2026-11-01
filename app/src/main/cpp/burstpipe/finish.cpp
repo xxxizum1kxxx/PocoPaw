@@ -329,9 +329,21 @@ void pixel_look(ImageF& rgb, const LookParams& p) {
     parallel_for(rgb.h, [&](int y) {
         float* q = rgb.row(y);
         for (int x = 0; x < rgb.w; x++, q += 3) {
+            float mx = std::max(q[0], std::max(q[1], q[2]));
+            // coloured highlights (lamp-lit wood, skin) roll off on the max channel with hue and saturation kept,
+            // instead of the leading channel clipping first; neutrals are left for the gamut fit below
+            constexpr float kKnee = 0.7f;
+            if (mx > kKnee) {
+                float mn = std::min(q[0], std::min(q[1], q[2]));
+                float t = (mx - kKnee) / (1 - kKnee);
+                float shoulder = kKnee + (1 - kKnee) * t / (1 + t);
+                float chroma = clampf(2 * (mx - std::max(0.f, mn)) / mx, 0.f, 1.f);
+                float g = (mx + (shoulder - mx) * chroma) / mx;
+                for (int c = 0; c < 3; c++) q[c] *= g;
+                mx *= g;
+            }
             // fit out-of-gamut highlights by desaturating toward luminance instead of hard per-channel clipping
             float L = std::min(1.f, std::max(0.f, luma709(q[0], q[1], q[2])));
-            float mx = std::max(q[0], std::max(q[1], q[2]));
             if (mx > 1.f) { float k = (1.f - L) / std::max(1e-6f, mx - L); for (int c = 0; c < 3; c++) q[c] = L + (q[c] - L) * k; }
             for (int c = 0; c < 3; c++) {
                 float v = srgb_oetf(q[c]);
