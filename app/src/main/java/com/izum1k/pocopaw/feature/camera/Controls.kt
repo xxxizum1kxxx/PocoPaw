@@ -184,7 +184,7 @@ fun TopControls(
                 haptics.performHapticFeedback(if (settings.grid) HapticFeedbackType.ToggleOff else HapticFeedbackType.ToggleOn)
                 onGrid(!settings.grid)
             }
-            QuickMoreToggle(quickOpen, rotation) {
+            QuickMoreToggle(quickOpen) {
                 haptics.performHapticFeedback(if (quickOpen) HapticFeedbackType.ToggleOff else HapticFeedbackType.ToggleOn)
                 onQuick(!quickOpen)
             }
@@ -241,9 +241,9 @@ private fun QuickToggle(caption: String, value: AnnotatedString, checked: Boolea
 
 private val QuickTogglePressed = RoundedCornerShape(14.dp)
 
-/** Opens [QuickSettingsPanel]: a chevron that turns over while it is open. */
+/** Opens [QuickSettingsPanel]: a chevron that turns over while it is open, pointing down at the panel in any rotation. */
 @Composable
-private fun QuickMoreToggle(open: Boolean, rotation: Float, onClick: () -> Unit) {
+private fun QuickMoreToggle(open: Boolean, onClick: () -> Unit) {
     val turn by animateFloatAsState(if (open) 180f else 0f, YoinMotion.defaultSpatialSpec(), label = "quickChevron")
     val label = stringResource(R.string.quick_settings)
     ToggleButton(
@@ -255,7 +255,7 @@ private fun QuickMoreToggle(open: Boolean, rotation: Float, onClick: () -> Unit)
         modifier = Modifier.size(width = 40.dp, height = 48.dp).semantics { contentDescription = label },
     ) {
         val tint = if (open) MaterialTheme.colorScheme.onSecondary else MaterialTheme.colorScheme.onSurface
-        Canvas(Modifier.size(18.dp).graphicsLayer { rotationZ = rotation + turn }) {
+        Canvas(Modifier.size(18.dp).graphicsLayer { rotationZ = turn }) {
             val w = size.width
             val h = size.height
             val path = Path().apply {
