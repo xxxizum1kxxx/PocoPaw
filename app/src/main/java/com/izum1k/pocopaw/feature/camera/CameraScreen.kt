@@ -10,6 +10,7 @@ import android.provider.Settings
 import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -67,6 +68,8 @@ import com.izum1k.pocopaw.data.AspectRatio
 import com.izum1k.pocopaw.ui.component.Reveal
 import com.izum1k.pocopaw.ui.navigation.LocalNavigator
 import com.izum1k.pocopaw.ui.navigation.Route
+import com.izum1k.pocopaw.ui.theme.YoinMotion
+import kotlin.math.max
 import kotlin.math.roundToInt
 
 @Composable
@@ -196,9 +199,11 @@ private fun CameraContent(vm: CameraViewModel) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             SnackbarHost(snackbar, Modifier.align(Alignment.CenterHorizontally))
-            // In 4:3 the info and the lenses sit in the black under the picture; as a taller framing
-            // blows up under them they rise with it, to end up [FLOAT_INSET] inside its bottom edge.
+            // In 4:3 the info and the lenses sit in the black under the picture. A taller framing
+            // blowing up under them, or the Pro panel taking their place, floats them onto the
+            // picture, [FLOAT_INSET] inside its bottom edge.
             var floatTop by remember { mutableFloatStateOf(0f) }
+            val pro by animateFloatAsState(if (ui.mode == CaptureMode.PRO) 1f else 0f, YoinMotion.defaultSpatialSpec(), label = "proFloat")
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Column(
                     Modifier
@@ -207,9 +212,11 @@ private fun CameraContent(vm: CameraViewModel) {
                         .layout { measurable, constraints ->
                             val placeable = measurable.measure(constraints)
                             layout(placeable.width, placeable.height) {
-                                val bottom = statusTop.toPx() + (placeable.width - 2 * SIDE_MARGIN.toPx()) * tallest
+                                val b = frame.blowUp(tallest)
+                                val top = statusTop.toPx() + (TOP_BAR_HEIGHT + VIEWFINDER_GAP).toPx() * (1f - b)
+                                val bottom = top + (placeable.width - 2 * SIDE_MARGIN.toPx()) * frame.heightRatio
                                 val lift = (floatTop + placeable.height - bottom + FLOAT_INSET.toPx()).coerceAtLeast(0f)
-                                placeable.place(0, -(lift * frame.blowUp(tallest)).roundToInt())
+                                placeable.place(0, -(lift * max(b, pro)).roundToInt())
                             }
                         },
                     verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -236,6 +243,7 @@ private fun CameraContent(vm: CameraViewModel) {
                         exposureNs = ui.manualExposureNs,
                         shutterAuto = ui.shutterAuto,
                         metered = CameraViewModel.priorityExposure(ui, live, current),
+                        clipped = CameraViewModel.priorityClipped(ui, live, current),
                         onIso = vm::setIso,
                         onShutter = vm::setShutter,
                     )

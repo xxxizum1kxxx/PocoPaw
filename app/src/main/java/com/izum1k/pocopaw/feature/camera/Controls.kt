@@ -523,6 +523,7 @@ fun ProPanel(
     exposureNs: Long,
     shutterAuto: Boolean,
     metered: ManualExposure?,
+    clipped: Boolean,
     onIso: (Int?) -> Unit,
     onShutter: (Long?) -> Unit,
     modifier: Modifier = Modifier,
@@ -535,12 +536,13 @@ fun ProPanel(
             .padding(horizontal = 16.dp)
             .clip(YoinContainerShapes.Card)
             .background(controlContainer())
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            .padding(horizontal = 16.dp, vertical = 2.dp),
     ) {
         StopSlider(
             label = "ISO",
             value = if (isoAuto) metered?.iso?.toString() ?: "–" else iso.toString(),
             auto = isoAuto,
+            clipped = clipped && isoAuto,
             index = isoStops.indexOf(CameraViewModel.snapIso(iso, camera)),
             count = isoStops.size,
             onIndex = { onIso(it?.let(isoStops::get)) },
@@ -549,6 +551,7 @@ fun ProPanel(
             label = stringResource(R.string.control_shutter),
             value = if (shutterAuto) metered?.exposureNs?.let(CameraFormat::shutter) ?: "–" else CameraFormat.shutter(exposureNs),
             auto = shutterAuto,
+            clipped = clipped && shutterAuto,
             index = shutterStops.indexOf(CameraViewModel.snapShutter(exposureNs, camera)),
             count = shutterStops.size,
             onIndex = { onShutter(it?.let(shutterStops::get)) },
@@ -556,22 +559,39 @@ fun ProPanel(
     }
 }
 
-/** Position 0 is Auto (null to [onIndex]), position i the (i − 1)th stop. */
+/**
+ * Position 0 is Auto (null to [onIndex]), position i the (i − 1)th stop. [clipped]: auto ran out
+ * of range and cannot make up the other one's exposure.
+ */
 @Composable
-private fun StopSlider(label: String, value: String, auto: Boolean, index: Int, count: Int, onIndex: (Int?) -> Unit) {
+private fun StopSlider(label: String, value: String, auto: Boolean, clipped: Boolean, index: Int, count: Int, onIndex: (Int?) -> Unit) {
     val haptics = LocalHapticFeedback.current
     val position = if (auto) 0 else index.coerceAtLeast(0) + 1
     var last by remember { mutableIntStateOf(position) }
     last = position
     val autoAlpha by animateFloatAsState(if (auto) 1f else 0f, YoinMotion.defaultEffectsSpec(), label = "autoAlpha")
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    val autoColor by animateColorAsState(
+        if (clipped) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+        YoinMotion.defaultEffectsSpec(),
+        label = "autoColor",
+    )
+    val valueColor by animateColorAsState(
+        when {
+            clipped -> MaterialTheme.colorScheme.error
+            auto -> MaterialTheme.colorScheme.onSurfaceVariant
+            else -> MaterialTheme.colorScheme.onSurface
+        },
+        YoinMotion.defaultEffectsSpec(),
+        label = "valueColor",
+    )
+    Row(Modifier.height(SLIDER_ROW_HEIGHT), verticalAlignment = Alignment.CenterVertically) {
         Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, softWrap = false, modifier = Modifier.width(60.dp))
         Column(Modifier.widthIn(min = 56.dp)) {
             Text(
                 stringResource(R.string.value_auto),
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary,
+                color = autoColor,
                 softWrap = false,
                 modifier = Modifier.graphicsLayer { alpha = autoAlpha },
             )
@@ -579,7 +599,7 @@ private fun StopSlider(label: String, value: String, auto: Boolean, index: Int, 
                 value,
                 style = MaterialTheme.typography.titleSmall.withTabularFigures(),
                 fontWeight = FontWeight.SemiBold,
-                color = if (auto) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                color = valueColor,
                 softWrap = false,
             )
         }
@@ -599,6 +619,9 @@ private fun StopSlider(label: String, value: String, auto: Boolean, index: Int, 
         )
     }
 }
+
+/** Tight enough for the panel to fit between the 4:3 picture and the wave; the thumb overhangs it. */
+private val SLIDER_ROW_HEIGHT = 40.dp
 
 @Composable
 fun ShutterRow(

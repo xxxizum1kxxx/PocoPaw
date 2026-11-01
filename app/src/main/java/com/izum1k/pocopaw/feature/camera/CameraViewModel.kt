@@ -429,6 +429,13 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
             }
         }
 
+        /** The auto half of [priorityExposure] hit its range and misses AE's exposure by more than a sixth of a stop. */
+        fun priorityClipped(s: CameraUiState, live: LiveExposure, cam: CameraInfo?): Boolean {
+            val m = priorityExposure(s, live, cam) ?: return false
+            val product = (live.iso ?: return false).toDouble() * (live.exposureNs ?: return false)
+            return abs(ln(m.iso.toDouble() * m.exposureNs / product)) > ln(2.0) / 6
+        }
+
         /**
          * Displayed (portrait, mirrored for the front camera) to sensor coordinates. The preview
          * shows the sensor rotated clockwise by its orientation.
