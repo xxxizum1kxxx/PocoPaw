@@ -283,8 +283,8 @@ private fun PermissionGate(asked: Boolean, onRequest: () -> Unit) {
     }
 }
 
-/** [TopControls]' height under the status bar: 56dp of controls and 8dp above and below. */
-private val TOP_BAR_HEIGHT = 72.dp
+/** [TopControls]' height under the status bar: 56dp of controls, 12dp above and 8dp below. */
+private val TOP_BAR_HEIGHT = 76.dp
 private val VIEWFINDER_GAP = 4.dp
 private val SIDE_MARGIN = 12.dp
 /** The camera whose frames are on screen; a reopen mid-capture (RAW budget) keeps the busy flag instead. */
