@@ -300,7 +300,7 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
         if (settings.value.shutterSound) sound.play(MediaActionSound.SHUTTER_CLICK)
         val spec = CaptureSpec(
             frameCount = pipeline.framesPerCapture,
-            exposure = pipeline.exposureFor(captureExposure(s, cam), live.value.copy(motionRadPerSec = motion.rms()), cam),
+            exposure = pipeline.exposureFor(captureExposure(s, cam, fires), live.value.copy(motionRadPerSec = motion.rms()), cam),
             flash = if (fires) settings.value.flash else FlashMode.OFF,
             deviceRotation = deviceRotation,
             zoomRatio = s.zoom,
@@ -375,7 +375,13 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
         else -> ExposurePlan.Manual(ManualExposure(s.manualIso, s.manualExposureNs))
     }
 
-    private fun captureExposure(s: CameraUiState, cam: CameraInfo): ExposurePlan {
+    /**
+     * With the flash firing, anything left on auto goes to AE's precapture flash metering: the
+     * preview metered the scene without the flash, so a priority exposure from it plus a full
+     * flash would overexpose. Fully manual keeps the user's exposure, with the flash at full power.
+     */
+    private fun captureExposure(s: CameraUiState, cam: CameraInfo, flash: Boolean): ExposurePlan {
+        if (flash && s.mode == CaptureMode.PRO && (s.isoAuto || s.shutterAuto)) return ExposurePlan.Auto()
         if (s.mode != CaptureMode.PRO || s.isoAuto == s.shutterAuto) return exposurePlan(s)
         return priorityExposure(s, live.value, cam)?.let { ExposurePlan.Manual(it) } ?: ExposurePlan.Auto()
     }

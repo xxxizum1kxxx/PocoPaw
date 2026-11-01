@@ -217,6 +217,14 @@ class CameraController(private val manager: CameraManager) {
                 budget.consume(spec.frameCount)
                 s.captureBurst(requests, collector.callback, handler)
                 val frames = withTimeout(captureTimeoutMs(spec)) { collector.await() }
+                frames.first().result.let { r ->
+                    Log.i(
+                        TAG,
+                        "captured ${frames.size}: ISO ${r.get(CaptureResult.SENSOR_SENSITIVITY)}, " +
+                            "${r.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.div(1000)}us, flash state ${r.get(CaptureResult.FLASH_STATE)}, " +
+                            "AE mode ${r.get(CaptureResult.CONTROL_AE_MODE)}, preview was ISO ${_live.value.iso} ${_live.value.exposureNs?.div(1000)}us",
+                    )
+                }
                 RawBurst(
                     frames = frames,
                     metadata = RawMetadata.from(
@@ -431,7 +439,8 @@ class CameraController(private val manager: CameraManager) {
                 b.set(CaptureRequest.SENSOR_SENSITIVITY, iso)
                 b.set(CaptureRequest.SENSOR_EXPOSURE_TIME, exp)
                 b.set(CaptureRequest.SENSOR_FRAME_DURATION, exp)
-                val fire = !preview && info.hasFlash && flash == FlashMode.ON
+                // A capture's flash comes resolved (Auto that will not fire arrives as Off).
+                val fire = !preview && info.hasFlash && flash != FlashMode.OFF
                 b.set(CaptureRequest.FLASH_MODE, if (fire) CameraMetadata.FLASH_MODE_SINGLE else CameraMetadata.FLASH_MODE_OFF)
             }
         }
