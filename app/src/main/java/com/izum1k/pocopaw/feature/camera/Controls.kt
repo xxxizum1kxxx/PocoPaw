@@ -593,7 +593,7 @@ private fun DevPill(
 
 /** AF state (primary once focused, quiet while it scans) and the lens's focus distance. */
 @Composable
-fun AfChip(live: LiveExposure, rotation: Float, modifier: Modifier = Modifier) {
+fun AfChip(live: LiveExposure, modifier: Modifier = Modifier, onClick: () -> Unit = {}) {
     val dioptres = live.focusDioptres ?: return
     val color by animateColorAsState(
         when {
@@ -606,9 +606,9 @@ fun AfChip(live: LiveExposure, rotation: Float, modifier: Modifier = Modifier) {
     )
     Row(
         modifier
-            .graphicsLayer { rotationZ = rotation }
             .clip(PillShape)
             .background(controlContainer())
+            .clickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
@@ -618,11 +618,10 @@ fun AfChip(live: LiveExposure, rotation: Float, modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun EvChip(label: String, rotation: Float, modifier: Modifier = Modifier, tag: String = "EV", onClick: (() -> Unit)? = null) {
+fun EvChip(label: String, modifier: Modifier = Modifier, tag: String = "EV", onClick: (() -> Unit)? = null) {
     val haptics = LocalHapticFeedback.current
     Row(
         modifier
-            .graphicsLayer { rotationZ = rotation }
             .clip(PillShape)
             .background(controlContainer())
             .then(

@@ -2,6 +2,13 @@ package com.izum1k.pocopaw.feature.camera
 
 import android.view.OrientationEventListener
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Constraints
+import kotlin.math.roundToInt
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -50,6 +57,27 @@ fun animatedControlRotation(deviceRotation: Int): Float {
     }
     val angle by animateFloatAsState(target, YoinMotion.defaultSpatialSpec(), label = "controlRotation")
     return angle
+}
+
+/**
+ * Lays [content] out upright for the user: in a box turned by [rotation] whose sides swap on a
+ * quarter turn, so its corners are the user's corners rather than the portrait screen's.
+ */
+@Composable
+fun UprightBox(rotation: Float, modifier: Modifier = Modifier, content: @Composable BoxScope.() -> Unit) {
+    val swap = Math.floorMod((rotation / 90f).roundToInt(), 2) == 1
+    Box(
+        modifier.layout { measurable, constraints ->
+            val w = constraints.maxWidth
+            val h = constraints.maxHeight
+            val pw = if (swap) h else w
+            val ph = if (swap) w else h
+            val placeable = measurable.measure(Constraints.fixed(pw, ph))
+            layout(w, h) { placeable.placeWithLayer((w - pw) / 2, (h - ph) / 2) { rotationZ = rotation } }
+        },
+    ) {
+        Box(Modifier.fillMaxSize(), content = content)
+    }
 }
 
 private const val HYSTERESIS = 10

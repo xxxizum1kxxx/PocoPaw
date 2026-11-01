@@ -190,15 +190,20 @@ private fun CameraContent(vm: CameraViewModel) {
                 }
                 .padding(horizontal = SIDE_MARGIN),
             topOverlay = {
-                Column(
-                    Modifier
-                        .align(Alignment.TopStart)
-                        .offset { IntOffset(0, ((TOP_BAR_HEIGHT - TOP_INSET + FLOAT_INSET).toPx() * frame.blowUp(tallest)).roundToInt()) },
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                // In the user's top corner, clear of the controls floating on a tall framing.
+                val b = frame.blowUp(tallest)
+                UprightBox(
+                    rotation,
+                    Modifier.padding(
+                        top = (TOP_BAR_HEIGHT - TOP_INSET + FLOAT_INSET) * b,
+                        bottom = CHIP_FLOAT_CLEARANCE * max(b, if (ui.mode == CaptureMode.PRO) 1f else 0f),
+                    ),
                 ) {
-                    PillReveal(settings.developerInfo && live.focusDioptres != null) { AfChip(live, rotation) }
-                    PillReveal(evLabel != null && ui.focus == null) { EvChip(evChip, rotation) { vm.setEv(0) } }
-                    PillReveal(ui.wbShift != 0) { EvChip(wbChip, rotation, tag = "WB") { vm.setWb(0) } }
+                    Column(Modifier.align(Alignment.TopStart), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        PillReveal(settings.developerInfo && live.focusDioptres != null) { AfChip(live, onClick = vm::unlockFocus) }
+                        PillReveal(evLabel != null && ui.focus == null) { EvChip(evChip) { vm.setEv(0) } }
+                        PillReveal(ui.wbShift != 0) { EvChip(wbChip, tag = "WB") { vm.setWb(0) } }
+                    }
                 }
             },
             cover = {
@@ -407,6 +412,9 @@ private val TOP_INSET = 8.dp
 
 /** How far inside the tallest framing's edges the controls floating on it keep. */
 private val FLOAT_INSET = 18.dp
+
+/** The info and lenses floating on a tall framing's bottom, which the chips keep clear of. */
+private val CHIP_FLOAT_CLEARANCE = 104.dp
 /** The camera whose frames are on screen; a reopen mid-capture (RAW budget) keeps the busy flag instead. */
 private fun CameraController.State.showing(): String? = when (this) {
     is CameraController.State.Previewing -> cameraId

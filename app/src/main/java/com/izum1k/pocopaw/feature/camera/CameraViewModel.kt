@@ -328,6 +328,9 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
         }
     }
 
+    /** Back to continuous AF and AE, if a tap lock is on. */
+    fun unlockFocus() = releaseFocus()
+
     private fun releaseFocus() {
         focusResetJob?.cancel()
         if (_ui.value.focus == null) return
