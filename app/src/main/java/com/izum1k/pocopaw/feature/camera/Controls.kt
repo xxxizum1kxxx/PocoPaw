@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -87,6 +88,7 @@ import com.izum1k.pocopaw.data.CameraSettings
 import com.izum1k.pocopaw.data.FlashMode
 import com.izum1k.pocopaw.data.TimerMode
 import com.izum1k.pocopaw.ui.component.PillShape
+import com.izum1k.pocopaw.ui.component.Reveal
 import com.izum1k.pocopaw.ui.theme.MorphShape
 import com.izum1k.pocopaw.ui.theme.YoinContainerShapes
 import com.izum1k.pocopaw.ui.theme.YoinMotion
@@ -343,24 +345,37 @@ fun DevChip(info: CameraInfo?, remaining: Int, limit: Int, live: LiveExposure, l
         YoinMotion.defaultEffectsSpec(),
         label = "budgetColor",
     )
+    val numbers = MaterialTheme.typography.labelMedium.withTabularFigures()
+    val quiet = MaterialTheme.colorScheme.onSurfaceVariant
+    // The last pipeline run gets a pill of its own: one row with it overflows a phone's width.
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        DevPill {
+            Text("RAW", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, softWrap = false)
+            Text("${info.rawSize.width}×${info.rawSize.height}", style = numbers, softWrap = false)
+            live.iso?.let { Text("ISO $it", style = numbers, color = quiet, softWrap = false) }
+            live.exposureNs?.let { Text(CameraFormat.shutter(it), style = numbers, color = quiet, softWrap = false) }
+            Text("$remaining/$limit", style = numbers, color = remainingColor, softWrap = false)
+        }
+        Reveal(lastRun != null) {
+            val run = lastRun ?: return@Reveal
+            DevPill {
+                Text(stringResource(R.string.dev_processed, run.frames, run.millis / 1000f), style = numbers, color = quiet, softWrap = false)
+            }
+        }
+    }
+}
+
+@Composable
+private fun DevPill(content: @Composable RowScope.() -> Unit) {
     Row(
-        modifier
+        Modifier
             .clip(PillShape)
             .background(controlContainer())
             .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
-    ) {
-        val numbers = MaterialTheme.typography.labelMedium.withTabularFigures()
-        Text("RAW", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-        Text("${info.rawSize.width}×${info.rawSize.height}", style = numbers)
-        live.iso?.let { Text("ISO $it", style = numbers, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        live.exposureNs?.let { Text(CameraFormat.shutter(it), style = numbers, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        Text("$remaining/$limit", style = numbers, color = remainingColor)
-        lastRun?.let {
-            Text(stringResource(R.string.dev_processed, it.frames, it.millis / 1000f), style = numbers, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
+        content = content,
+    )
 }
 
 @Composable
