@@ -420,6 +420,11 @@ void wb_shift(ImageF& rgb, float cool) {
     });
 }
 
+float noise_scaled_local_contrast(float amount, float visibleSigma) {
+    // clean bursts sit at visible sigma 0.004-0.007; dim brackets and dark scenes reach 0.03
+    return amount * clampf(0.006f / std::max(1e-6f, visibleSigma), 0.4f, 1.f);
+}
+
 void local_contrast(ImageF& rgb, float amount, float radiusFrac) {
     if (amount <= 0) return;
     // self-guided filter (He et al. 2010) on display luma: edge-preserving base, so boosting the

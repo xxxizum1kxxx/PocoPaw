@@ -48,7 +48,7 @@ private:
     ImageF mosaic_, rgb_;
     HdrLuma hdr_;
     UltraHdrStats us_;
-    double meanWeight_ = 1, sigma_ = 0, visibleSigma_ = 0, chroma_ = 0, maxShift_ = 0;
+    double meanWeight_ = 1, sigma_ = 0, visibleSigma_ = 0, chroma_ = 0, localContrast_ = 0, maxShift_ = 0;
     KrStats ks_;
     ToneInfo tone_{};
     double tAlign_ = 0, tNoise_ = 0, tMerge_ = 0, tUhdr_ = 0;

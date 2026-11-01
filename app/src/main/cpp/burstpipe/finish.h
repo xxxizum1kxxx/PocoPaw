@@ -33,6 +33,8 @@ void pixel_look(ImageF& rgb, const LookParams& p);          // sRGB OETF + S-cur
 void sharpen_luma(ImageF& rgb, float amount, float radius);
 void wb_shift(ImageF& rgb, float cool);                      // linear sRGB
 void local_contrast(ImageF& rgb, float amount, float radiusFrac);  // display referred
+// local contrast amount eased off when the visible noise is high, so it does not pull up shadow grain
+float noise_scaled_local_contrast(float amount, float visibleSigma);
 void hue_tune(ImageF& rgb, const LookParams& p);            // display referred
 bool apply_look_preset(const std::string& name, LookParams& p);   // default | pixel | night
 bool write_jpeg(const std::string& path, const ImageF& rgb, int quality, int downscale);

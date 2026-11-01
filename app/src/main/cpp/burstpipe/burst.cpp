@@ -168,7 +168,8 @@ void BurstSession::finish(const LookParams& lp, bool keepHdr) {
     t = Timer(); chroma_denoise(rgb_, chroma); ft_.chroma = t.ms();
     hdr_ = keepHdr ? hdr_luma(rgb_, 1) : HdrLuma();
     t = Timer(); tone_ = local_tonemap(rgb_, lp); ft_.tonemap = t.ms();
-    t = Timer(); pixel_look(rgb_, lp); local_contrast(rgb_, lp.localContrast, lp.localRadius); hue_tune(rgb_, lp); ft_.look = t.ms();
+    localContrast_ = noise_scaled_local_contrast(lp.localContrast, (float)visibleSigma_);
+    t = Timer(); pixel_look(rgb_, lp); local_contrast(rgb_, localContrast_, lp.localRadius); hue_tune(rgb_, lp); ft_.look = t.ms();
     t = Timer(); sharpen_luma(rgb_, lp.sharpen, lp.sharpenRadius); ft_.sharpen = t.ms();
 }
 
@@ -191,11 +192,11 @@ std::string BurstSession::summary() const {
     }
     if (kr_ && (opt_.lcaR[0] != 0 || opt_.lcaB[0] != 0)) mode += " lca";
     snprintf(buf, sizeof buf,
-             "%s %dx%d ref=%d threads=%d | noise var=%.4f*S+%.3f weight=%.3f shift=%.1f | sigma=%.5f visible=%.4f chroma=%.2f | "
+             "%s %dx%d ref=%d threads=%d | noise var=%.4f*S+%.3f weight=%.3f shift=%.1f | sigma=%.5f visible=%.4f chroma=%.2f local=%.2f | "
              "tone key=%.4f short=%.2f long=%.2f | ms align %.0f noise %.0f merge %.0f lsc+wb %.0f demosaic %.0f ccm %.0f "
              "chroma %.0f tonemap %.0f look %.0f sharpen %.0f",
              mode.c_str(), m_.width, m_.height, ref_, g_threads, nm_.a, nm_.b, meanWeight_, maxShift_, sigma_,
-             visibleSigma_, chroma_, tone_.keyBefore, tone_.gainShort, tone_.gainLong, tAlign_, tNoise_, tMerge_,
+             visibleSigma_, chroma_, localContrast_, tone_.keyBefore, tone_.gainShort, tone_.gainLong, tAlign_, tNoise_, tMerge_,
              ft_.lscwb, ft_.demosaic, ft_.color, ft_.chroma, ft_.tonemap, ft_.look, ft_.sharpen);
     std::string s = buf;
     if (us_.bytes) {
