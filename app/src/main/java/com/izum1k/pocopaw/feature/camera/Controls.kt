@@ -474,7 +474,7 @@ private fun StopSlider(label: String, value: String, index: Int, count: Int, onI
     val haptics = LocalHapticFeedback.current
     var last by remember { mutableIntStateOf(index) }
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(44.dp))
+        Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, softWrap = false, modifier = Modifier.width(60.dp))
         Text(
             value,
             style = MaterialTheme.typography.titleSmall.withTabularFigures(),
