@@ -14,6 +14,12 @@ sealed interface Route : NavKey {
 
     /** RAW specifications of every usable camera. */
     @Serializable data object Capabilities : Route
+
+    /** The CAPTURE_P1 list, for collecting the offline pipeline's test material. */
+    @Serializable data object P1Captures : Route
+
+    /** One CAPTURE_P1 item, by its name. */
+    @Serializable data class P1Capture(val item: String) : Route
 }
 
 class Navigator(internal val backStack: NavBackStack<NavKey>) {

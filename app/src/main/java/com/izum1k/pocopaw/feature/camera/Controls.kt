@@ -1087,7 +1087,7 @@ private fun Thumbnail(bitmap: Bitmap?, hasLast: Boolean, rotation: Float, onClic
 }
 
 @Composable
-private fun ShutterButton(busy: Busy, countdown: Int?, onClick: () -> Unit) {
+internal fun ShutterButton(busy: Busy, countdown: Int?, onClick: () -> Unit) {
     val haptics = LocalHapticFeedback.current
     val description = stringResource(R.string.action_shutter)
     val interaction = remember { MutableInteractionSource() }
