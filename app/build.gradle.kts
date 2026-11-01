@@ -13,8 +13,8 @@ android {
         applicationId = "com.izum1k.pocopaw"
         minSdk = 31
         targetSdk = 36
-        versionCode = 7
-        versionName = "0.4.0"
+        versionCode = 8
+        versionName = "0.4.1"
 
         ndk {
             // The burst pipeline is tuned for marble's Cortex-X2/A710/A510 (armv8.2 fp16 + dotprod).
