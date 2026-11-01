@@ -507,7 +507,7 @@ fun AfChip(live: LiveExposure, rotation: Float, modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun EvChip(label: String, rotation: Float, modifier: Modifier = Modifier) {
+fun EvChip(label: String, rotation: Float, modifier: Modifier = Modifier, tag: String = "EV") {
     Row(
         modifier
             .graphicsLayer { rotationZ = rotation }
@@ -516,7 +516,7 @@ fun EvChip(label: String, rotation: Float, modifier: Modifier = Modifier) {
             .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text("EV", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+        Text(tag, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
         Text(label, style = MaterialTheme.typography.labelMedium.withTabularFigures())
     }
 }

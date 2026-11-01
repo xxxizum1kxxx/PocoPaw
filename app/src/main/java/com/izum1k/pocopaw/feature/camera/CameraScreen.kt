@@ -136,6 +136,12 @@ private fun CameraContent(vm: CameraViewModel) {
     val tallest = remember { AspectRatio.entries.maxOf { it.portraitRatio } }
     val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val evLabel = if (ui.mode == CaptureMode.PHOTO && ui.evIndex != 0 && current != null) CameraFormat.ev(ui.evIndex, current.evStep) else null
+    val evDial = if (ui.mode == CaptureMode.PHOTO && current != null) {
+        SwipeDial(ui.evIndex, current.evRange.lower, current.evRange.upper, "EV " + CameraFormat.ev(ui.evIndex, current.evStep))
+    } else {
+        null
+    }
+    val wbDial = SwipeDial(ui.wbShift, -CameraViewModel.WB_MAX_STEPS, CameraViewModel.WB_MAX_STEPS, "WB " + CameraFormat.wb(ui.wbShift))
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         Viewfinder(
@@ -156,13 +162,15 @@ private fun CameraContent(vm: CameraViewModel) {
             live = ui.busy != Busy.IDLE || cameraState.showing() == current?.id,
             processing = ui.busy == Busy.PROCESSING,
             processingProgress = { ui.progress },
-            evDragEnabled = ui.mode == CaptureMode.PHOTO,
+            ev = evDial,
+            wb = wbDial,
             controlRotation = rotation,
             onSurfaceAvailable = vm::onSurfaceAvailable,
             onSurfaceDestroyed = vm::onSurfaceDestroyed,
             onTap = vm::tapFocus,
             onZoom = vm::zoomBy,
             onEvSteps = { vm.setEv(ui.evIndex + it) },
+            onWbSteps = { vm.setWb(ui.wbShift + it) },
             onRetry = vm::retry,
             modifier = Modifier
                 .offset {
@@ -179,6 +187,7 @@ private fun CameraContent(vm: CameraViewModel) {
                 ) {
                     Reveal(settings.developerInfo && live.focusDioptres != null) { AfChip(live, rotation) }
                     Reveal(evLabel != null && ui.focus == null) { EvChip(evLabel.orEmpty(), rotation) }
+                    Reveal(ui.wbShift != 0) { EvChip(CameraFormat.wb(ui.wbShift), rotation, tag = "WB") }
                 }
             },
         )

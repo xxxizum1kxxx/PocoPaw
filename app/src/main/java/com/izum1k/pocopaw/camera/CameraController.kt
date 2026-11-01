@@ -15,9 +15,11 @@ import android.hardware.camera2.CaptureFailure
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
+import android.hardware.camera2.params.ColorSpaceTransform
 import android.hardware.camera2.params.Face
 import android.hardware.camera2.params.MeteringRectangle
 import android.hardware.camera2.params.OutputConfiguration
+import android.hardware.camera2.params.RggbChannelVector
 import android.hardware.camera2.params.SessionConfiguration
 import android.media.Image
 import android.media.ImageReader
@@ -105,6 +107,10 @@ class CameraController(private val manager: CameraManager) {
     private var faceRegion: MeteringRectangle? = null
     private var faceSeenAt = 0L
     private var faceRegionAt = 0L
+    /** AWB's latest gains and matrix, and the pair a white balance shift is applied to (frozen when it starts). */
+    private var autoWb: Pair<RggbChannelVector, ColorSpaceTransform>? = null
+    private var wbBase: Pair<RggbChannelVector, ColorSpaceTransform>? = null
+    private var wbCameraId: String? = null
     private var activeCapture: CaptureCollector? = null
     private var aeWatcher: ((Int?) -> Unit)? = null
     private var afWatcher: ((Int?) -> Unit)? = null
@@ -274,6 +280,11 @@ class CameraController(private val manager: CameraManager) {
 
     private suspend fun openLocked(info: CameraInfo, tex: SurfaceTexture) {
         closeLocked()
+        if (info.id != wbCameraId) {
+            autoWb = null
+            wbBase = null
+            wbCameraId = info.id
+        }
         camera = info
         texture = tex
         _state.value = State.Opening(info.id)
@@ -463,7 +474,32 @@ class CameraController(private val manager: CameraManager) {
         if (info.hasOis) {
             b.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON)
         }
+        applyWhiteBalance(b)
         applyZoom(b, info, zoom)
+    }
+
+    /**
+     * A shift holds AWB's gains from when it started and tilts them warm or cool by [WB_STEP] per
+     * step (red up, blue down); stills carry the same gains, so the pipeline follows. Until AWB has
+     * reported, and at 0, AWB runs.
+     */
+    private fun applyWhiteBalance(b: CaptureRequest.Builder) {
+        val shift = controls.wbShift
+        if (shift == 0) {
+            wbBase = null
+            b.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
+            return
+        }
+        val base = wbBase ?: autoWb?.also { wbBase = it } ?: run {
+            b.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
+            return
+        }
+        val f = Math.pow(WB_STEP, shift.toDouble()).toFloat()
+        val g = base.first
+        b.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
+        b.set(CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
+        b.set(CaptureRequest.COLOR_CORRECTION_GAINS, RggbChannelVector(g.red * f, g.greenEven, g.greenOdd, g.blue / f))
+        b.set(CaptureRequest.COLOR_CORRECTION_TRANSFORM, base.second)
     }
 
     private fun applyZoom(b: CaptureRequest.Builder, info: CameraInfo, zoom: Float) {
@@ -554,6 +590,25 @@ class CameraController(private val manager: CameraManager) {
         }
     }
 
+    /** Keeps AWB's output; a shift waiting for it rebuilds the preview once it arrives. */
+    private fun trackAutoWb(result: CaptureResult) {
+        if (result.get(CaptureResult.CONTROL_AWB_MODE) == CameraMetadata.CONTROL_AWB_MODE_OFF) return
+        val gains = result.get(CaptureResult.COLOR_CORRECTION_GAINS) ?: return
+        val transform = result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM) ?: return
+        val first = autoWb == null
+        autoWb = gains to transform
+        if (first && controls.wbShift != 0 && wbBase == null) {
+            scope.launch {
+                if (!mutex.tryLock()) return@launch
+                try {
+                    if (_state.value is State.Previewing) runCatching { startPreview() }
+                } finally {
+                    mutex.unlock()
+                }
+            }
+        }
+    }
+
     /** Locks AE once it has converged on the tap region (or after [AE_LOCK_MAX_MS] regardless). */
     private fun maybeLockAe(ae: Int?) {
         if (aeLockDeadline == 0L || aeLock) return
@@ -607,6 +662,7 @@ class CameraController(private val manager: CameraManager) {
             aeWatcher?.invoke(ae)
             afWatcher?.invoke(af)
             maybeLockAe(ae)
+            trackAutoWb(result)
             val info = camera
             val faces = result.get(CaptureResult.STATISTICS_FACES)
             if (info != null) followFaces(info, faces)
@@ -737,6 +793,8 @@ class CameraController(private val manager: CameraManager) {
         /** AE gets this long on the tap region before its CONVERGED counts, and at most the second. */
         private const val AE_LOCK_MIN_MS = 300L
         private const val AE_LOCK_MAX_MS = 1_200L
+        /** Red and blue gain ratio per white balance step (about 4%, a few hundred kelvin near daylight). */
+        private const val WB_STEP = 1.04
         private const val MIN_FACE_SCORE = 50
         private const val FACE_REGION_SCALE = 1.2f
         /** Of the active array's width. */

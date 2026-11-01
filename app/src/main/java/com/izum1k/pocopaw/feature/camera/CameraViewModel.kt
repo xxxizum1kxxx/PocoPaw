@@ -67,6 +67,8 @@ data class CameraUiState(
     val mode: CaptureMode = CaptureMode.PHOTO,
     val zoom: Float = 1f,
     val evIndex: Int = 0,
+    /** Warm (+) / cool (−) steps off auto white balance, within ±[WB_MAX_STEPS]. */
+    val wbShift: Int = 0,
     val manualIso: Int = 100,
     val manualExposureNs: Long = 10_000_000L,
     /** Pro: AE picks the ISO (with a manual shutter, the one that keeps AE's exposure). */
@@ -176,7 +178,7 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
     fun selectCamera(info: CameraInfo) {
         if (info.id == _ui.value.current?.id || _ui.value.busy != Busy.IDLE) return
         focusResetJob?.cancel()
-        _ui.update { it.copy(current = info, zoom = 1f, evIndex = 0, focus = null, focusHeld = false) }
+        _ui.update { it.copy(current = info, zoom = 1f, evIndex = 0, wbShift = 0, focus = null, focusHeld = false) }
         viewModelScope.launch { settingsRepo.setLastCameraId(info.id) }
         maybeOpen()
     }
@@ -222,6 +224,13 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
         val i = index.coerceIn(cam.evRange.lower, cam.evRange.upper)
         if (i == _ui.value.evIndex) return
         _ui.update { it.copy(evIndex = i) }
+        pushControls()
+    }
+
+    fun setWb(shift: Int) {
+        val i = shift.coerceIn(-WB_MAX_STEPS, WB_MAX_STEPS)
+        if (i == _ui.value.wbShift) return
+        _ui.update { it.copy(wbShift = i) }
         pushControls()
     }
 
@@ -412,7 +421,7 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
 
     private fun previewControls(flash: FlashMode = settings.value.flash): PreviewControls {
         val s = _ui.value
-        return PreviewControls(exposure = exposurePlan(s), flash = flash, zoomRatio = s.zoom)
+        return PreviewControls(exposure = exposurePlan(s), flash = flash, zoomRatio = s.zoom, wbShift = s.wbShift)
     }
 
     private fun pushControls(flash: FlashMode = settings.value.flash) {
@@ -427,6 +436,7 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
     companion object {
         private const val TAG = "PocoPawCamera"
         private const val FOCUS_HOLD_MS = 5_000L
+        const val WB_MAX_STEPS = 10
         private const val MAX_ZOOM = 10f
 
         val ISO_STOPS = listOf(50, 64, 80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600, 2000, 2500, 3200, 4000, 5000, 6400)

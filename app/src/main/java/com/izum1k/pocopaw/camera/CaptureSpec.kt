@@ -43,6 +43,8 @@ data class PreviewControls(
     val exposure: ExposurePlan = ExposurePlan.Auto(),
     val flash: FlashMode = FlashMode.OFF,
     val zoomRatio: Float = 1f,
+    /** Warm (+) / cool (−) steps off auto white balance; 0 leaves AWB running. */
+    val wbShift: Int = 0,
 )
 
 /** What the preview's capture results report, for the viewfinder's readouts. */

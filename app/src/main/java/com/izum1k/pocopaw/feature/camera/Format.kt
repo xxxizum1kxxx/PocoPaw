@@ -19,6 +19,12 @@ object CameraFormat {
         }
     }
 
+    fun wb(shift: Int): String = when {
+        shift > 0 -> "+$shift"
+        shift < 0 -> "−${-shift}"
+        else -> "0"
+    }
+
     fun ev(index: Int, step: Rational): String {
         val v = index * step.toFloat()
         if (abs(v) < 0.05f) return "0"
