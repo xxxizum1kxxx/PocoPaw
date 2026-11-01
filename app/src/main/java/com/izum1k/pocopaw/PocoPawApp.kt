@@ -12,6 +12,7 @@ import com.izum1k.pocopaw.pipeline.MediaStoreWriter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import java.io.File
 
 class PocoPawApp : Application() {
     val container by lazy { AppContainer(this) }
@@ -24,7 +25,10 @@ class AppContainer(context: Context) {
     private val cameraManager = context.getSystemService(CameraManager::class.java)
     val catalog = CameraCatalog(cameraManager)
     val motion = MotionMeter(context.getSystemService(SensorManager::class.java))
-    val controller = CameraController(cameraManager, motion)
+    val controller = CameraController(cameraManager, motion).apply {
+        // for measuring the analysis stream's cost: `run-as` writes N (0 = off) to files/meter_every
+        File(context.filesDir, "meter_every").takeIf { it.isFile }?.readText()?.trim()?.toIntOrNull()?.let { meterEvery = it }
+    }
     val output = MediaStoreWriter(context)
 }
 

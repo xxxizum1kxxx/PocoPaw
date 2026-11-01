@@ -28,6 +28,7 @@ import android.os.HandlerThread
 import android.util.Log
 import android.util.Size
 import android.view.Surface
+import com.izum1k.pocopaw.BuildConfig
 import com.izum1k.pocopaw.data.FlashMode
 import com.izum1k.pocopaw.pipeline.NativeMemory
 import com.izum1k.pocopaw.pipeline.RawBurst
@@ -36,6 +37,7 @@ import com.izum1k.pocopaw.pipeline.RawMetadata
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.android.asCoroutineDispatcher
@@ -53,11 +55,11 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import java.nio.ByteBuffer
 import java.util.concurrent.Executor
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.abs
 import kotlin.math.hypot
-import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -123,15 +125,29 @@ class CameraController(private val manager: CameraManager, private val motion: M
     private var tapScan: TapScan? = null
     private var recoveries = 0
     private var lastAfState: Int? = null
-    /** Small YUV stream the app measures focus on; only sweep requests carry it. Null if the session could not take it. */
+    /** YUV stream the app measures focus, brightness and colour on; sweep requests and one in [meterEvery] preview requests carry it. Null if the session could not take it. */
     private var yuvReader: ImageReader? = null
     private var sweep: Sweep? = null
     /** Lens distance a tap's sweep settled on, held with AF off until the tap is released. */
     private var tapFocus: Float? = null
     /** Lens distance the scene's sweep settled on, held with AF off while no tap overrides it. */
     private var sceneFocus: Float? = null
-    /** ISO x exposure when [sceneFocus] was found, to tell how much the scene changed since. */
-    private var sceneExposure: Double? = null
+    /** The scene as measured after its last sweep, to tell how much it changed since; set from the next meter frame. */
+    private var sceneStats: MeterStats? = null
+    private var sceneBaselinePending = false
+    private var sceneChangedSince = 0L
+    /** Every this many preview frames, one fills the analysis stream for [SceneMeter]; 0 turns metering off. */
+    var meterEvery = METER_EVERY_N
+    private val meterFrames = TimestampPairs<MeterFrame, CaptureResult>(METER_PENDING_MAX)
+    private val meterBusy = AtomicBoolean(false)
+    private val meterScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var meterStats: MeterStats? = null
+    private var meterLoggedAt = 0L
+    private var frames = 0
+    private var framesSinceNs = 0L
+    var awbEstimator: AwbEstimator = AwbEstimator.HAL
+    /** Gains from [awbEstimator], held with AWB off; null while the HAL's AWB runs. */
+    private var appWb: RggbChannelVector? = null
     private var sceneSweepAfter = 0L
     private var sceneSweepDeadline = 0L
     /** A tap waits for AE on its region before AF scans: when it was made, 0 when none waits. */
@@ -152,11 +168,13 @@ class CameraController(private val manager: CameraManager, private val motion: M
         var scoredNs = 0L
         var scored = 0
         val samples = Channel<FocusSample>(Channel.UNLIMITED)
-        val images = HashMap<Long, FloatArray>()
-        val results = HashMap<Long, Pair<SweepTag, CaptureResult>>()
+        val frames = TimestampPairs<FloatArray, Pair<SweepTag, CaptureResult>>(SWEEP_PENDING_MAX)
     }
 
     private class SweepTag(val sweep: Sweep, val step: Int, val target: Float)
+
+    /** Tags the repeating preview request that also fills the analysis stream for [SceneMeter]. */
+    private object MeterTag
 
     suspend fun open(info: CameraInfo, texture: SurfaceTexture, controls: PreviewControls) = withContext(dispatcher) {
         mutex.withLock {
@@ -370,7 +388,8 @@ class CameraController(private val manager: CameraManager, private val motion: M
             run = { (if (d0 != null) fineSweep(sw, info, d0) else null) ?: fullSweep(sw, info) },
             done = { r ->
                 sceneFocus = r?.dioptres
-                sceneExposure = exposureProduct()
+                sceneStats = null
+                sceneBaselinePending = true
             },
         )
     }
@@ -410,17 +429,12 @@ class CameraController(private val manager: CameraManager, private val motion: M
         if (calm > STILL_RAD_PER_SEC) return
         moving = false
         val angle = m.angleSince(movedSinceNs)
-        val before = sceneExposure
-        val now = exposureProduct()
-        val ev = if (before != null && now != null) ln(now / before) / ln(2.0) else null
+        val before = sceneStats?.sceneEv
+        val now = meterStats?.sceneEv
+        val ev = if (before != null && now != null) now - before else null
         val small = angle < SMALL_TURN_RAD && ev != null && abs(ev) < SMALL_EV_CHANGE
         Log.i(TAG, "settled after %.2f rad, %.2f EV: ${if (small) "fine" else "full"} sweep".format(angle, ev ?: Double.NaN))
         startSceneSweep(if (small) _live.value.focusDioptres else null)
-    }
-
-    private fun exposureProduct(): Double? {
-        val l = _live.value
-        return (l.iso ?: return null).toDouble() * (l.exposureNs ?: return null)
     }
 
     /**
@@ -610,37 +624,141 @@ class CameraController(private val manager: CameraManager, private val motion: M
     private fun fineStep(info: CameraInfo): Float =
         (info.characteristics.get(CameraCharacteristics.LENS_INFO_HYPERFOCAL_DISTANCE) ?: 0.1f).coerceIn(0.05f, 0.3f)
 
+    /** While a sweep runs, every analysis frame is its; otherwise frames come from [MeterTag] requests. */
     private fun onYuv(image: Image) {
-        val sw = sweep ?: return
         val ts = image.timestamp
-        val t0 = System.nanoTime()
-        sw.images[ts] = FocusSweeper.score(image, sw.zones)
-        sw.scoredNs += System.nanoTime() - t0
-        sw.scored++
-        matchSweep(sw, ts)
+        val sw = sweep
+        if (sw != null) {
+            val t0 = System.nanoTime()
+            val scores = FocusSweeper.score(image, sw.zones)
+            sw.scoredNs += System.nanoTime() - t0
+            sw.scored++
+            sw.frames.image(ts, scores)?.let { (s, tagged) -> onSweepSample(sw, s, tagged) }
+            return
+        }
+        if (meterEvery <= 0) return
+        meterFrames.image(ts, SceneMeter.sample(image))?.let { (f, r) -> measure(ts, f, r) }
     }
 
     private fun onSweepResult(tag: SweepTag, result: CaptureResult) {
         val sw = tag.sweep
         if (sweep !== sw) return
         val ts = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
-        sw.results[ts] = tag to result
-        matchSweep(sw, ts)
+        sw.frames.result(ts, tag to result)?.let { (s, tagged) -> onSweepSample(sw, s, tagged) }
     }
 
-    /** A sample once both the frame's image and its result have arrived (in either order). */
-    private fun matchSweep(sw: Sweep, ts: Long) {
-        val scores = sw.images[ts]
-        val tagged = sw.results[ts]
-        if (scores != null && tagged != null) {
-            sw.images.remove(ts)
-            sw.results.remove(ts)
-            val (tag, r) = tagged
-            val stationary = r.get(CaptureResult.LENS_STATE) != CaptureResult.LENS_STATE_MOVING
-            sw.samples.trySend(FocusSample(tag.step, tag.target, r.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: tag.target, stationary, scores))
+    private fun onSweepSample(sw: Sweep, scores: FloatArray, tagged: Pair<SweepTag, CaptureResult>) {
+        val (tag, r) = tagged
+        val stationary = r.get(CaptureResult.LENS_STATE) != CaptureResult.LENS_STATE_MOVING
+        sw.samples.trySend(FocusSample(tag.step, tag.target, r.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: tag.target, stationary, scores))
+    }
+
+    private fun onMeterResult(result: CaptureResult) {
+        val ts = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
+        meterFrames.result(ts, result)?.let { (f, r) -> measure(ts, f, r) }
+    }
+
+    /** Converts a frame off the camera thread; a frame arriving while the last is still converted is dropped. */
+    private fun measure(ts: Long, f: MeterFrame, r: CaptureResult) {
+        if (!meterBusy.compareAndSet(false, true)) return
+        meterScope.launch {
+            val stats = try {
+                SceneMeter.measure(f, r, ts)
+            } finally {
+                meterBusy.set(false)
+            }
+            if (stats != null) handler.post { onMeterStats(stats) }
         }
-        while (sw.images.size > SWEEP_PENDING_MAX) sw.images.remove(sw.images.keys.min())
-        while (sw.results.size > SWEEP_PENDING_MAX) sw.results.remove(sw.results.keys.min())
+    }
+
+    private fun onMeterStats(s: MeterStats) {
+        if (_state.value !is State.Previewing && _state.value !is State.Capturing) return
+        meterStats = s
+        if (sceneBaselinePending && sweep == null) {
+            sceneBaselinePending = false
+            sceneStats = s
+        }
+        logMeter(s)
+        followWhiteBalance(s)
+        checkSceneChange(s)
+    }
+
+    private fun countFrame() {
+        val now = System.nanoTime()
+        if (framesSinceNs == 0L) framesSinceNs = now
+        frames++
+        if (now - framesSinceNs < METER_LOG_MS * 1_000_000) return
+        Log.i(TAG, "preview %.1f fps".format(frames * 1e9 / (now - framesSinceNs)))
+        frames = 0
+        framesSinceNs = now
+    }
+
+    private fun logMeter(s: MeterStats) {
+        val now = System.currentTimeMillis()
+        if (now - meterLoggedAt < METER_LOG_MS) return
+        meterLoggedAt = now
+        val grey = s.greyWorld()
+        val base = sceneStats
+        Log.i(
+            TAG,
+            "meter %.2f EV, grid r %.3f vs scene, grey world %s from gains, sample %.2f + convert %.2f ms, curve %s".format(
+                s.sceneEv,
+                if (base == null) Double.NaN else SceneMeter.correlation(s.grid, base.grid),
+                if (grey == null) "-" else "%.2f°".format(SceneMeter.angleDegrees(grey, s.gainsIlluminant())),
+                s.sampleMillis,
+                s.millis,
+                if (s.tonemapFromResult) "result" else "sRGB",
+            ),
+        )
+    }
+
+    /** Hands the estimator's gains to [applyWhiteBalance]; rebuilds the preview when they change. */
+    private fun followWhiteBalance(s: MeterStats) {
+        val next = awbEstimator.estimate(s)
+        val prev = appWb
+        val same = next == null && prev == null ||
+            next != null && prev != null && abs(next.red / prev.red - 1) < WB_FOLLOW_TOLERANCE && abs(next.blue / prev.blue - 1) < WB_FOLLOW_TOLERANCE
+        if (same) return
+        appWb = next
+        rebuildPreviewIfIdle()
+    }
+
+    private fun rebuildPreviewIfIdle() {
+        scope.launch {
+            if (!mutex.tryLock()) return@launch
+            try {
+                if (_state.value is State.Previewing) runCatching { startPreview() }
+            } finally {
+                mutex.unlock()
+            }
+        }
+    }
+
+    /**
+     * With the phone still and no tap holding focus, a scene that is [SCENE_CHANGE_EV] brighter or
+     * darker than at the last sweep, or framed differently, for [SCENE_CHANGE_MS] is swept again.
+     */
+    private fun checkSceneChange(s: MeterStats) {
+        val base = sceneStats
+        if (base == null || moving || focusRegion != null || sweep != null || sceneSweepAfter != 0L || _state.value !is State.Previewing) {
+            sceneChangedSince = 0L
+            return
+        }
+        val ev = s.sceneEv - base.sceneEv
+        val r = SceneMeter.correlation(s.grid, base.grid)
+        if (abs(ev) <= SCENE_CHANGE_EV && r >= SCENE_GRID_MIN_CORRELATION) {
+            sceneChangedSince = 0L
+            return
+        }
+        val now = System.currentTimeMillis()
+        if (sceneChangedSince == 0L) {
+            sceneChangedSince = now
+            return
+        }
+        if (now - sceneChangedSince < SCENE_CHANGE_MS) return
+        sceneChangedSince = 0L
+        Log.i(TAG, "scene changed (%.2f EV, grid r %.3f): full sweep".format(ev, r))
+        startSceneSweep(null)
     }
 
     /** Captures [CaptureSpec.frameCount] RAW frames, reopening the device first if the budget cannot cover them. */
@@ -689,18 +807,20 @@ class CameraController(private val manager: CameraManager, private val motion: M
                         "%.2f%s".format(f.result.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: Float.NaN, if (moving) "m" else "")
                     } + " (AF ${afStateName(frames.first().result.get(CaptureResult.CONTROL_AF_STATE))})",
                 )
-                RawBurst(
-                    frames = steadyFrames(frames, spec),
-                    metadata = RawMetadata.from(
-                        cameraId = info.id,
-                        facing = info.facing,
-                        characteristics = info.characteristics,
-                        cfa = info.cfa,
-                        result = frames.first().result,
-                        orientationDegrees = orientationFor(info, spec.deviceRotation),
-                        zoomRatio = spec.zoomRatio,
-                    ),
+                val metadata = RawMetadata.from(
+                    cameraId = info.id,
+                    facing = info.facing,
+                    characteristics = info.characteristics,
+                    cfa = info.cfa,
+                    result = frames.first().result,
+                    orientationDegrees = orientationFor(info, spec.deviceRotation),
+                    zoomRatio = spec.zoomRatio,
                 )
+                if (BuildConfig.DEBUG) meterStats?.let { m ->
+                    Log.i(TAG, "meter grid ${(frames.first().timestampNs - m.timestampNs) / 1_000_000}ms before frame 0 " + SceneMeter.gridString(m))
+                    Log.i(TAG, "raw grid " + SceneMeter.rawGridString(frames.first(), metadata))
+                }
+                RawBurst(frames = steadyFrames(frames, spec), metadata = metadata)
             } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
                 throw CameraFailure(Reason.TIMEOUT, e)
             } finally {
@@ -726,11 +846,12 @@ class CameraController(private val manager: CameraManager, private val motion: M
      * [keepFocus] (a reopen for the RAW budget, same camera, phone still) keeps the scene's distance.
      */
     private suspend fun openLocked(info: CameraInfo, tex: SurfaceTexture, keepFocus: Boolean = false) {
-        val kept = if (keepFocus && camera?.id == info.id && !moving) sceneFocus to sceneExposure else null
+        val kept = if (keepFocus && camera?.id == info.id && !moving) sceneFocus to sceneStats else null
         closeLocked()
         if (info.id != wbCameraId) {
             autoWb = null
             wbBase = null
+            appWb = null
             wbCameraId = info.id
         }
         camera = info
@@ -738,7 +859,13 @@ class CameraController(private val manager: CameraManager, private val motion: M
         tapFocus = null
         tapPendingSince = 0L
         sceneFocus = kept?.first
-        sceneExposure = kept?.second
+        sceneStats = kept?.second
+        sceneBaselinePending = false
+        sceneChangedSince = 0L
+        meterStats = null
+        meterFrames.clear()
+        frames = 0
+        framesSinceNs = 0L
         moving = false
         sceneSweepAfter = 0L
         _state.value = State.Opening(info.id)
@@ -755,6 +882,8 @@ class CameraController(private val manager: CameraManager, private val motion: M
             _state.value = State.Previewing(info.id)
             if (yuvReader != null) {
                 motion?.start(this)
+                handler.removeCallbacks(meterTick)
+                handler.post(meterTick)
                 if (sceneFocus == null) {
                     val now = System.currentTimeMillis()
                     sceneSweepAfter = now + SCENE_SWEEP_MIN_MS
@@ -782,6 +911,7 @@ class CameraController(private val manager: CameraManager, private val motion: M
     private fun closeLocked() {
         activeCapture?.fail(CameraFailure(Reason.DISCONNECTED))
         cancelSweep()
+        handler.removeCallbacks(meterTick)
         motion?.stop(this)
         runCatching { session?.close() }
         runCatching { device?.close() }
@@ -910,10 +1040,35 @@ class CameraController(private val manager: CameraManager, private val motion: M
         }
     }
 
+    /** The repeating preview; it fills the analysis stream itself only when every frame is metered (see [meterTick]). */
     private fun startPreview() {
         val s = session ?: return
         val b = previewBuilder() ?: return
+        val yuv = yuvReader
+        if (yuv != null && sweep == null && meterEvery == 1) {
+            b.addTarget(yuv.surface)
+            b.setTag(MeterTag)
+        }
         s.setRepeatingRequest(b.build(), previewCallback, handler)
+    }
+
+    /**
+     * Every [meterEvery] frames, one preview request that also fills the analysis stream, sent on
+     * its own: inside a repeating burst, the rest of the burst already queued would hold a sweep's
+     * requests back by up to [meterEvery] frames.
+     */
+    private val meterTick = object : Runnable {
+        override fun run() {
+            if (meterEvery <= 1) return
+            handler.postDelayed(this, meterEvery * FRAME_MS)
+            if (sweep != null || _state.value !is State.Previewing) return
+            val s = session ?: return
+            val yuv = yuvReader ?: return
+            val b = previewBuilder() ?: return
+            b.addTarget(yuv.surface)
+            b.setTag(MeterTag)
+            runCatching { s.capture(b.build(), previewCallback, handler) }
+        }
     }
 
     private fun previewBuilder(): CaptureRequest.Builder? {
@@ -997,18 +1152,21 @@ class CameraController(private val manager: CameraManager, private val motion: M
     }
 
     /**
-     * A shift holds AWB's gains from when it started and tilts them warm or cool by [WB_STEP] per
-     * step (red up, blue down); stills carry the same gains, so the pipeline follows. Until AWB has
-     * reported, and at 0, AWB runs.
+     * The one place white balance gains are decided. The base is [awbEstimator]'s gains (with the
+     * HAL's last colour matrix) while it gives any, else AWB's gains from when a shift started; a
+     * shift tilts the base warm or cool by [WB_STEP] per step (red up, blue down). Stills carry the
+     * same gains, so the pipeline follows. With neither, or before AWB has reported once, AWB runs.
      */
     private fun applyWhiteBalance(b: CaptureRequest.Builder) {
         val shift = controls.wbShift
-        if (shift == 0) {
-            wbBase = null
-            b.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
-            return
+        if (shift == 0) wbBase = null
+        val app = appWb
+        val base = when {
+            app != null -> autoWb?.let { app to it.second }
+            shift != 0 -> wbBase ?: autoWb?.also { wbBase = it }
+            else -> null
         }
-        val base = wbBase ?: autoWb?.also { wbBase = it } ?: run {
+        if (base == null) {
             b.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
             return
         }
@@ -1151,23 +1309,17 @@ class CameraController(private val manager: CameraManager, private val motion: M
         }
     }
 
-    /** Keeps AWB's output; a shift waiting for it rebuilds the preview once it arrives. */
+    /**
+     * Keeps AWB's output while AWB runs (it stops following once a shift or [appWb] turns AWB off);
+     * either one waiting for AWB's first report rebuilds the preview once it arrives.
+     */
     private fun trackAutoWb(result: CaptureResult) {
         if (result.get(CaptureResult.CONTROL_AWB_MODE) == CameraMetadata.CONTROL_AWB_MODE_OFF) return
         val gains = result.get(CaptureResult.COLOR_CORRECTION_GAINS) ?: return
         val transform = result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM) ?: return
         val first = autoWb == null
         autoWb = gains to transform
-        if (first && controls.wbShift != 0 && wbBase == null) {
-            scope.launch {
-                if (!mutex.tryLock()) return@launch
-                try {
-                    if (_state.value is State.Previewing) runCatching { startPreview() }
-                } finally {
-                    mutex.unlock()
-                }
-            }
-        }
+        if (first && (appWb != null || controls.wbShift != 0 && wbBase == null)) rebuildPreviewIfIdle()
     }
 
     /** Locks AE once it has converged on the tap region (or after [AE_LOCK_MAX_MS] regardless). */
@@ -1224,7 +1376,11 @@ class CameraController(private val manager: CameraManager, private val motion: M
                 lastAfState = af
                 Log.i(TAG, "af ${afStateName(af)} at %.2f D".format(result.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: Float.NaN))
             }
-            (request.tag as? SweepTag)?.let { onSweepResult(it, result) }
+            when (val tag = request.tag) {
+                is SweepTag -> onSweepResult(tag, result)
+                MeterTag -> onMeterResult(result)
+            }
+            countFrame()
             aeWatcher?.invoke(ae)
             afWatcher?.invoke(result)
             checkTapScan(result)
@@ -1405,6 +1561,17 @@ class CameraController(private val manager: CameraManager, private val motion: M
         private const val FINE_EXTENSION_STEPS = 2
         private const val MAX_FINE_EXTENSIONS = 2
         private const val SWEEP_PENDING_MAX = 8
+        /** About 4 analysis frames a second at 30 fps: scene changes are judged over [SCENE_CHANGE_MS]. */
+        private const val METER_EVERY_N = 8
+        private const val FRAME_MS = 33L
+        private const val METER_PENDING_MAX = 4
+        private const val METER_LOG_MS = 3_000L
+        /** A brightness change past this many stops, or framing whose grid correlates below the second, held for [SCENE_CHANGE_MS], is a new scene. */
+        private const val SCENE_CHANGE_EV = 1.0
+        private const val SCENE_GRID_MIN_CORRELATION = 0.9
+        private const val SCENE_CHANGE_MS = 500L
+        /** Estimated gains moving less than this (relative, red and blue) leave the preview request alone. */
+        private const val WB_FOLLOW_TOLERANCE = 0.01f
         private const val MAX_ANALYSIS_WIDTH = 1920
         private const val YUV_MAX_IMAGES = 3
         /** Gyro: faster than this over [MOVE_WINDOW_NS] is turning the phone; slower than [STILL_RAD_PER_SEC] over [SETTLE_WINDOW_NS] is holding it. */
