@@ -11,7 +11,7 @@ import com.izum1k.pocopaw.camera.CaptureSpec
 import com.izum1k.pocopaw.camera.ExposurePlan
 import com.izum1k.pocopaw.camera.LiveExposure
 import com.izum1k.pocopaw.camera.PreviewControls
-import com.izum1k.pocopaw.data.SceneMode
+import com.izum1k.pocopaw.feature.camera.CameraViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -161,9 +161,9 @@ class P1CaptureViewModel(private val container: AppContainer, private val store:
         _ui.update { it.copy(count = n) }
     }
 
-    /** The viewfinder's night scene shares the meter. */
+    /** The viewfinder's night scene and KR share the meter. */
     private fun releaseMotion() {
-        if (container.settings.settings.value.scene != SceneMode.NIGHT) motion.stop()
+        if (!CameraViewModel.needsMotion(container.settings.settings.value)) motion.stop()
     }
 
     override fun onCleared() = releaseMotion()
