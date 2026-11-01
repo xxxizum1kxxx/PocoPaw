@@ -83,6 +83,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.rememberTextMeasurer
@@ -464,8 +465,17 @@ fun LensSelector(
         delay(FOCAL_SHOW_MS)
         showFocal = false
     }
+    // Laid out at its width with zoom factors, so a wider focal length grows to the right rather
+    // than moving the whole selector off centre.
+    val restWidth = remember(lenses.size) { intArrayOf(0) }
     Row(
         modifier
+            .layout { measurable, constraints ->
+                val placeable = measurable.measure(constraints)
+                if (!showFocal && (restWidth[0] == 0 || placeable.width < restWidth[0])) restWidth[0] = placeable.width
+                val width = if (restWidth[0] == 0) placeable.width else restWidth[0]
+                layout(width, placeable.height) { placeable.place(0, 0) }
+            }
             .clip(PillShape)
             .background(controlContainer())
             .padding(4.dp),
