@@ -38,6 +38,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -111,6 +112,15 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
         val catalog = container.catalog
         viewModelScope.launch {
             settings.collect { if (it.scene == SceneMode.NIGHT) motion.start() else motion.stop() }
+        }
+        // A setting that asks for more frames than are left (8 to 16, DNG to a burst) reopens
+        // right away instead of at the next press.
+        viewModelScope.launch {
+            combine(settings, cameraState) { _, state -> state }.collect { state ->
+                if (state is CameraController.State.Previewing && _ui.value.busy == Busy.IDLE && !controller.budget.canAfford(nextFrames())) {
+                    controller.reopen()
+                }
+            }
         }
         viewModelScope.launch {
             val cameras = withContext(Dispatchers.IO) { catalog.cameras }
@@ -301,6 +311,8 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
             return
         }
         _ui.update { it.copy(busy = Busy.PROCESSING) }
+        // The burst is in memory now; reopening while it merges keeps the next press from waiting.
+        if (!controller.budget.canAfford(nextFrames())) viewModelScope.launch { controller.reopen() }
         try {
             val result = pipeline.process(burst, container.output) { p -> _ui.update { it.copy(progress = p) } }
             val uri = result.primaryUri
@@ -347,6 +359,9 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
             ),
         )
     }
+
+    /** RAW frames the next press will ask for. */
+    private fun nextFrames(): Int = _ui.value.current?.let { pipelineFor(settings.value, it).framesPerCapture } ?: 1
 
     private fun fail(message: CaptureMessage) {
         _ui.update { it.copy(busy = Busy.IDLE, countdown = null, message = message, messageId = it.messageId + 1) }
