@@ -180,6 +180,7 @@ private fun CameraContent(vm: CameraViewModel) {
         TopControls(
             settings = settings,
             hasFlash = current?.hasFlash == true,
+            flashRequired = live.flashRequired,
             rotation = rotation,
             onFlash = { vm.setFlash(it) },
             onTimer = { vm.setTimer(it) },

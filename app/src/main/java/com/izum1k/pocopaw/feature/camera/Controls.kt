@@ -76,7 +76,13 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
+import kotlinx.coroutines.delay
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.graphics.shapes.Morph
@@ -109,6 +115,7 @@ private fun controlContainer(): Color = MaterialTheme.colorScheme.surfaceContain
 fun TopControls(
     settings: CameraSettings,
     hasFlash: Boolean,
+    flashRequired: Boolean,
     rotation: Float,
     onFlash: (FlashMode) -> Unit,
     onTimer: (TimerMode) -> Unit,
@@ -131,7 +138,7 @@ fun TopControls(
             if (hasFlash) {
                 QuickToggle(
                     caption = stringResource(R.string.control_flash),
-                    value = stringResource(flashLabel(settings.flash)),
+                    value = flashValue(settings.flash, flashRequired),
                     checked = settings.flash != FlashMode.OFF,
                     rotation = rotation,
                 ) {
@@ -186,7 +193,11 @@ fun TopControls(
 }
 
 @Composable
-private fun QuickToggle(caption: String, value: String, checked: Boolean, rotation: Float, onClick: () -> Unit) {
+private fun QuickToggle(caption: String, value: String, checked: Boolean, rotation: Float, onClick: () -> Unit) =
+    QuickToggle(caption, AnnotatedString(value), checked, rotation, onClick)
+
+@Composable
+private fun QuickToggle(caption: String, value: AnnotatedString, checked: Boolean, rotation: Float, onClick: () -> Unit) {
     ToggleButton(
         checked = checked,
         onCheckedChange = { onClick() },
@@ -194,7 +205,7 @@ private fun QuickToggle(caption: String, value: String, checked: Boolean, rotati
         shapes = ToggleButtonDefaults.shapes(shape = PillShape, pressedShape = QuickTogglePressed, checkedShape = PillShape),
         colors = ToggleButtonDefaults.toggleButtonColors(containerColor = Color.Transparent),
         contentPadding = PaddingValues(horizontal = 4.dp, vertical = 4.dp),
-        modifier = Modifier.size(width = 60.dp, height = 48.dp).semantics { contentDescription = "$caption $value" },
+        modifier = Modifier.size(width = 60.dp, height = 48.dp).semantics { contentDescription = "$caption ${value.text}" },
     ) {
         Column(
             Modifier.graphicsLayer { rotationZ = rotation },
@@ -280,11 +291,35 @@ private val WAVE_LENGTH = 24.dp
 /** dp per second the crests travel (PiliPaw's wave scrubber runs at 24, this one hurries). */
 private const val WAVE_SPEED_PER_S = 48f
 
-private fun flashLabel(mode: FlashMode): Int = when (mode) {
-    FlashMode.OFF -> R.string.value_off
-    FlashMode.AUTO -> R.string.value_auto
-    FlashMode.ON -> R.string.value_on
+/**
+ * Auto reads "Auto" when picked, then, once AE has had [FLASH_METER_MS] to meter the scene, what
+ * it decided: "A/On" or "A/Off", the A in bold.
+ */
+@Composable
+private fun flashValue(mode: FlashMode, flashRequired: Boolean): AnnotatedString {
+    var metered by remember { mutableStateOf(false) }
+    LaunchedEffect(mode) {
+        metered = false
+        if (mode == FlashMode.AUTO) {
+            delay(FLASH_METER_MS)
+            metered = true
+        }
+    }
+    val auto = stringResource(R.string.value_auto)
+    val on = stringResource(R.string.value_on)
+    val off = stringResource(R.string.value_off)
+    return when {
+        mode == FlashMode.OFF -> AnnotatedString(off)
+        mode == FlashMode.ON -> AnnotatedString(on)
+        !metered -> AnnotatedString(auto)
+        else -> buildAnnotatedString {
+            withStyle(SpanStyle(fontWeight = FontWeight.Black)) { append("A") }
+            withStyle(SpanStyle(fontWeight = FontWeight.Normal)) { append("/" + if (flashRequired) on else off) }
+        }
+    }
 }
+
+private const val FLASH_METER_MS = 1_200L
 
 /** One pill per back camera; the selected one shows the live zoom. */
 @Composable
