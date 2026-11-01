@@ -2,6 +2,9 @@ package com.izum1k.pocopaw.feature.camera
 
 import android.graphics.Bitmap
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
@@ -452,6 +455,15 @@ fun LensSelector(
 ) {
     if (lenses.size < 2 && (current == null || lenses.none { it.id == current.id })) return
     val haptics = LocalHapticFeedback.current
+    // A tap shows every lens's 35mm-equivalent focal length for a while, then the zoom factors again.
+    var focalTap by remember { mutableIntStateOf(0) }
+    var showFocal by remember { mutableStateOf(false) }
+    LaunchedEffect(focalTap) {
+        if (focalTap == 0) return@LaunchedEffect
+        showFocal = true
+        delay(FOCAL_SHOW_MS)
+        showFocal = false
+    }
     Row(
         modifier
             .clip(PillShape)
@@ -473,28 +485,57 @@ fun LensSelector(
                 YoinMotion.defaultEffectsSpec(),
                 label = "lensContent",
             )
+            val factor = if (selected) lens.relativeZoom * zoom else lens.relativeZoom
+            val label = if (showFocal) {
+                CameraFormat.equivalentFocal(lens.equivalentFocalMm * (if (selected) zoom else 1f))
+            } else {
+                CameraFormat.zoom(factor)
+            }
             Box(
                 Modifier
-                    .size(size)
-                    .clip(CircleShape)
+                    .height(size)
+                    .widthIn(min = size)
+                    .clip(PillShape)
                     .background(container)
                     .clickable {
                         haptics.performHapticFeedback(HapticFeedbackType.SegmentTick)
+                        focalTap++
                         onSelect(lens)
-                    },
+                    }
+                    .animateContentSize(YoinMotion.defaultSpatialSpec())
+                    .padding(horizontal = 6.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(
-                    CameraFormat.zoom(if (selected) lens.relativeZoom * zoom else lens.relativeZoom),
-                    style = MaterialTheme.typography.labelMedium.withTabularFigures(),
-                    fontWeight = FontWeight.SemiBold,
-                    color = content,
-                    modifier = Modifier.graphicsLayer { rotationZ = rotation },
-                )
+                val effects = YoinMotion.defaultEffectsSpec<Float>()
+                val fastEffects = YoinMotion.fastEffectsSpec<Float>()
+                val spatial = YoinMotion.fastSpatialSpec<Float>()
+                AnimatedContent(
+                    targetState = label,
+                    // Only the swap between focal lengths and zoom factors animates, not a zoom.
+                    transitionSpec = {
+                        if (initialState.endsWith("mm") != targetState.endsWith("mm")) {
+                            (fadeIn(effects) + scaleIn(spatial, 0.8f)) togetherWith fadeOut(fastEffects)
+                        } else {
+                            EnterTransition.None togetherWith ExitTransition.None
+                        }
+                    },
+                    label = "lensLabel",
+                ) { text ->
+                    Text(
+                        text,
+                        style = MaterialTheme.typography.labelMedium.withTabularFigures(),
+                        fontWeight = FontWeight.SemiBold,
+                        color = content,
+                        softWrap = false,
+                        modifier = Modifier.graphicsLayer { rotationZ = rotation },
+                    )
+                }
             }
         }
     }
 }
+
+private const val FOCAL_SHOW_MS = 5_000L
 
 /** What a shutter press will write and through which pipeline, with the live exposure. */
 @Composable

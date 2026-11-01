@@ -19,6 +19,9 @@ object CameraFormat {
         }
     }
 
+    /** A 35mm-equivalent focal length, as on the lens selector: "24mm". */
+    fun equivalentFocal(mm: Float): String = "${mm.roundToInt()}mm"
+
     fun wb(shift: Int): String = when {
         shift > 0 -> "+$shift"
         shift < 0 -> "−${-shift}"
