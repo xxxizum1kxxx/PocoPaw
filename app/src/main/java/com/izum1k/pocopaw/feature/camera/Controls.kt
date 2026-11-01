@@ -53,6 +53,7 @@ import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.log2
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sin
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.WavyProgressIndicatorDefaults
@@ -465,16 +466,22 @@ fun LensSelector(
         delay(FOCAL_SHOW_MS)
         showFocal = false
     }
-    // Laid out at its width with zoom factors, so a wider focal length grows to the right rather
-    // than moving the whole selector off centre.
+    // Laid out at its width with zoom factors, so a wider focal length grows outwards from the
+    // current lens (leftwards from the leftmost, rightwards from the rightmost) rather than moving
+    // the whole selector off centre.
     val restWidth = remember(lenses.size) { intArrayOf(0) }
+    val currentIndex = lenses.indexOfFirst { it.id == current?.id }
+    val growLeft = when {
+        lenses.size < 2 || currentIndex < 0 -> 0.5f
+        else -> 1f - currentIndex / (lenses.size - 1f)
+    }
     Row(
         modifier
             .layout { measurable, constraints ->
                 val placeable = measurable.measure(constraints)
                 if (!showFocal && (restWidth[0] == 0 || placeable.width < restWidth[0])) restWidth[0] = placeable.width
                 val width = if (restWidth[0] == 0) placeable.width else restWidth[0]
-                layout(width, placeable.height) { placeable.place(0, 0) }
+                layout(width, placeable.height) { placeable.place(-((placeable.width - width) * growLeft).roundToInt(), 0) }
             }
             .clip(PillShape)
             .background(controlContainer())
