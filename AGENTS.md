@@ -6,12 +6,13 @@ This file applies to the entire repository.
 
 ## Project
 
-PocoPaw is a Compose RAW camera for the Poco F5 / Redmi Note 12 Turbo (marble), in the Yoin design language shared by PiliPaw and ScalePaw. Its layout follows LineageOS Aperture. `docs/design.md` is the source of truth for UI decisions; `../REPORT.md` records the camera HAL limits the camera layer is built around.
+PocoPaw is a Compose RAW camera for the Poco F5 / Redmi Note 12 Turbo (marble), in the Yoin design language shared by PiliPaw and ScalePaw. Its layout follows LineageOS Aperture. `docs/design.md` is the source of truth for UI decisions; `docs/research/REPORT.md` records the camera HAL limits the camera layer is built around, and `docs/research/PIPELINE_REPORT.md` / `ALGORITHM_UPGRADE.md` the processing pipeline (each marks what PocoPaw implements).
 
 ## Build & Run
 
 - `export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"`
-- `./gradlew :app:assembleDebug` builds the debug APK.
+- `./gradlew :app:assembleDebug` builds the debug APK. The native pipeline needs NDK 29.0.14206865 and CMake 3.22.1 from the SDK (`sdkmanager "cmake;3.22.1"`).
+- `adb logcat -G 16M && adb logcat -s PocoPawPipeline` shows per-stage timings; the default 256 KB buffer is flushed by the camera HAL within seconds.
 
 ## Tech Stack
 
@@ -25,7 +26,9 @@ PocoPaw is a Compose RAW camera for the Poco F5 / Redmi Note 12 Turbo (marble), 
 - Preview requests output YUV only. Only capture requests add the RAW surface.
 - Never open logical multi-cameras or the IDs in `CameraCatalog.DENYLIST`: on marble they hang or crash the camera provider.
 - `ERROR_CAMERA_DEVICE` is recovered by closing and reopening the device, never by quitting.
-- `pipeline/` is pure processing: a `RawBurst` goes in, an `ImagePipeline` runs its `PipelineStage`s and writes through an `OutputSink`. New processing (align, merge, demosaic, tone map) is a new stage registered in `PipelineRegistry`; the camera layer and UI do not change.
+- `pipeline/` is pure processing: a `RawBurst` goes in, an `ImagePipeline` runs its `PipelineStage`s and writes through an `OutputSink`. New processing is a new stage registered in `PipelineRegistry`; the camera layer and UI do not change.
+- The multi-frame pipeline (`hdrplus`, `hdrplus_kr`) is C++ in `app/src/main/cpp/burstpipe/`, ported unchanged from the research prototype in `../pipeline/src/`, and reached through `NativeBurst` (JNI). It is CPU only and arm64 only. Keep the ported files close to the prototype so results stay comparable; `../pipeline/tools/session_check.cpp` runs the app's native code on a probe burst on the Mac.
+- RAW frame copies live in `NativeMemory` (malloc), not `ByteBuffer.allocateDirect`, which ART counts against the 256 MB Java heap. Whoever owns a `RawBurst` closes it.
 - `feature/*` holds screens and their ViewModels.
 
 ## UI rules

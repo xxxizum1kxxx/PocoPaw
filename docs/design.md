@@ -18,12 +18,13 @@ PocoPaw follows the Yoin design language (see Yoin's `docs/design.md`) and the c
 - **Viewfinder**: 4:3 (16:9 crops the preview only, the RAW frame is always full sensor). Thirds grid. Tap to focus and meter: a cookie-shaped ring that morphs to a circle when focus locks; drag vertically beside it to set exposure compensation. Timer countdown and shutter flash draw over the picture.
 - **Lens row**: one pill per back camera (0.6x, 1x); pinch zooms within a lens.
 - **Mode bar**: Photo (auto exposure) and Pro (manual ISO, shutter, EV within the camera's ranges).
-- **Shutter row**: last capture thumbnail (opens the DNG in the system viewer), the shutter (morphs on press, shows a loading indicator while the pipeline runs), front/back switch.
-- **Developer chip** (setting): the RAW size and the remaining RAW requests before the device is reopened.
+- **Shutter row**: last capture thumbnail (opens the JPEG, or the DNG for DNG-only output, in the system viewer), the shutter (morphs on press, shows a loading indicator while the pipeline runs), front/back switch.
+- **Developer chip** (setting): the RAW size, the remaining RAW requests before the device is reopened, and the frame count and time of the last pipeline run.
 
 ## Capture
 
-- Preview is YUV only. A press sends one capture request with the RAW surface; the frame is copied out, the image released, and the burst handed to the active `ImagePipeline`.
-- The default pipeline writes the frame as DNG to `DCIM/PocoPaw` and builds a quick-look thumbnail from a 2×2 binned RGB.
+- Preview is YUV only. A press sends a burst of capture requests with the RAW surface; each frame is copied out, the image released, and the burst handed to the active `ImagePipeline`.
+- Output (setting): DNG + JPEG (default), JPEG, or DNG. JPEG output runs the burst pipeline chosen under Processing (HDR+ merge, or kernel regression merge) on 4, 8 or 16 frames; DNG + JPEG also writes the reference frame as DNG before the merge. DNG alone keeps the single-frame pass-through. Files go to `DCIM/PocoPaw`.
+- In Photo mode a burst is shot manually: the preview AE's exposure × ISO, one stop under, at the lowest ISO with the shutter capped at 66 ms (OIS) or 33 ms. Pro mode keeps the user's values. With the flash on, the burst is a single frame at auto exposure.
 - When the remaining RAW requests cannot cover a capture, the device is closed and reopened first.
 - RAW always keeps the full sensor. Pinch zoom and the 16:9 ratio shape the viewfinder only; the zoom ratio travels with the burst (`RawMetadata.zoomRatio`) for a later stage to crop.

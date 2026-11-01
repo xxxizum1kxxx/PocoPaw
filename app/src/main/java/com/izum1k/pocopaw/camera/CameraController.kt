@@ -24,6 +24,7 @@ import android.os.HandlerThread
 import android.util.Log
 import android.view.Surface
 import com.izum1k.pocopaw.data.FlashMode
+import com.izum1k.pocopaw.pipeline.NativeMemory
 import com.izum1k.pocopaw.pipeline.RawBurst
 import com.izum1k.pocopaw.pipeline.RawFrame
 import com.izum1k.pocopaw.pipeline.RawMetadata
@@ -43,7 +44,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.util.concurrent.Executor
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -210,6 +210,7 @@ class CameraController(private val manager: CameraManager) {
             } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
                 throw CameraFailure(Reason.TIMEOUT, e)
             } finally {
+                activeCapture?.release()
                 activeCapture = null
                 reader.setOnImageAvailableListener(null, null)
                 if (device != null && session === s) {
@@ -482,12 +483,15 @@ class CameraController(private val manager: CameraManager) {
 
     /**
      * Pairs RAW images with their results by sensor timestamp. Each image is copied out and closed
-     * on arrival, so a burst longer than the reader's maxImages never starves the HAL.
+     * on arrival, so a burst longer than the reader's maxImages never starves the HAL. Copies live
+     * in [NativeMemory]: the frames handed to [await]'s caller are theirs, [release] frees the rest.
      */
     private class CaptureCollector(private val expected: Int) {
         private val buffers = HashMap<Long, Triple<ByteBuffer, Int, Int>>()
         private val results = HashMap<Long, TotalCaptureResult>()
         private val done = CompletableDeferred<List<RawFrame>>()
+        private val handedOver = HashSet<Long>()
+        private var released = false
 
         val callback = object : CameraCaptureSession.CaptureCallback() {
             override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
@@ -502,7 +506,10 @@ class CameraController(private val manager: CameraManager) {
         }
 
         fun onImage(image: Image) {
-            image.use { buffers[it.timestamp] = Triple(copyRaw(it), it.width, it.height) }
+            image.use {
+                if (released || done.isCompleted) return
+                buffers[it.timestamp] = Triple(copyRaw(it), it.width, it.height)
+            }
             maybeFinish()
         }
 
@@ -512,11 +519,19 @@ class CameraController(private val manager: CameraManager) {
 
         suspend fun await(): List<RawFrame> = done.await()
 
+        fun release() {
+            released = true
+            buffers.forEach { (ts, b) -> if (ts !in handedOver) NativeMemory.free(b.first) }
+            buffers.clear()
+        }
+
         private fun maybeFinish() {
+            if (done.isCompleted) return
             val matched = buffers.keys.filter { it in results }
             if (matched.size < expected) return
             val frames = matched.sorted().take(expected).map { ts ->
                 val (data, w, h) = buffers.getValue(ts)
+                handedOver += ts
                 RawFrame(data, w, h, ts, results.getValue(ts))
             }
             done.complete(frames)
@@ -526,7 +541,7 @@ class CameraController(private val manager: CameraManager) {
             val plane = image.planes[0]
             val src = plane.buffer
             val rowBytes = image.width * 2
-            val out = ByteBuffer.allocateDirect(rowBytes * image.height).order(ByteOrder.nativeOrder())
+            val out = NativeMemory.allocate(rowBytes * image.height)
             if (plane.rowStride == rowBytes) {
                 src.rewind()
                 out.put(src)

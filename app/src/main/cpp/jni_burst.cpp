@@ -1,0 +1,129 @@
+#include <android/bitmap.h>
+#include <jni.h>
+
+#include <cstdlib>
+
+#include "burstpipe/burst.h"
+
+namespace {
+
+BurstSession* session(jlong handle) { return reinterpret_cast<BurstSession*>(handle); }
+
+void throwState(JNIEnv* env, const char* msg) {
+    env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), msg);
+}
+
+}  // namespace
+
+extern "C" {
+
+// meta: width, height, cfa, white, black[4] (R, G_even, G_odd, B), wb[4], ccm[9] (row-major),
+// lscRows, lscCols; lsc: rows*cols*4 gains (R, G_even, G_odd, B) or null.
+JNIEXPORT jlong JNICALL
+Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeCreate(JNIEnv* env, jclass, jfloatArray jmeta, jfloatArray jlsc,
+                                                         jobjectArray jframes, jint ref) {
+    Meta m;
+    jfloat* v = env->GetFloatArrayElements(jmeta, nullptr);
+    m.width = (int)v[0];
+    m.height = (int)v[1];
+    m.rowStride = m.width * 2;
+    m.cfa = (int)v[2];
+    m.white = v[3];
+    for (int i = 0; i < 4; i++) m.black[i] = v[4 + i];
+    for (int i = 0; i < 4; i++) m.wb[i] = v[8 + i];
+    for (int i = 0; i < 9; i++) m.ccm[i] = v[12 + i];
+    m.lscRows = (int)v[21];
+    m.lscCols = (int)v[22];
+    env->ReleaseFloatArrayElements(jmeta, v, JNI_ABORT);
+    if (jlsc != nullptr && env->GetArrayLength(jlsc) == m.lscRows * m.lscCols * 4) {
+        m.lsc.resize((size_t)m.lscRows * m.lscCols * 4);
+        env->GetFloatArrayRegion(jlsc, 0, (jsize)m.lsc.size(), m.lsc.data());
+    } else {
+        m.lscRows = m.lscCols = 0;
+    }
+
+    int n = env->GetArrayLength(jframes);
+    std::vector<Raw> frames(n);
+    for (int k = 0; k < n; k++) {
+        jobject buf = env->GetObjectArrayElement(jframes, k);
+        auto* p = static_cast<const uint16_t*>(env->GetDirectBufferAddress(buf));
+        jlong cap = env->GetDirectBufferCapacity(buf);
+        env->DeleteLocalRef(buf);
+        if (p == nullptr || cap < (jlong)m.width * m.height * 2) {
+            throwState(env, "RAW frame is not a direct buffer of width*height*2 bytes");
+            return 0;
+        }
+        frames[k] = Raw{m.width, m.height, p};
+    }
+    return reinterpret_cast<jlong>(new BurstSession(m, std::move(frames), ref));
+}
+
+JNIEXPORT void JNICALL
+Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeAlign(JNIEnv*, jclass, jlong h) { session(h)->align(); }
+
+JNIEXPORT void JNICALL
+Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeMerge(JNIEnv*, jclass, jlong h, jboolean kr, jfloat lo, jfloat hi) {
+    session(h)->merge(kr, lo, hi);
+}
+
+// look: lscLumaStrength, chromaDenoise, compression, targetKey, contrast, saturation, sharpen, sharpenRadius
+JNIEXPORT jlong JNICALL
+Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeFinish(JNIEnv* env, jclass, jlong h, jfloatArray jlook) {
+    LookParams lp;
+    jfloat* v = env->GetFloatArrayElements(jlook, nullptr);
+    lp.lscLumaStrength = v[0];
+    lp.chromaDenoise = v[1];
+    lp.compression = v[2];
+    lp.targetKey = v[3];
+    lp.contrast = v[4];
+    lp.saturation = v[5];
+    lp.sharpen = v[6];
+    lp.sharpenRadius = v[7];
+    env->ReleaseFloatArrayElements(jlook, v, JNI_ABORT);
+    BurstSession* s = session(h);
+    s->finish(lp);
+    return ((jlong)s->width() << 32) | (jlong)(uint32_t)s->height();
+}
+
+JNIEXPORT void JNICALL
+Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeRender(JNIEnv* env, jclass, jlong h, jobject bitmap) {
+    BurstSession* s = session(h);
+    AndroidBitmapInfo info;
+    void* pixels = nullptr;
+    if (AndroidBitmap_getInfo(env, bitmap, &info) != ANDROID_BITMAP_RESULT_SUCCESS ||
+        info.format != ANDROID_BITMAP_FORMAT_RGBA_8888 || (int)info.width != s->width() || (int)info.height != s->height()) {
+        throwState(env, "bitmap must be ARGB_8888 of the rendered size");
+        return;
+    }
+    if (AndroidBitmap_lockPixels(env, bitmap, &pixels) != ANDROID_BITMAP_RESULT_SUCCESS) {
+        throwState(env, "cannot lock bitmap");
+        return;
+    }
+    s->render(static_cast<uint8_t*>(pixels), info.stride);
+    AndroidBitmap_unlockPixels(env, bitmap);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeSummary(JNIEnv* env, jclass, jlong h) {
+    return env->NewStringUTF(session(h)->summary().c_str());
+}
+
+JNIEXPORT void JNICALL
+Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeRelease(JNIEnv*, jclass, jlong h) {
+    delete session(h);
+    pool_trim();
+}
+
+JNIEXPORT jobject JNICALL
+Java_com_izum1k_pocopaw_pipeline_NativeMemory_nativeAllocate(JNIEnv* env, jclass, jlong bytes) {
+    void* p = malloc((size_t)bytes);
+    if (p == nullptr) return nullptr;
+    return env->NewDirectByteBuffer(p, bytes);
+}
+
+JNIEXPORT void JNICALL
+Java_com_izum1k_pocopaw_pipeline_NativeMemory_nativeFree(JNIEnv* env, jclass, jobject buffer) {
+    free(env->GetDirectBufferAddress(buffer));
+}
+
+}  // extern "C"

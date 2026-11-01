@@ -19,7 +19,13 @@ import com.izum1k.pocopaw.camera.PreviewControls
 import com.izum1k.pocopaw.data.AspectRatio
 import com.izum1k.pocopaw.data.CameraSettings
 import com.izum1k.pocopaw.data.FlashMode
+import com.izum1k.pocopaw.data.OutputFormat
+import com.izum1k.pocopaw.data.Processing
 import com.izum1k.pocopaw.data.TimerMode
+import com.izum1k.pocopaw.pipeline.DngPassthroughPipeline
+import com.izum1k.pocopaw.pipeline.HdrPlusPipeline
+import com.izum1k.pocopaw.pipeline.ImagePipeline
+import com.izum1k.pocopaw.pipeline.PipelineOptions
 import com.izum1k.pocopaw.pipeline.PipelineRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -43,6 +49,9 @@ data class FocusPoint(val x: Float, val y: Float, val id: Long)
 
 data class LastCapture(val uri: Uri, val thumbnail: Bitmap?)
 
+/** The last pipeline run, for the developer chip. */
+data class PipelineRun(val pipelineId: String, val frames: Int, val millis: Long)
+
 data class CameraUiState(
     val cameras: List<CameraInfo> = emptyList(),
     val current: CameraInfo? = null,
@@ -57,6 +66,7 @@ data class CameraUiState(
     val progress: Float = 0f,
     val shutterTick: Int = 0,
     val last: LastCapture? = null,
+    val lastRun: PipelineRun? = null,
     val message: CaptureMessage? = null,
     val messageId: Long = 0,
 ) {
@@ -249,12 +259,13 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
 
     private suspend fun capture(deviceRotation: Int) {
         val s = _ui.value
-        val pipeline = PipelineRegistry.create(PipelineRegistry.defaultId)
+        val cam = s.current ?: return
+        val pipeline = pipelineFor(settings.value, cam)
         _ui.update { it.copy(busy = Busy.CAPTURING, progress = 0f, shutterTick = it.shutterTick + 1) }
         if (settings.value.shutterSound) sound.play(MediaActionSound.SHUTTER_CLICK)
         val spec = CaptureSpec(
             frameCount = pipeline.framesPerCapture,
-            exposure = exposurePlan(s),
+            exposure = pipeline.exposureFor(exposurePlan(s), live.value, cam),
             flash = settings.value.flash,
             deviceRotation = deviceRotation,
             zoomRatio = s.zoom,
@@ -274,12 +285,36 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
                 it.copy(
                     busy = Busy.IDLE,
                     last = if (uri != null) LastCapture(uri, result.thumbnail) else it.last,
+                    lastRun = PipelineRun(pipeline.id, burst.size, result.totalMillis),
                 )
             }
         } catch (e: Exception) {
             Log.w(TAG, "pipeline failed", e)
             fail(CaptureMessage.SAVE_FAILED)
+        } finally {
+            burst.close()
         }
+    }
+
+    /**
+     * DNG output keeps the single-frame pass-through; JPEG output runs the burst pipeline. A flash
+     * fires for one frame only, so a flash capture is a burst of one.
+     */
+    private fun pipelineFor(cfg: CameraSettings, cam: CameraInfo): ImagePipeline {
+        if (cfg.output == OutputFormat.DNG) return PipelineRegistry.create(DngPassthroughPipeline.ID)
+        val id = when (cfg.processing) {
+            Processing.HDR_PLUS -> HdrPlusPipeline.ID
+            Processing.HDR_PLUS_KR -> HdrPlusPipeline.ID_KR
+        }
+        val flash = cam.hasFlash && cfg.flash != FlashMode.OFF
+        return PipelineRegistry.create(
+            id,
+            PipelineOptions(
+                frames = if (flash) 1 else cfg.burstFrames.count,
+                writeJpeg = true,
+                writeDng = cfg.output == OutputFormat.DNG_JPEG,
+            ),
+        )
     }
 
     private fun fail(message: CaptureMessage) {

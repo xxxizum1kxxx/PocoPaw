@@ -8,13 +8,16 @@ import android.hardware.camera2.params.RggbChannelVector
 import android.util.Rational
 import com.izum1k.pocopaw.camera.CfaPattern
 import com.izum1k.pocopaw.camera.LensFacing
+import java.io.Closeable
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.ShortBuffer
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * One RAW_SENSOR frame copied out of the camera's buffer: 16-bit samples, native byte order,
  * tightly packed (row stride = width × 2), so the camera's Image can be released at once.
+ * [data] lives in [NativeMemory]; [release] frees it and no one may touch it afterwards.
  */
 class RawFrame(
     val data: ByteBuffer,
@@ -23,6 +26,12 @@ class RawFrame(
     val timestampNs: Long,
     val result: CaptureResult,
 ) {
+    private val released = AtomicBoolean(false)
+
+    fun release() {
+        if (released.compareAndSet(false, true)) NativeMemory.free(data)
+    }
+
     val iso: Int? get() = result.get(CaptureResult.SENSOR_SENSITIVITY)
     val exposureNs: Long? get() = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
 
@@ -86,12 +95,14 @@ class RawMetadata(
     }
 }
 
-/** Frames of one shutter press. A single-frame capture is a burst of one. */
+/** Frames of one shutter press. A single-frame capture is a burst of one. Closing it frees the frames. */
 class RawBurst(
     val frames: List<RawFrame>,
     val metadata: RawMetadata,
     val referenceIndex: Int = 0,
-) {
+) : Closeable {
+    override fun close() = frames.forEach { it.release() }
+
     init {
         require(frames.isNotEmpty()) { "A burst needs at least one frame" }
         require(referenceIndex in frames.indices)

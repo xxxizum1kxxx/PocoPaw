@@ -248,7 +248,7 @@ fun LensSelector(
 
 /** RAW size, live exposure and the RAW requests left before the device is reopened. */
 @Composable
-fun DevChip(info: CameraInfo?, remaining: Int, limit: Int, live: LiveExposure, modifier: Modifier = Modifier) {
+fun DevChip(info: CameraInfo?, remaining: Int, limit: Int, live: LiveExposure, lastRun: PipelineRun?, modifier: Modifier = Modifier) {
     if (info == null) return
     val low = remaining <= 5
     val remainingColor by animateColorAsState(
@@ -270,6 +270,9 @@ fun DevChip(info: CameraInfo?, remaining: Int, limit: Int, live: LiveExposure, m
         live.iso?.let { Text("ISO $it", style = numbers, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         live.exposureNs?.let { Text(CameraFormat.shutter(it), style = numbers, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         Text("$remaining/$limit", style = numbers, color = remainingColor)
+        lastRun?.let {
+            Text(stringResource(R.string.dev_processed, it.frames, it.millis / 1000f), style = numbers, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 

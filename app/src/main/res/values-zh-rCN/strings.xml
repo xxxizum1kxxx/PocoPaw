@@ -51,11 +51,14 @@
     <string name="settings_about">关于</string>
 
     <string name="output_dng">DNG</string>
-    <string name="output_jpeg">JPEG（待管线）</string>
-    <string name="output_dng_jpeg">DNG + JPEG（待管线）</string>
+    <string name="output_jpeg">JPEG（多帧合成）</string>
+    <string name="output_dng_jpeg">DNG + JPEG（多帧合成）</string>
 
-    <string name="pipeline_dng_passthrough">单帧 DNG 直出</string>
-    <string name="pipeline_unknown">自定义</string>
+    <string name="pipeline_hdrplus">HDR+ 合并</string>
+    <string name="pipeline_hdrplus_kr">核回归合并（细节更好，较慢）</string>
+    <string name="settings_burst_frames">连拍帧数</string>
+    <string name="burst_frames_value">%1$d 帧</string>
+    <string name="dev_processed">%1$d 帧 · %2$.1f 秒</string>
 
     <string name="grid_thirds">三分线</string>
     <string name="grid_golden">黄金分割</string>

@@ -3,6 +3,10 @@ package com.izum1k.pocopaw.pipeline
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.SystemClock
+import android.util.Log
+import com.izum1k.pocopaw.camera.CameraInfo
+import com.izum1k.pocopaw.camera.ExposurePlan
+import com.izum1k.pocopaw.camera.LiveExposure
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -18,6 +22,12 @@ object PipelineKeys {
 
     /** The same preview rotated upright, for the viewfinder's thumbnail. */
     val QuickLookUpright = PipelineKey<Bitmap>("quickLookUpright")
+
+    /** The native burst session shared by align, merge and finish. */
+    val Native = PipelineKey<NativeBurst>("native")
+
+    /** The finished full-resolution image in the sensor's orientation. */
+    val Rendered = PipelineKey<Bitmap>("rendered")
 }
 
 /** Working state of one pipeline run: the burst, intermediate results, and what was written. */
@@ -27,6 +37,7 @@ class PipelineContext(
 ) {
     private val slots = HashMap<PipelineKey<*>, Any>()
     private val _outputs = mutableListOf<SavedOutput>()
+    private val resources = mutableListOf<AutoCloseable>()
 
     val outputs: List<SavedOutput> get() = _outputs
 
@@ -37,14 +48,24 @@ class PipelineContext(
     @Suppress("UNCHECKED_CAST")
     operator fun <T : Any> get(key: PipelineKey<T>): T? = slots[key] as T?
 
+    fun <T : Any> require(key: PipelineKey<T>): T = checkNotNull(get(key)) { "No $key: a stage before this one has to produce it" }
+
     fun addOutput(output: SavedOutput) {
         _outputs += output
+    }
+
+    /** Closes [resource] when the run ends, successfully or not. */
+    fun <T : AutoCloseable> own(resource: T): T = resource.also { resources += it }
+
+    internal fun closeResources() {
+        resources.asReversed().forEach { runCatching { it.close() } }
+        resources.clear()
     }
 }
 
 /**
- * One step of processing: quick look, DNG writing today; later alignment, merge, demosaic,
- * tone mapping, JPEG / Ultra HDR encoding. Stages read and write [PipelineContext] slots.
+ * One step of processing: quick look, align, merge, finish, JPEG / DNG writing. Stages read and
+ * write [PipelineContext] slots.
  */
 interface PipelineStage {
     val name: String
@@ -59,7 +80,10 @@ data class PipelineResult(
     val thumbnail: Bitmap?,
     val timings: List<StageTiming>,
 ) {
-    val primaryUri: Uri? get() = outputs.firstOrNull()?.uri
+    /** What the thumbnail button opens: the rendered photo when there is one, else the DNG. */
+    val primaryUri: Uri? get() = (outputs.firstOrNull { it.kind != OutputKind.DNG } ?: outputs.firstOrNull())?.uri
+
+    val totalMillis: Long get() = timings.sumOf { it.millis }
 }
 
 interface ImagePipeline {
@@ -67,6 +91,9 @@ interface ImagePipeline {
 
     /** RAW frames to capture per shutter press. */
     val framesPerCapture: Int get() = 1
+
+    /** The exposure to capture with, given what the user asked for and what the preview's AE measured. */
+    fun exposureFor(requested: ExposurePlan, live: LiveExposure, camera: CameraInfo): ExposurePlan = requested
 
     suspend fun process(burst: RawBurst, sink: OutputSink, progress: (Float) -> Unit = {}): PipelineResult
 }
@@ -80,15 +107,32 @@ open class StagedPipeline(
         withContext(Dispatchers.Default) {
             val ctx = PipelineContext(burst, sink)
             val timings = ArrayList<StageTiming>(stages.size)
-            stages.forEachIndexed { i, stage ->
-                val start = SystemClock.elapsedRealtime()
-                stage.run(ctx)
-                timings += StageTiming(stage.name, SystemClock.elapsedRealtime() - start)
-                progress((i + 1f) / stages.size)
+            try {
+                stages.forEachIndexed { i, stage ->
+                    val start = SystemClock.elapsedRealtime()
+                    stage.run(ctx)
+                    timings += StageTiming(stage.name, SystemClock.elapsedRealtime() - start)
+                    progress((i + 1f) / stages.size)
+                }
+            } finally {
+                ctx.closeResources()
             }
+            Log.i(TAG, "$id ${burst.size} frames: " + timings.joinToString { "${it.stage} ${it.millis} ms" } + ", total ${timings.sumOf { it.millis }} ms")
             PipelineResult(ctx.outputs, ctx[PipelineKeys.QuickLookUpright], timings)
         }
+
+    private companion object {
+        const val TAG = "PocoPawPipeline"
+    }
 }
+
+/** How a pipeline was asked to run: frames per press and which files to write. */
+data class PipelineOptions(
+    val frames: Int = HdrPlusPipeline.DEFAULT_FRAMES,
+    val writeJpeg: Boolean = true,
+    val writeDng: Boolean = false,
+    val look: BurstLook = BurstLook(),
+)
 
 /** The single-frame pipeline: quick look, then the reference frame written as DNG unchanged. */
 class DngPassthroughPipeline : StagedPipeline(ID, listOf(QuickLookStage(), DngWriteStage())) {
@@ -98,22 +142,63 @@ class DngPassthroughPipeline : StagedPipeline(ID, listOf(QuickLookStage(), DngWr
 }
 
 /**
- * Every pipeline the app can run, by id. A multi-frame pipeline registers here (for example
- * `StagedPipeline("hdrplus", listOf(AlignStage(), MergeStage(), ..., DngWriteStage()))`) and the
- * camera screen picks it up through settings, without changes to the camera layer.
+ * The multi-frame CPU pipeline of `docs/research/PIPELINE_REPORT.md`: HDR+ tile alignment, then
+ * either the spatial robust merge plus Malvar-He-Cutler demosaic ([kernelRegression] false) or the
+ * handheld super-resolution kernel-regression merge at 1x (true), then LSC / WB, CCM, chroma
+ * denoise, synthetic-exposure fusion, tone curve, sharpening and JPEG. With [PipelineOptions.writeDng]
+ * the reference frame is also saved as DNG, before the merge so the RAW is safe early.
+ */
+class HdrPlusPipeline(
+    id: String,
+    kernelRegression: Boolean,
+    private val options: PipelineOptions,
+) : StagedPipeline(id, stagesFor(kernelRegression, options)) {
+
+    override val framesPerCapture: Int get() = options.frames
+
+    override fun exposureFor(requested: ExposurePlan, live: LiveExposure, camera: CameraInfo): ExposurePlan =
+        when (requested) {
+            is ExposurePlan.Auto -> if (options.frames > 1) BurstExposure.plan(live, camera, requested.evIndex) ?: requested else requested
+            is ExposurePlan.Manual -> requested
+        }
+
+    companion object {
+        const val ID = "hdrplus"
+        const val ID_KR = "hdrplus_kr"
+        const val DEFAULT_FRAMES = 8
+
+        private fun stagesFor(kernelRegression: Boolean, o: PipelineOptions): List<PipelineStage> = buildList {
+            if (o.writeDng) {
+                add(QuickLookStage())
+                add(DngWriteStage())
+            }
+            add(AlignStage())
+            add(MergeStage(kernelRegression))
+            add(FinishStage(o.look))
+            if (o.writeJpeg) add(JpegWriteStage())
+        }
+    }
+}
+
+/**
+ * Every pipeline the app can run, by id. The camera screen picks one through settings, without
+ * changes to the camera layer.
  */
 object PipelineRegistry {
-    private val factories = linkedMapOf<String, () -> ImagePipeline>(
-        DngPassthroughPipeline.ID to { DngPassthroughPipeline() },
+    private val factories = linkedMapOf<String, (PipelineOptions) -> ImagePipeline>(
+        DngPassthroughPipeline.ID to { _ -> DngPassthroughPipeline() },
+        HdrPlusPipeline.ID to { o -> HdrPlusPipeline(HdrPlusPipeline.ID, kernelRegression = false, o) },
+        HdrPlusPipeline.ID_KR to { o -> HdrPlusPipeline(HdrPlusPipeline.ID_KR, kernelRegression = true, o) },
     )
 
     val ids: List<String> get() = factories.keys.toList()
 
-    val defaultId: String = DngPassthroughPipeline.ID
+    val defaultId: String = HdrPlusPipeline.ID
 
-    fun register(id: String, factory: () -> ImagePipeline) {
+    fun register(id: String, factory: (PipelineOptions) -> ImagePipeline) {
         factories[id] = factory
     }
 
-    fun create(id: String?): ImagePipeline = (factories[id] ?: factories.getValue(defaultId)).invoke()
+    fun create(id: String?, options: PipelineOptions = PipelineOptions()): ImagePipeline =
+        (factories[id] ?: factories.getValue(defaultId)).invoke(options)
 }

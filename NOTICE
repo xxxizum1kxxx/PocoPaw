@@ -25,6 +25,12 @@ This product includes software developed by third parties:
   Licensed under the SIL Open Font License, Version 1.1.
   See licenses/GoogleSansFlex-OFL.txt.
 
+- Handheld Multi-Frame Super-Resolution (app/src/main/cpp/burstpipe/kr.cpp,
+  the kernel-regression merge, ported to C++ from the reference implementation)
+  Copyright Jamy Lafenetre, Gabriele Facciolo, Thomas Eboli
+  Licensed under the MIT License.
+  https://github.com/Jamy-L/Handheld-Multi-Frame-Super-Resolution
+
 The camera screen layout follows Aperture by The LineageOS Project
 (Apache License, Version 2.0, https://github.com/LineageOS/android_packages_apps_Aperture).
 No Aperture source code is included.

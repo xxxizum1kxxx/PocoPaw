@@ -10,11 +10,11 @@ import com.gpo.yoin.symbols.YoinSymbols
 import com.izum1k.pocopaw.BuildConfig
 import com.izum1k.pocopaw.R
 import com.izum1k.pocopaw.container
+import com.izum1k.pocopaw.data.BurstFrames
 import com.izum1k.pocopaw.data.ColorStyle
 import com.izum1k.pocopaw.data.GridStyle
 import com.izum1k.pocopaw.data.OutputFormat
-import com.izum1k.pocopaw.pipeline.DngPassthroughPipeline
-import com.izum1k.pocopaw.pipeline.PipelineRegistry
+import com.izum1k.pocopaw.data.Processing
 import com.izum1k.pocopaw.ui.component.ChoiceRow
 import com.izum1k.pocopaw.ui.component.PawPage
 import com.izum1k.pocopaw.ui.component.Section
@@ -46,11 +46,20 @@ fun SettingsScreen() {
                 )
                 ChoiceRow(
                     title = stringResource(R.string.settings_pipeline),
-                    options = PipelineRegistry.ids,
-                    selected = PipelineRegistry.defaultId,
-                    label = { stringResource(pipelineLabel(it)) },
-                    onSelect = { },
+                    options = Processing.entries,
+                    selected = settings.processing,
+                    label = { stringResource(processingLabel(it)) },
+                    onSelect = { scope.launch { repo.setProcessing(it) } },
                     icon = YoinSymbols.Camera,
+                    enabled = settings.output != OutputFormat.DNG,
+                )
+                ChoiceRow(
+                    title = stringResource(R.string.settings_burst_frames),
+                    options = BurstFrames.entries,
+                    selected = settings.burstFrames,
+                    label = { stringResource(R.string.burst_frames_value, it.count) },
+                    onSelect = { scope.launch { repo.setBurstFrames(it) } },
+                    enabled = settings.output != OutputFormat.DNG,
                 )
                 ChoiceRow(
                     title = stringResource(R.string.settings_grid_style),
@@ -120,9 +129,9 @@ private fun outputLabel(f: OutputFormat): Int = when (f) {
     OutputFormat.DNG_JPEG -> R.string.output_dng_jpeg
 }
 
-private fun pipelineLabel(id: String): Int = when (id) {
-    DngPassthroughPipeline.ID -> R.string.pipeline_dng_passthrough
-    else -> R.string.pipeline_unknown
+private fun processingLabel(p: Processing): Int = when (p) {
+    Processing.HDR_PLUS -> R.string.pipeline_hdrplus
+    Processing.HDR_PLUS_KR -> R.string.pipeline_hdrplus_kr
 }
 
 private fun gridLabel(g: GridStyle): Int = when (g) {

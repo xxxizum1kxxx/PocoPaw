@@ -2,7 +2,7 @@
 
 PocoPaw is a RAW camera for the Poco F5 / Redmi Note 12 Turbo (marble), in the Yoin design language: Material 3 Expressive, wallpaper-seeded colour, Google Sans Flex, continuous corners, spring motion, Yoin Symbols. Its screen layout follows [LineageOS Aperture](https://github.com/LineageOS/android_packages_apps_Aperture).
 
-Today it captures a single RAW frame per press and saves it as DNG. The capture hands a `RawBurst` to a pluggable `ImagePipeline`, so a multi-frame pipeline (align, merge, demosaic, tone map; see `../PIPELINE_REPORT.md`) can be added as pipeline stages without touching the camera layer or the UI.
+A shutter press captures a burst of RAW frames (4, 8 or 16) at an under-exposed, low-ISO manual exposure and runs a CPU-only HDR+ style pipeline on it: tile alignment, robust merge (spatial-domain tiles, or kernel regression at 1x), lens shading and white balance, demosaic, colour, noise-adaptive chroma denoise, synthetic-exposure tone mapping, sharpening, JPEG. The reference frame can also be saved as DNG, and DNG-only output keeps the single-frame pass-through. On the Poco F5 a 16 MP × 8 burst takes about 2.2 s (6.4 s with kernel regression). The research behind it, with what is implemented marked in place, is in `docs/research/`.
 
 PocoPaw 以 GPL-3.0 发布，见 [LICENSE](LICENSE)。
 
@@ -14,20 +14,21 @@ export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 ./gradlew :app:assembleRelease      # release, signed with the debug key
 ```
 
-Requires the Android SDK (compileSdk 36). minSdk is 31. Icons come from [Yoin Symbols](https://github.com/p2o51/yoin-symbols), built from source from `~/code/yoin-symbols` (or `-PyoinSymbolsDir=<path>`); the build stops without that checkout.
+Requires the Android SDK (compileSdk 36), NDK 29.0.14206865 and CMake 3.22.1. minSdk is 31; the APK is arm64-v8a only. Icons come from [Yoin Symbols](https://github.com/p2o51/yoin-symbols), built from source from `~/code/yoin-symbols` (or `-PyoinSymbolsDir=<path>`); the build stops without that checkout.
 
 ## Layout
 
 - `app/src/main/java/com/izum1k/pocopaw/camera`: camera catalogue, the Camera2 controller, the RAW request budget
-- `pipeline`: `RawFrame`, `RawBurst`, `RawMetadata`, `PipelineStage`, `ImagePipeline`, the DNG pass-through pipeline, the quick-look stage, the MediaStore sink
+- `pipeline`: `RawFrame`, `RawBurst`, `RawMetadata`, `PipelineStage`, `ImagePipeline`, the DNG pass-through and HDR+ pipelines, their stages, `BurstExposure`, the JNI wrapper `NativeBurst`, the MediaStore sink
+- `app/src/main/cpp/burstpipe`: the native burst pipeline (align, merge, kernel regression, finishing)
 - `feature/camera`: the viewfinder screen; `feature/settings`: settings and the device capability page
 - `data`: DataStore settings
 - `ui`: theme, shared components, navigation
-- `docs/design.md`: design rules; `AGENTS.md`: conventions for contributors and coding agents
+- `docs/design.md`: design rules; `docs/research/`: the camera HAL report, the pipeline report and the algorithm studies; `AGENTS.md`: conventions for contributors and coding agents
 
 ## Device notes
 
-The camera layer is built around the limits measured in `../REPORT.md`: at most 65 RAW requests per opened `CameraDevice`, logical cameras 4, 5 and 6 hang or crash the HAL, no `noiseProfile`, and auto exposure holds the shutter at 1/100 s under 50 Hz anti-banding.
+The camera layer is built around the limits measured in `docs/research/REPORT.md`: at most 65 RAW requests per opened `CameraDevice`, logical cameras 4, 5 and 6 hang or crash the HAL, no `noiseProfile`, and auto exposure holds the shutter at 1/100 s under 50 Hz anti-banding.
 
 ## Credits
 
@@ -37,3 +38,5 @@ The camera layer is built around the limits measured in `../REPORT.md`: at most 
 - [material-color-utilities](https://github.com/material-foundation/material-color-utilities) by Google (Apache-2.0): the colour code under `app/src/main/java/{contrast,dislike,dynamiccolor,hct,palettes,scheme,temperature,utils}`.
 - [Google Sans Flex](https://github.com/googlefonts/googlesans-flex) (SIL OFL 1.1, see `licenses/GoogleSansFlex-OFL.txt`).
 - [Yoin Symbols](https://github.com/p2o51/yoin-symbols) (MIT): every icon.
+- [Handheld Multi-Frame Super-Resolution](https://github.com/Jamy-L/Handheld-Multi-Frame-Super-Resolution) by Lafenêtre, Facciolo and Eboli (IPOL 2023, MIT): the kernel-regression merge in `cpp/burstpipe/kr.cpp` is a C++ port of its algorithm.
+- HDR+ (Hasinoff et al., SIGGRAPH Asia 2016), Malvar-He-Cutler demosaicing and Mertens exposure fusion: the published algorithms behind `align.cpp`, `merge.cpp` and `finish.cpp`, implemented from the papers.

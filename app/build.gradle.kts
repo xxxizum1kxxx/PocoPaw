@@ -7,6 +7,7 @@ plugins {
 android {
     namespace = "com.izum1k.pocopaw"
     compileSdk = 36
+    ndkVersion = "29.0.14206865"
 
     defaultConfig {
         applicationId = "com.izum1k.pocopaw"
@@ -14,6 +15,23 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+
+        ndk {
+            // The burst pipeline is tuned for marble's Cortex-X2/A710/A510 (armv8.2 fp16 + dotprod).
+            abiFilters += "arm64-v8a"
+        }
+        externalNativeBuild {
+            cmake {
+                arguments += "-DANDROID_STL=c++_static"
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     androidResources {

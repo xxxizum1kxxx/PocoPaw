@@ -157,7 +157,7 @@ private fun CameraContent(vm: CameraViewModel) {
                     Modifier.align(Alignment.TopStart).padding(top = if (wide) TOP_BAR_HEIGHT else 0.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    if (settings.developerInfo) DevChip(current, remaining, vm.rawLimit, live)
+                    if (settings.developerInfo) DevChip(current, remaining, vm.rawLimit, live, ui.lastRun)
                     Reveal(evLabel != null && ui.focus == null) { EvChip(evLabel.orEmpty(), rotation) }
                 }
             },

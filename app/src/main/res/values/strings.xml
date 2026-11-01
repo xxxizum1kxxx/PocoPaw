@@ -53,11 +53,14 @@
     <string name="settings_about">About</string>
 
     <string name="output_dng">DNG</string>
-    <string name="output_jpeg">JPEG (needs pipeline)</string>
-    <string name="output_dng_jpeg">DNG + JPEG (needs pipeline)</string>
+    <string name="output_jpeg">JPEG (multi-frame)</string>
+    <string name="output_dng_jpeg">DNG + JPEG (multi-frame)</string>
 
-    <string name="pipeline_dng_passthrough">Single-frame DNG</string>
-    <string name="pipeline_unknown">Custom</string>
+    <string name="pipeline_hdrplus">HDR+ merge</string>
+    <string name="pipeline_hdrplus_kr">Kernel regression merge (finer, slower)</string>
+    <string name="settings_burst_frames">Burst frames</string>
+    <string name="burst_frames_value">%1$d frames</string>
+    <string name="dev_processed">%1$d f · %2$.1f s</string>
 
     <string name="grid_thirds">Thirds</string>
     <string name="grid_golden">Golden ratio</string>
