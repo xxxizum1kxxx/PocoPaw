@@ -10,7 +10,6 @@ import android.provider.Settings
 import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,6 +19,7 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -48,6 +48,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
@@ -61,7 +62,7 @@ import com.izum1k.pocopaw.data.AspectRatio
 import com.izum1k.pocopaw.ui.component.Reveal
 import com.izum1k.pocopaw.ui.navigation.LocalNavigator
 import com.izum1k.pocopaw.ui.navigation.Route
-import com.izum1k.pocopaw.ui.theme.YoinMotion
+import kotlin.math.roundToInt
 
 @Composable
 fun CameraScreen() {
@@ -123,18 +124,14 @@ private fun CameraContent(vm: CameraViewModel) {
     }
 
     val current = ui.current
-    val wide = settings.aspect == AspectRatio.SIXTEEN_NINE
+    val frame = rememberAspectFrame(settings.aspect)
+    val tallest = remember { AspectRatio.entries.maxOf { it.portraitRatio } }
     val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-    val viewfinderTop by animateDpAsState(
-        if (wide) statusTop else statusTop + TOP_BAR_HEIGHT,
-        YoinMotion.defaultSpatialSpec(),
-        label = "viewfinderTop",
-    )
     val evLabel = if (ui.mode == CaptureMode.PHOTO && ui.evIndex != 0 && current != null) CameraFormat.ev(ui.evIndex, current.evStep) else null
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         Viewfinder(
-            aspect = settings.aspect,
+            frame = frame,
             grid = settings.grid,
             gridStyle = settings.gridStyle,
             focus = ui.focus,
@@ -151,10 +148,17 @@ private fun CameraContent(vm: CameraViewModel) {
             onZoom = vm::zoomBy,
             onEvSteps = { vm.setEv(ui.evIndex + it) },
             onRetry = vm::retry,
-            modifier = Modifier.padding(top = viewfinderTop),
+            modifier = Modifier
+                .offset {
+                    val under = (TOP_BAR_HEIGHT + VIEWFINDER_GAP).toPx()
+                    IntOffset(0, (statusTop.toPx() + under * (1f - frame.blowUp(tallest))).roundToInt())
+                }
+                .padding(horizontal = SIDE_MARGIN),
             topOverlay = {
                 Column(
-                    Modifier.align(Alignment.TopStart).padding(top = if (wide) TOP_BAR_HEIGHT else 0.dp),
+                    Modifier
+                        .align(Alignment.TopStart)
+                        .offset { IntOffset(0, ((TOP_BAR_HEIGHT + VIEWFINDER_GAP - 12.dp).toPx() * frame.blowUp(tallest)).roundToInt()) },
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     if (settings.developerInfo) DevChip(current, remaining, vm.rawLimit, live, ui.lastRun)
@@ -266,7 +270,10 @@ private fun PermissionGate(asked: Boolean, onRequest: () -> Unit) {
     }
 }
 
-private val TOP_BAR_HEIGHT = 64.dp
+/** [TopControls]' height under the status bar: 56dp of controls and 8dp above and below. */
+private val TOP_BAR_HEIGHT = 72.dp
+private val VIEWFINDER_GAP = 4.dp
+private val SIDE_MARGIN = 12.dp
 
 private fun hasCameraPermission(context: Context): Boolean =
     ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED

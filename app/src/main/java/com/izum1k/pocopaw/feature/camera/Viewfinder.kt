@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
@@ -46,12 +45,13 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.res.stringResource
@@ -62,20 +62,18 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.graphics.shapes.Morph
 import com.izum1k.pocopaw.R
 import com.izum1k.pocopaw.camera.CameraController
-import com.izum1k.pocopaw.data.AspectRatio
 import com.izum1k.pocopaw.data.GridStyle
 import com.izum1k.pocopaw.ui.theme.MorphShape
 import com.izum1k.pocopaw.ui.theme.YoinContainerShapes
 import com.izum1k.pocopaw.ui.theme.YoinMotion
 import com.izum1k.pocopaw.ui.theme.withTabularFigures
 import kotlin.math.abs
-
-/** The preview's own aspect in portrait (width / height): the RAW frame is 4:3 on every marble camera. */
-private const val PREVIEW_ASPECT = 3f / 4f
+import kotlin.math.min
+import kotlin.math.roundToInt
 
 @Composable
 fun Viewfinder(
-    aspect: AspectRatio,
+    frame: AspectFrame,
     grid: Boolean,
     gridStyle: GridStyle,
     focus: FocusPoint?,
@@ -96,21 +94,28 @@ fun Viewfinder(
     topOverlay: @Composable BoxScope.() -> Unit = {},
     bottomOverlay: @Composable BoxScope.() -> Unit = {},
 ) {
-    val targetRatio = aspect.height.toFloat() / aspect.width
-    val ratio by animateFloatAsState(targetRatio, YoinMotion.defaultSpatialSpec(), label = "viewfinderRatio")
     BoxWithConstraints(
         modifier
             .fillMaxWidth()
-            .aspectRatio(ratio)
+            .layout { measurable, constraints ->
+                val width = constraints.maxWidth
+                val height = (width * frame.heightRatio).roundToInt()
+                val placeable = measurable.measure(Constraints.fixed(width, height))
+                layout(width, height) { placeable.place(0, 0) }
+            }
             .clip(YoinContainerShapes.Panel)
             .background(Color.Black),
         contentAlignment = Alignment.Center,
     ) {
-        val boxRatio = maxWidth / maxHeight
-        val texW = if (boxRatio < PREVIEW_ASPECT) maxHeight * PREVIEW_ASPECT else maxWidth
-        val texH = if (boxRatio < PREVIEW_ASPECT) maxHeight else maxWidth / PREVIEW_ASPECT
-
-        Box(Modifier.requiredSize(texW, texH).clipToBounds()) {
+        Box(
+            Modifier
+                .requiredSize(maxWidth, maxWidth * SENSOR_RATIO)
+                .graphicsLayer {
+                    scaleX = frame.scale.value
+                    scaleY = frame.scale.value
+                }
+                .aspectSeam(frame),
+        ) {
             PreviewTexture(onSurfaceAvailable, onSurfaceDestroyed, Modifier.fillMaxSize())
             Box(
                 Modifier
@@ -120,7 +125,7 @@ fun Viewfinder(
             FocusRing(focus, focusLocked, evLabel, controlRotation)
         }
 
-        if (grid) GridOverlay(gridStyle, Modifier.fillMaxSize())
+        if (grid) GridOverlay(gridStyle, Modifier.framedBand(frame))
 
         val opening = cameraState is CameraController.State.Opening || cameraState is CameraController.State.Closed
         val scrim by animateFloatAsState(if (opening) 0.65f else 0f, YoinMotion.defaultEffectsSpec(), label = "openingScrim")
@@ -159,6 +164,16 @@ fun Viewfinder(
         Box(Modifier.fillMaxSize().padding(12.dp), content = topOverlay)
         Box(Modifier.fillMaxSize().padding(12.dp), content = bottomOverlay)
     }
+}
+
+/** The part of the viewfinder the band shows, centred. */
+private fun Modifier.framedBand(frame: AspectFrame): Modifier = layout { measurable, constraints ->
+    val width = constraints.maxWidth
+    val picture = width * SENSOR_RATIO
+    val w = min(width.toFloat(), width * frame.bandWidth * frame.scale.value).roundToInt()
+    val h = min(constraints.maxHeight.toFloat(), picture * frame.bandHeight * frame.scale.value).roundToInt()
+    val placeable = measurable.measure(Constraints.fixed(w, h))
+    layout(w, h) { placeable.place(0, 0) }
 }
 
 @Composable

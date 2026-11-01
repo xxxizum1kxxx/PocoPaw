@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
@@ -146,7 +147,7 @@ fun TopControls(
                 onSettings()
             },
             shapes = IconButtonDefaults.shapes(),
-            modifier = Modifier.size(52.dp),
+            modifier = Modifier.size(56.dp),
         ) {
             Icon(
                 YoinSymbols.Settings,
@@ -162,7 +163,8 @@ private fun QuickToggle(caption: String, value: String, checked: Boolean, rotati
     ToggleButton(
         checked = checked,
         onCheckedChange = { onClick() },
-        shapes = ToggleButtonDefaults.shapes(),
+        // Concentric with the 56dp pill around it (4dp inset): pill at rest and checked alike.
+        shapes = ToggleButtonDefaults.shapes(shape = PillShape, pressedShape = QuickTogglePressed, checkedShape = PillShape),
         colors = ToggleButtonDefaults.toggleButtonColors(containerColor = Color.Transparent),
         contentPadding = PaddingValues(horizontal = 4.dp, vertical = 4.dp),
         modifier = Modifier.size(width = 60.dp, height = 48.dp).semantics { contentDescription = "$caption $value" },
@@ -183,6 +185,8 @@ private fun QuickToggle(caption: String, value: String, checked: Boolean, rotati
         }
     }
 }
+
+private val QuickTogglePressed = RoundedCornerShape(14.dp)
 
 private fun flashLabel(mode: FlashMode): Int = when (mode) {
     FlashMode.OFF -> R.string.value_off
