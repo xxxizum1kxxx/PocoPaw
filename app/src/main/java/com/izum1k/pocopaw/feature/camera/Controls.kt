@@ -61,6 +61,8 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material3.Text
 import androidx.compose.material3.ToggleButton
 import androidx.compose.material3.ToggleButtonDefaults
@@ -577,7 +579,7 @@ private fun Modes(mode: CaptureMode, onMode: (CaptureMode) -> Unit) {
 }
 
 /**
- * ISO and shutter on the camera's own third stops, each with Auto at its left end. The shutter
+ * ISO and shutter on the camera's own third stops, each with an Auto toggle on its label. The shutter
  * runs slow to fast like a dial, logarithmic in time, with the handheld range given the most travel.
  * [metered] is what auto would use.
  */
@@ -612,7 +614,7 @@ fun ProPanel(
             value = if (isoAuto) metered?.iso?.toString() ?: "–" else iso.toString(),
             auto = isoAuto,
             clipped = clipped && isoAuto,
-            index = isoStops.indexOf(CameraViewModel.snapIso(iso, camera)),
+            index = isoStops.indexOf(CameraViewModel.snapIso(if (isoAuto) metered?.iso ?: iso else iso, camera)),
             count = isoStops.size,
             onIndex = { onIso(it?.let(isoStops::get)) },
             fullStops = isoFull,
@@ -622,7 +624,7 @@ fun ProPanel(
             value = if (shutterAuto) metered?.exposureNs?.let(CameraFormat::shutter) ?: "–" else CameraFormat.shutter(exposureNs),
             auto = shutterAuto,
             clipped = clipped && shutterAuto,
-            index = shutterStops.indexOf(CameraViewModel.snapShutter(exposureNs, camera)),
+            index = shutterStops.indexOf(CameraViewModel.snapShutter(if (shutterAuto) metered?.exposureNs ?: exposureNs else exposureNs, camera)),
             count = shutterStops.size,
             fullStops = shutterFull,
             weights = shutterWeights,
@@ -641,10 +643,12 @@ private fun isFullStop(stopsFromReference: Double): Boolean =
     abs(stopsFromReference - Math.round(stopsFromReference)) < 0.1
 
 /**
- * Position 0 is Auto (null to [onIndex]), position i the (i − 1)th stop. [weights] (one per stop)
- * sets how much travel each stop gets, uniform when null; Auto gets [AUTO_WEIGHT]. [fullStops] get
- * a long tick, the rest a dot. Tapping the label and value toggles Auto, keeping the shown value
- * when leaving it. [clipped]: auto ran out of range and cannot make up the other one's exposure.
+ * A scale of [count] stops that is swiped, not dragged: the value moves by the swipe from where it
+ * is, so touching the bar never jumps. On Auto the thumb shows [index] (the metered stop) greyed
+ * out, and the first swipe starts from it and leaves Auto. Tapping the label and value toggles Auto,
+ * keeping the shown value when leaving it. [weights] (one per stop, uniform when null) sets how
+ * much travel each stop gets; [fullStops] get a long tick, the rest a dot. [clipped]: auto ran out
+ * of range and cannot make up the other one's exposure.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -661,16 +665,19 @@ private fun StopSlider(
 ) {
     val haptics = LocalHapticFeedback.current
     val marks = remember(count, weights) {
-        val w = listOf(AUTO_WEIGHT) + (weights ?: List(count) { 1f })
-        FloatArray(count + 1).also { m -> for (i in 1..count) m[i] = m[i - 1] + (w[i - 1] + w[i]) / 2 }
+        val w = weights ?: List(count) { 1f }
+        FloatArray(count).also { m -> for (i in 1 until count) m[i] = m[i - 1] + (w[i - 1] + w[i]) / 2 }
     }
-    val range = marks[count].coerceAtLeast(1f)
-    val position = if (auto) 0 else index.coerceAtLeast(0) + 1
-    var last by remember { mutableIntStateOf(position) }
-    last = position
-    val autoAlpha by animateFloatAsState(if (auto) 1f else 0f, YoinMotion.defaultEffectsSpec(), label = "autoAlpha")
+    val range = (marks.lastOrNull() ?: 0f).coerceAtLeast(1f)
+    val position = index.coerceIn(0, (count - 1).coerceAtLeast(0))
+    val current by rememberUpdatedState(position)
+    val emit by rememberUpdatedState(onIndex)
     val autoColor by animateColorAsState(
-        if (clipped) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+        when {
+            clipped && auto -> MaterialTheme.colorScheme.error
+            auto -> MaterialTheme.colorScheme.primary
+            else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+        },
         YoinMotion.defaultEffectsSpec(),
         label = "autoColor",
     )
@@ -683,7 +690,13 @@ private fun StopSlider(
         YoinMotion.defaultEffectsSpec(),
         label = "valueColor",
     )
-    val tickActive = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
+    val sliderColors = if (auto) {
+        val grey = MaterialTheme.colorScheme.onSurfaceVariant
+        SliderDefaults.colors(thumbColor = grey, activeTrackColor = grey.copy(alpha = 0.38f))
+    } else {
+        SliderDefaults.colors()
+    }
+    val tickActive = if (auto) MaterialTheme.colorScheme.surface.copy(alpha = 0.6f) else MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
     val tickInactive = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
     Row(Modifier.height(SLIDER_ROW_HEIGHT), verticalAlignment = Alignment.CenterVertically) {
         Row(
@@ -692,77 +705,90 @@ private fun StopSlider(
                 .clip(RoundedCornerShape(12.dp))
                 .clickable(enabled = count > 0) {
                     haptics.performHapticFeedback(if (auto) HapticFeedbackType.ToggleOff else HapticFeedbackType.ToggleOn)
-                    onIndex(if (auto) index.coerceIn(0, count - 1) else null)
+                    onIndex(if (auto) position else null)
                 },
             verticalAlignment = Alignment.CenterVertically,
         ) {
-        Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, softWrap = false, modifier = Modifier.width(60.dp))
-        Column(Modifier.widthIn(min = 56.dp)) {
-            Text(
-                stringResource(R.string.value_auto),
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.Bold,
-                color = autoColor,
-                softWrap = false,
-                modifier = Modifier.graphicsLayer { alpha = autoAlpha },
-            )
-            Text(
-                value,
-                style = MaterialTheme.typography.titleSmall.withTabularFigures(),
-                fontWeight = FontWeight.SemiBold,
-                color = valueColor,
-                softWrap = false,
-            )
+            Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, softWrap = false, modifier = Modifier.width(60.dp))
+            Column(Modifier.widthIn(min = 56.dp)) {
+                Text(
+                    stringResource(R.string.value_auto),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = autoColor,
+                    softWrap = false,
+                )
+                Text(
+                    value,
+                    style = MaterialTheme.typography.titleSmall.withTabularFigures(),
+                    fontWeight = FontWeight.SemiBold,
+                    color = valueColor,
+                    softWrap = false,
+                )
+            }
         }
-        }
-        Slider(
-            value = marks[position.coerceIn(0, count)],
-            onValueChange = { v ->
-                val p = marks.indices.minBy { abs(marks[it] - v) }
-                if (p != last) {
-                    last = p
-                    haptics.performHapticFeedback(if (p == 0) HapticFeedbackType.ToggleOn else HapticFeedbackType.SegmentTick)
-                    onIndex(if (p == 0) null else p - 1)
-                }
-            },
-            valueRange = 0f..range,
-            enabled = count > 0,
-            modifier = Modifier.weight(1f),
-            track = { state ->
-                Box {
-                    SliderDefaults.Track(sliderState = state)
-                    Canvas(Modifier.matchParentSize()) {
-                        val thumbX = state.value / range * size.width
-                        val gap = 8.dp.toPx()
-                        val minDotSpacing = 5.dp.toPx()
-                        val endIndicator = size.width - 10.dp.toPx()
-                        val cy = size.height / 2
-                        for (i in 1..count) {
-                            val x = marks[i] / range * size.width
-                            if (abs(x - thumbX) < gap || x > endIndicator) continue
-                            val color = if (x < thumbX) tickActive else tickInactive
-                            val full = fullStops[i - 1]
-                            val spacing = (if (i < count) marks[i + 1] - marks[i] else marks[i] - marks[i - 1]) / range * size.width
-                            if (!full && spacing < minDotSpacing) continue
-                            if (full) {
-                                val h = size.height * 0.28f
-                                drawLine(color, Offset(x, cy - h), Offset(x, cy + h), 1.5.dp.toPx(), StrokeCap.Round)
-                            } else {
-                                drawCircle(color, 1.dp.toPx(), Offset(x, cy))
+        Box(Modifier.weight(1f)) {
+            Slider(
+                value = marks.getOrElse(position) { 0f },
+                onValueChange = {},
+                valueRange = 0f..range,
+                enabled = count > 0,
+                colors = sliderColors,
+                track = { state ->
+                    Box {
+                        SliderDefaults.Track(sliderState = state, colors = sliderColors)
+                        Canvas(Modifier.matchParentSize()) {
+                            val thumbX = state.value / range * size.width
+                            val gap = 8.dp.toPx()
+                            val minDotSpacing = 5.dp.toPx()
+                            val endIndicator = size.width - 10.dp.toPx()
+                            val cy = size.height / 2
+                            for (i in 1 until count) {
+                                val x = marks[i] / range * size.width
+                                if (abs(x - thumbX) < gap || x > endIndicator) continue
+                                val full = fullStops[i]
+                                val spacing = (if (i < count - 1) marks[i + 1] - marks[i] else marks[i] - marks[i - 1]) / range * size.width
+                                if (!full && spacing < minDotSpacing) continue
+                                val color = if (x < thumbX) tickActive else tickInactive
+                                if (full) {
+                                    val h = size.height * 0.28f
+                                    drawLine(color, Offset(x, cy - h), Offset(x, cy + h), 1.5.dp.toPx(), StrokeCap.Round)
+                                } else {
+                                    drawCircle(color, 1.dp.toPx(), Offset(x, cy))
+                                }
                             }
                         }
                     }
-                }
-            },
-        )
+                },
+            )
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .pointerInput(count, marks) {
+                        if (count < 2) return@pointerInput
+                        var at = 0f
+                        var last = 0
+                        detectHorizontalDragGestures(
+                            onDragStart = { at = marks[current]; last = current },
+                            onHorizontalDrag = { change, dx ->
+                                change.consume()
+                                at = (at + dx / size.width * range).coerceIn(0f, range)
+                                val p = marks.indices.minBy { abs(marks[it] - at) }
+                                if (p != last) {
+                                    last = p
+                                    haptics.performHapticFeedback(HapticFeedbackType.SegmentTick)
+                                    emit(p)
+                                }
+                            },
+                        )
+                    },
+            )
+        }
     }
 }
 
 /** Tight enough for the panel to fit between the 4:3 picture and the wave; the thumb overhangs it. */
 private val SLIDER_ROW_HEIGHT = 40.dp
-
-/** Auto's share of the bar: its snap zone is (AUTO_WEIGHT + 1) / 4 = 1.5 stops wide, a stop being 1. */
-private const val AUTO_WEIGHT = 5f
 
 @Composable
 fun ShutterRow(
