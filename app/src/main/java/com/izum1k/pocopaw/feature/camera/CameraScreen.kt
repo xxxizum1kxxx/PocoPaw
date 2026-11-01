@@ -75,6 +75,7 @@ import com.izum1k.pocopaw.ui.navigation.LocalNavigator
 import com.izum1k.pocopaw.ui.navigation.Route
 import com.izum1k.pocopaw.ui.theme.YoinMotion
 import kotlin.math.max
+import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
 @Composable
@@ -152,6 +153,16 @@ private fun CameraContent(vm: CameraViewModel) {
     var wbChip by remember { mutableStateOf("") }
     if (ui.wbShift != 0) wbChip = CameraFormat.wb(ui.wbShift)
     var quickOpen by rememberSaveable { mutableStateOf(false) }
+    // The chips leave, turn while hidden and come back upright in the user's new corner.
+    var chipRotation by remember { mutableFloatStateOf(-deviceRotation.toFloat()) }
+    var chipsShown by remember { mutableStateOf(true) }
+    LaunchedEffect(deviceRotation) {
+        if (chipRotation == -deviceRotation.toFloat()) return@LaunchedEffect
+        chipsShown = false
+        delay(CHIP_TURN_MS)
+        chipRotation = -deviceRotation.toFloat()
+        chipsShown = true
+    }
     val wbDial = SwipeDial(ui.wbShift, -CameraViewModel.WB_MAX_STEPS, CameraViewModel.WB_MAX_STEPS, "WB " + CameraFormat.wb(ui.wbShift))
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
@@ -193,16 +204,16 @@ private fun CameraContent(vm: CameraViewModel) {
                 // In the user's top corner, clear of the controls floating on a tall framing.
                 val b = frame.blowUp(tallest)
                 UprightBox(
-                    rotation,
+                    chipRotation,
                     Modifier.padding(
                         top = (TOP_BAR_HEIGHT - TOP_INSET + FLOAT_INSET) * b,
                         bottom = CHIP_FLOAT_CLEARANCE * max(b, if (ui.mode == CaptureMode.PRO) 1f else 0f),
                     ),
                 ) {
                     Column(Modifier.align(Alignment.TopStart), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        PillReveal(settings.developerInfo && live.focusDioptres != null) { AfChip(live, onClick = vm::unlockFocus) }
-                        PillReveal(evLabel != null && ui.focus == null) { EvChip(evChip) { vm.setEv(0) } }
-                        PillReveal(ui.wbShift != 0) { EvChip(wbChip, tag = "WB") { vm.setWb(0) } }
+                        PillReveal(chipsShown && settings.developerInfo && live.focusDioptres != null) { AfChip(live, onClick = vm::unlockFocus) }
+                        PillReveal(chipsShown && evLabel != null && ui.focus == null) { EvChip(evChip) { vm.setEv(0) } }
+                        PillReveal(chipsShown && ui.wbShift != 0) { EvChip(wbChip, tag = "WB") { vm.setWb(0) } }
                     }
                 }
             },
@@ -415,6 +426,9 @@ private val FLOAT_INSET = 18.dp
 
 /** The info and lenses floating on a tall framing's bottom, which the chips keep clear of. */
 private val CHIP_FLOAT_CLEARANCE = 104.dp
+
+/** How long the chips take to leave before they turn. */
+private const val CHIP_TURN_MS = 220L
 /** The camera whose frames are on screen; a reopen mid-capture (RAW budget) keeps the busy flag instead. */
 private fun CameraController.State.showing(): String? = when (this) {
     is CameraController.State.Previewing -> cameraId
