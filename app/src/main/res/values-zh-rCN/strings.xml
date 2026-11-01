@@ -14,6 +14,7 @@
     <string name="control_timer">定时</string>
     <string name="control_aspect">画幅</string>
     <string name="control_grid">网格</string>
+    <string name="quick_settings">快捷设置</string>
     <string name="control_shutter">快门</string>
 
     <string name="value_off">关</string>

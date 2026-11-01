@@ -7,7 +7,15 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
@@ -147,6 +155,7 @@ private fun CameraContent(vm: CameraViewModel) {
     if (evLabel != null) evChip = evLabel
     var wbChip by remember { mutableStateOf("") }
     if (ui.wbShift != 0) wbChip = CameraFormat.wb(ui.wbShift)
+    var quickOpen by rememberSaveable { mutableStateOf(false) }
     val wbDial = SwipeDial(ui.wbShift, -CameraViewModel.WB_MAX_STEPS, CameraViewModel.WB_MAX_STEPS, "WB " + CameraFormat.wb(ui.wbShift))
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
@@ -198,20 +207,50 @@ private fun CameraContent(vm: CameraViewModel) {
             },
         )
 
-        TopControls(
-            settings = settings,
-            hasFlash = current?.hasFlash == true,
-            flashRequired = live.flashRequired,
-            rotation = rotation,
-            onFlash = { vm.setFlash(it) },
-            onTimer = { vm.setTimer(it) },
-            onAspect = { vm.setAspect(it) },
-            onGrid = { vm.setGrid(it) },
-            onSettings = { nav.push(Route.Settings) },
-            modifier = Modifier
+        BackHandler(quickOpen) { quickOpen = false }
+        if (quickOpen) {
+            Box(Modifier.fillMaxSize().clickable(interactionSource = null, indication = null) { quickOpen = false })
+        }
+        Column(
+            Modifier
                 .statusBarsPadding()
                 .offset { IntOffset(0, ((FLOAT_INSET - TOP_INSET).toPx() * frame.blowUp(tallest)).roundToInt()) },
-        )
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            TopControls(
+                settings = settings,
+                hasFlash = current?.hasFlash == true,
+                flashRequired = live.flashRequired,
+                rotation = rotation,
+                onFlash = { vm.setFlash(it) },
+                onTimer = { vm.setTimer(it) },
+                onAspect = { vm.setAspect(it) },
+                onGrid = { vm.setGrid(it) },
+                quickOpen = quickOpen,
+                onQuick = { quickOpen = it },
+                onSettings = {
+                    quickOpen = false
+                    nav.push(Route.Settings)
+                },
+            )
+            AnimatedVisibility(
+                quickOpen,
+                enter = fadeIn(YoinMotion.defaultEffectsSpec()) +
+                    scaleIn(YoinMotion.defaultSpatialSpec(), initialScale = 0.9f, transformOrigin = TransformOrigin(0.5f, 0f)),
+                exit = fadeOut(YoinMotion.fastEffectsSpec()) +
+                    scaleOut(YoinMotion.defaultSpatialSpec(), targetScale = 0.9f, transformOrigin = TransformOrigin(0.5f, 0f)),
+            ) {
+                QuickSettingsPanel(
+                    settings = settings,
+                    onOutput = { vm.updateSettings { setOutput(it) } },
+                    onProcessing = { vm.updateSettings { setProcessing(it) } },
+                    onFrames = { vm.updateSettings { setBurstFrames(it) } },
+                    onScene = { vm.updateSettings { setScene(it) } },
+                    onLook = { vm.updateSettings { setLook(it) } },
+                    onUltraHdr = { vm.updateSettings { setUltraHdr(it) } },
+                )
+            }
+        }
 
         Column(
             Modifier

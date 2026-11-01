@@ -24,6 +24,7 @@ import com.izum1k.pocopaw.data.OutputFormat
 import com.izum1k.pocopaw.data.Processing
 import com.izum1k.pocopaw.data.TimerMode
 import com.izum1k.pocopaw.data.SceneMode
+import com.izum1k.pocopaw.data.SettingsRepository
 import com.izum1k.pocopaw.pipeline.BurstLook
 import com.izum1k.pocopaw.pipeline.BurstScene
 import com.izum1k.pocopaw.pipeline.DngPassthroughPipeline
@@ -296,6 +297,9 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
     }
 
     fun setTimer(v: TimerMode) = viewModelScope.launch { settingsRepo.setTimer(v) }
+
+    /** A capture setting changed from the quick settings panel. */
+    fun updateSettings(change: suspend SettingsRepository.() -> Unit) = viewModelScope.launch { settingsRepo.change() }
     fun setAspect(v: AspectRatio) = viewModelScope.launch { settingsRepo.setAspect(v) }
     fun setGrid(v: Boolean) = viewModelScope.launch { settingsRepo.setGrid(v) }
 

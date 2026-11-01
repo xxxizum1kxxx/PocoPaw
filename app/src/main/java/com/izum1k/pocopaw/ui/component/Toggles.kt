@@ -26,6 +26,9 @@ fun <T> ConnectedChoice(
     label: @Composable (T) -> String,
     onSelect: (T) -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    contentPadding: PaddingValues = PaddingValues(horizontal = 4.dp, vertical = 10.dp),
+    weight: (T) -> Float = { 1f },
 ) {
     val haptics = LocalHapticFeedback.current
     Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)) {
@@ -38,13 +41,14 @@ fun <T> ConnectedChoice(
                         onSelect(option)
                     }
                 },
-                modifier = Modifier.weight(1f).semantics { role = Role.RadioButton },
+                enabled = enabled,
+                modifier = Modifier.weight(weight(option)).semantics { role = Role.RadioButton },
                 shapes = when (index) {
                     0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
                     options.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
                     else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
                 },
-                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 10.dp),
+                contentPadding = contentPadding,
             ) {
                 Text(label(option), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge)
             }

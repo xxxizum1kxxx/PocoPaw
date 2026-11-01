@@ -99,7 +99,10 @@ import com.izum1k.pocopaw.R
 import com.izum1k.pocopaw.camera.CameraInfo
 import com.izum1k.pocopaw.camera.LiveExposure
 import com.izum1k.pocopaw.data.AspectRatio
+import com.izum1k.pocopaw.data.BurstFrames
 import com.izum1k.pocopaw.data.CameraSettings
+import com.izum1k.pocopaw.data.LookStyle
+import com.izum1k.pocopaw.ui.component.ConnectedChoice
 import com.izum1k.pocopaw.camera.ManualExposure
 import com.izum1k.pocopaw.data.FlashMode
 import com.izum1k.pocopaw.data.OutputFormat
@@ -127,6 +130,8 @@ fun TopControls(
     onTimer: (TimerMode) -> Unit,
     onAspect: (AspectRatio) -> Unit,
     onGrid: (Boolean) -> Unit,
+    quickOpen: Boolean,
+    onQuick: (Boolean) -> Unit,
     onSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -179,6 +184,10 @@ fun TopControls(
                 haptics.performHapticFeedback(if (settings.grid) HapticFeedbackType.ToggleOff else HapticFeedbackType.ToggleOn)
                 onGrid(!settings.grid)
             }
+            QuickMoreToggle(quickOpen, rotation) {
+                haptics.performHapticFeedback(if (quickOpen) HapticFeedbackType.ToggleOff else HapticFeedbackType.ToggleOn)
+                onQuick(!quickOpen)
+            }
         }
         Spacer(Modifier.weight(1f))
         FilledTonalIconButton(
@@ -211,7 +220,7 @@ private fun QuickToggle(caption: String, value: AnnotatedString, checked: Boolea
         shapes = ToggleButtonDefaults.shapes(shape = PillShape, pressedShape = QuickTogglePressed, checkedShape = PillShape),
         colors = ToggleButtonDefaults.toggleButtonColors(containerColor = Color.Transparent),
         contentPadding = PaddingValues(horizontal = 4.dp, vertical = 4.dp),
-        modifier = Modifier.size(width = 60.dp, height = 48.dp).semantics { contentDescription = "$caption ${value.text}" },
+        modifier = Modifier.size(width = 54.dp, height = 48.dp).semantics { contentDescription = "$caption ${value.text}" },
     ) {
         Column(
             Modifier.graphicsLayer { rotationZ = rotation },
@@ -231,6 +240,109 @@ private fun QuickToggle(caption: String, value: AnnotatedString, checked: Boolea
 }
 
 private val QuickTogglePressed = RoundedCornerShape(14.dp)
+
+/** Opens [QuickSettingsPanel]: a chevron that turns over while it is open. */
+@Composable
+private fun QuickMoreToggle(open: Boolean, rotation: Float, onClick: () -> Unit) {
+    val turn by animateFloatAsState(if (open) 180f else 0f, YoinMotion.defaultSpatialSpec(), label = "quickChevron")
+    val label = stringResource(R.string.quick_settings)
+    ToggleButton(
+        checked = open,
+        onCheckedChange = { onClick() },
+        shapes = ToggleButtonDefaults.shapes(shape = PillShape, pressedShape = QuickTogglePressed, checkedShape = PillShape),
+        colors = ToggleButtonDefaults.toggleButtonColors(containerColor = Color.Transparent),
+        contentPadding = PaddingValues(0.dp),
+        modifier = Modifier.size(width = 40.dp, height = 48.dp).semantics { contentDescription = label },
+    ) {
+        val tint = if (open) MaterialTheme.colorScheme.onSecondary else MaterialTheme.colorScheme.onSurface
+        Canvas(Modifier.size(18.dp).graphicsLayer { rotationZ = rotation + turn }) {
+            val w = size.width
+            val h = size.height
+            val path = Path().apply {
+                moveTo(w * 0.2f, h * 0.38f)
+                lineTo(w * 0.5f, h * 0.66f)
+                lineTo(w * 0.8f, h * 0.38f)
+            }
+            drawPath(path, tint, style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+        }
+    }
+}
+
+/**
+ * The capture settings worth changing between shots, under [TopControls]: output, processing,
+ * burst frames, scene, look and Ultra HDR. With DNG only, nothing after output applies.
+ */
+@Composable
+fun QuickSettingsPanel(
+    settings: CameraSettings,
+    onOutput: (OutputFormat) -> Unit,
+    onProcessing: (Processing) -> Unit,
+    onFrames: (BurstFrames) -> Unit,
+    onScene: (SceneMode) -> Unit,
+    onLook: (LookStyle) -> Unit,
+    onUltraHdr: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val merged = settings.output != OutputFormat.DNG
+    Column(
+        modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp)
+            .clip(RoundedCornerShape(28.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.96f))
+            // Swallow taps between the rows so they do not fall through and close the panel.
+            .clickable(interactionSource = null, indication = null) {}
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        QuickRow(stringResource(R.string.settings_output)) {
+            ConnectedChoice(OutputFormat.entries.filter { it.available }, settings.output, { outputLabel(it) }, onOutput, contentPadding = QuickChoicePadding, weight = { if (it == OutputFormat.DNG_JPEG) 1.6f else 1f })
+        }
+        QuickRow(stringResource(R.string.settings_pipeline), merged) {
+            ConnectedChoice(Processing.entries, settings.processing, { if (it == Processing.HDR_PLUS) "HDR+" else "HDR+ KR" }, onProcessing, enabled = merged, contentPadding = QuickChoicePadding)
+        }
+        QuickRow(stringResource(R.string.settings_burst_frames), merged) {
+            ConnectedChoice(BurstFrames.entries, settings.burstFrames, { it.count.toString() }, onFrames, enabled = merged, contentPadding = QuickChoicePadding)
+        }
+        QuickRow(stringResource(R.string.settings_scene), merged) {
+            ConnectedChoice(SceneMode.entries, settings.scene, {
+                stringResource(
+                    when (it) {
+                        SceneMode.AUTO -> R.string.scene_auto
+                        SceneMode.BRACKET -> R.string.scene_bracket_short
+                        SceneMode.NIGHT -> R.string.scene_night_short
+                    },
+                )
+            }, onScene, enabled = merged, contentPadding = QuickChoicePadding)
+        }
+        QuickRow(stringResource(R.string.settings_look), merged) {
+            ConnectedChoice(LookStyle.entries, settings.look, {
+                if (it == LookStyle.PIXEL) "Pixel" else stringResource(R.string.look_standard)
+            }, onLook, enabled = merged, contentPadding = QuickChoicePadding)
+        }
+        QuickRow(stringResource(R.string.settings_ultra_hdr), merged) {
+            ConnectedChoice(listOf(false, true), settings.ultraHdr, {
+                stringResource(if (it) R.string.value_on else R.string.value_off)
+            }, onUltraHdr, enabled = merged, contentPadding = QuickChoicePadding)
+        }
+    }
+}
+
+@Composable
+private fun QuickRow(caption: String, enabled: Boolean = true, content: @Composable () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            caption,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 1f else 0.38f),
+            maxLines = 2,
+            modifier = Modifier.width(68.dp).padding(start = 4.dp),
+        )
+        Box(Modifier.weight(1f)) { content() }
+    }
+}
+
+private val QuickChoicePadding = PaddingValues(horizontal = 2.dp, vertical = 6.dp)
 
 /**
  * The seam between viewfinder and controls, in PiliPaw's wave (Yoin's WaveProgressBar): a quiet
