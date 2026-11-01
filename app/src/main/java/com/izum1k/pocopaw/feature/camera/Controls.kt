@@ -80,7 +80,9 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -660,6 +662,9 @@ fun ModeBar(
 
 private val SIDE_PADDING = 20.dp
 
+/** Between a slider's label and value, and between the value and the bar. */
+private val SLIDER_LABEL_GAP = 12.dp
+
 @Composable
 private fun Modes(mode: CaptureMode, onMode: (CaptureMode) -> Unit) {
     val haptics = LocalHapticFeedback.current
@@ -722,6 +727,24 @@ fun ProPanel(
     val shutterWeights = remember(shutterStops) { shutterStops.map(::shutterStopWeight) }
     val isoFull = remember(isoStops) { isoStops.map { isFullStop(log2(it / 100.0)) } }
     val shutterFull = remember(shutterStops) { shutterStops.map { isFullStop(log2(it / 1e9)) } }
+    // Both rows share the widest label and the widest value, so the bars line up and the value
+    // sits evenly between its label and its bar.
+    val shutterLabel = stringResource(R.string.control_shutter)
+    val autoLabel = stringResource(R.string.value_auto)
+    val measurer = rememberTextMeasurer()
+    val labelStyle = MaterialTheme.typography.labelLarge
+    val valueStyle = MaterialTheme.typography.titleSmall.withTabularFigures().copy(fontWeight = FontWeight.SemiBold)
+    val autoStyle = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+    val density = LocalDensity.current
+    val labelWidth = remember(shutterLabel, labelStyle) {
+        with(density) { listOf("ISO", shutterLabel).maxOf { measurer.measure(it, labelStyle).size.width }.toDp() }
+    }
+    val valueWidth = remember(isoStops, shutterStops, autoLabel, valueStyle) {
+        val values = isoStops.map(Int::toString) + shutterStops.map(CameraFormat::shutter)
+        with(density) {
+            maxOf(values.maxOf { measurer.measure(it, valueStyle).size.width }, measurer.measure(autoLabel, autoStyle).size.width).toDp()
+        }
+    }
     Column(
         modifier
             .fillMaxWidth()
@@ -739,9 +762,11 @@ fun ProPanel(
             count = isoStops.size,
             onIndex = { onIso(it?.let(isoStops::get)) },
             fullStops = isoFull,
+            labelWidth = labelWidth,
+            valueWidth = valueWidth,
         )
         StopSlider(
-            label = stringResource(R.string.control_shutter),
+            label = shutterLabel,
             value = if (shutterAuto) metered?.exposureNs?.let(CameraFormat::shutter) ?: "–" else CameraFormat.shutter(exposureNs),
             auto = shutterAuto,
             clipped = clipped && shutterAuto,
@@ -750,6 +775,8 @@ fun ProPanel(
             fullStops = shutterFull,
             weights = shutterWeights,
             onIndex = { onShutter(it?.let(shutterStops::get)) },
+            labelWidth = labelWidth,
+            valueWidth = valueWidth,
         )
     }
 }
@@ -782,6 +809,8 @@ private fun StopSlider(
     count: Int,
     onIndex: (Int?) -> Unit,
     fullStops: List<Boolean>,
+    labelWidth: Dp,
+    valueWidth: Dp,
     weights: List<Float>? = null,
 ) {
     val haptics = LocalHapticFeedback.current
@@ -829,9 +858,10 @@ private fun StopSlider(
                     onIndex(if (auto) position else null)
                 },
             verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(SLIDER_LABEL_GAP),
         ) {
-            Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, softWrap = false, modifier = Modifier.width(60.dp))
-            Column(Modifier.widthIn(min = 56.dp)) {
+            Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, softWrap = false, modifier = Modifier.width(labelWidth))
+            Column(Modifier.width(valueWidth)) {
                 Text(
                     stringResource(R.string.value_auto),
                     style = MaterialTheme.typography.labelSmall,
@@ -848,6 +878,7 @@ private fun StopSlider(
                 )
             }
         }
+        Spacer(Modifier.width(SLIDER_LABEL_GAP))
         Box(Modifier.weight(1f)) {
             Slider(
                 value = marks.getOrElse(position) { 0f },
