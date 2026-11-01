@@ -51,6 +51,8 @@ data class LiveExposure(
     val focusLocked: Boolean = false,
     val focusing: Boolean = false,
     val aeConverged: Boolean = false,
+    /** AE with auto flash says this scene needs the flash. */
+    val flashRequired: Boolean = false,
     /** Gyroscope angular speed RMS over the last second (rad/s), for night exposure; null if unknown. */
     val motionRadPerSec: Float? = null,
 )

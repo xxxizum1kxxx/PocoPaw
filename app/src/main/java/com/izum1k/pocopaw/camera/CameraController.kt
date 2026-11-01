@@ -476,6 +476,7 @@ class CameraController(private val manager: CameraManager) {
                 focusLocked = af == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED || af == CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED,
                 focusing = af == CaptureResult.CONTROL_AF_STATE_ACTIVE_SCAN || af == CaptureResult.CONTROL_AF_STATE_PASSIVE_SCAN,
                 aeConverged = ae == CaptureResult.CONTROL_AE_STATE_CONVERGED,
+                flashRequired = ae == CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED,
             )
         }
     }

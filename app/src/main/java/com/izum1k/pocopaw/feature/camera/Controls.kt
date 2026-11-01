@@ -350,7 +350,7 @@ fun DevChip(settings: CameraSettings, camera: CameraInfo?, live: LiveExposure, m
     val quiet = MaterialTheme.colorScheme.onSurfaceVariant
     DevPill(modifier) {
         Text(outputLabel(settings.output), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, softWrap = false)
-        Text(pipelineLabel(settings, camera), style = numbers, softWrap = false)
+        Text(pipelineLabel(settings, camera, live), style = numbers, softWrap = false)
         live.iso?.let { Text("ISO $it", style = numbers, color = quiet, softWrap = false) }
         live.exposureNs?.let { Text(CameraFormat.shutter(it), style = numbers, color = quiet, softWrap = false) }
     }
@@ -364,15 +364,15 @@ private fun outputLabel(output: OutputFormat): String = when (output) {
 
 /** The pipeline [CameraViewModel] will pick for the next press, flash included. */
 @Composable
-private fun pipelineLabel(settings: CameraSettings, camera: CameraInfo): String {
+private fun pipelineLabel(settings: CameraSettings, camera: CameraInfo, live: LiveExposure): String {
     if (settings.output == OutputFormat.DNG) return stringResource(R.string.pipeline_single)
     val merge = when (settings.processing) {
         Processing.HDR_PLUS -> "HDR+"
         Processing.HDR_PLUS_KR -> "HDR+ KR"
     }
-    val flash = camera.hasFlash && settings.flash != FlashMode.OFF
+    val flash = CameraViewModel.flashFires(settings, camera, live)
     val scene = when {
-        flash -> null
+        flash -> stringResource(R.string.flash_short)
         settings.scene == SceneMode.BRACKET -> stringResource(R.string.scene_bracket_short)
         settings.scene == SceneMode.NIGHT -> stringResource(R.string.scene_night_short)
         else -> null

@@ -71,6 +71,7 @@
     <string name="pipeline_single">单帧直出</string>
     <string name="scene_bracket_short">包围</string>
     <string name="scene_night_short">夜景</string>
+    <string name="flash_short">闪光</string>
 
     <string name="grid_thirds">三分线</string>
     <string name="grid_golden">黄金分割</string>

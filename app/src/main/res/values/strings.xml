@@ -73,6 +73,7 @@
     <string name="pipeline_single">Single frame</string>
     <string name="scene_bracket_short">Bracket</string>
     <string name="scene_night_short">Night</string>
+    <string name="flash_short">Flash</string>
 
     <string name="grid_thirds">Thirds</string>
     <string name="grid_golden">Golden ratio</string>

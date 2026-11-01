@@ -293,13 +293,14 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
     private suspend fun capture(deviceRotation: Int) {
         val s = _ui.value
         val cam = s.current ?: return
-        val pipeline = pipelineFor(settings.value, cam)
+        val fires = flashFires(settings.value, cam, live.value)
+        val pipeline = pipelineFor(settings.value, cam, fires)
         _ui.update { it.copy(busy = Busy.CAPTURING, progress = 0f, shutterTick = it.shutterTick + 1) }
         if (settings.value.shutterSound) sound.play(MediaActionSound.SHUTTER_CLICK)
         val spec = CaptureSpec(
             frameCount = pipeline.framesPerCapture,
             exposure = pipeline.exposureFor(captureExposure(s, cam), live.value.copy(motionRadPerSec = motion.rms()), cam),
-            flash = settings.value.flash,
+            flash = if (fires) settings.value.flash else FlashMode.OFF,
             deviceRotation = deviceRotation,
             zoomRatio = s.zoom,
         )
@@ -335,13 +336,12 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
      * DNG output keeps the single-frame pass-through; JPEG output runs the burst pipeline. A flash
      * fires for one frame only, so a flash capture is a burst of one.
      */
-    private fun pipelineFor(cfg: CameraSettings, cam: CameraInfo): ImagePipeline {
+    private fun pipelineFor(cfg: CameraSettings, cam: CameraInfo, flash: Boolean = flashFires(cfg, cam, live.value)): ImagePipeline {
         if (cfg.output == OutputFormat.DNG) return PipelineRegistry.create(DngPassthroughPipeline.ID)
         val id = when (cfg.processing) {
             Processing.HDR_PLUS -> HdrPlusPipeline.ID
             Processing.HDR_PLUS_KR -> HdrPlusPipeline.ID_KR
         }
-        val flash = cam.hasFlash && cfg.flash != FlashMode.OFF
         return PipelineRegistry.create(
             id,
             PipelineOptions(
@@ -416,6 +416,10 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
             val r = cam?.exposureRangeNs ?: return SHUTTER_STOPS
             return SHUTTER_STOPS.filter { it in r.lower..r.upper }.ifEmpty { listOf(r.lower) }
         }
+
+        /** On always fires; Auto only when the preview AE asks for it, so a lit scene keeps its burst. */
+        fun flashFires(cfg: CameraSettings, cam: CameraInfo, live: LiveExposure): Boolean =
+            cam.hasFlash && (cfg.flash == FlashMode.ON || cfg.flash == FlashMode.AUTO && live.flashRequired)
 
         fun snapIso(iso: Int, cam: CameraInfo?): Int = isoStops(cam).minBy { abs(it - iso) }
 
