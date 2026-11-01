@@ -211,7 +211,7 @@ private fun CameraContent(vm: CameraViewModel) {
                     enter = fadeIn(YoinMotion.defaultEffectsSpec()) + scaleIn(YoinMotion.defaultSpatialSpec(), initialScale = 1.04f),
                     exit = fadeOut(YoinMotion.fastEffectsSpec()) + scaleOut(YoinMotion.defaultSpatialSpec(), targetScale = 1.04f),
                 ) {
-                    // Over the 4:3 picture alone, where it sits in every framing; a taller one shows below.
+                    // From the top of the 4:3 picture, where it sits in every framing, as tall as its rows.
                     QuickSettingsPanel(
                         settings = settings,
                         onOutput = { vm.updateSettings { setOutput(it) } },
@@ -224,8 +224,8 @@ private fun CameraContent(vm: CameraViewModel) {
                             .layout { measurable, constraints ->
                                 val w = constraints.maxWidth
                                 val h = (w * AspectRatio.FOUR_THREE.portraitRatio).roundToInt()
-                                val placeable = measurable.measure(Constraints.fixed(w, h))
-                                layout(w, h) {
+                                val placeable = measurable.measure(Constraints(minWidth = w, maxWidth = w, maxHeight = h))
+                                layout(w, placeable.height) {
                                     val under = (TOP_BAR_HEIGHT + VIEWFINDER_GAP).toPx()
                                     placeable.place(0, (under * frame.blowUp(tallest)).roundToInt())
                                 }

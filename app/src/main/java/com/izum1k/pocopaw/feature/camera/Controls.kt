@@ -286,7 +286,7 @@ fun QuickSettingsPanel(
     val merged = settings.output != OutputFormat.DNG
     Column(
         modifier
-            .fillMaxSize()
+            .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surface)
             // Taps on the panel stay on it rather than reaching the viewfinder under it.
             .clickable(interactionSource = null, indication = null) {}
