@@ -15,13 +15,15 @@ data class BurstLook(
     val lscLumaStrength: Float = 0.85f,
     val chromaDenoise: Float = -1f,
     val compression: Float = 0f,
-    val targetKey: Float = 0.18f,
+    val targetKey: Float = 0.23f,
     val contrast: Float = 0.22f,
     val saturation: Float = 1.12f,
-    val sharpen: Float = 0.6f,
+    val sharpen: Float = 0.8f,
     val sharpenRadius: Float = 1f,
+    val localContrast: Float = 0.3f,
 ) {
-    internal fun toArray() = floatArrayOf(lscLumaStrength, chromaDenoise, compression, targetKey, contrast, saturation, sharpen, sharpenRadius)
+    internal fun toArray() =
+        floatArrayOf(lscLumaStrength, chromaDenoise, compression, targetKey, contrast, saturation, sharpen, sharpenRadius, localContrast)
 }
 
 /** Demosaic of the classic merge; RCD is the default (pipeline/out/p1/RESULTS.md). */

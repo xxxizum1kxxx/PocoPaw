@@ -92,7 +92,8 @@ fun SettingsScreen() {
                     selected = settings.look,
                     label = { stringResource(if (it == LookStyle.PIXEL) R.string.look_pixel else R.string.look_standard) },
                     onSelect = { scope.launch { repo.setLook(it) } },
-                    enabled = settings.output != OutputFormat.DNG,
+                    // night always finishes with its own look
+                    enabled = settings.output != OutputFormat.DNG && settings.scene != SceneMode.NIGHT,
                 )
                 SwitchRow(
                     title = stringResource(R.string.settings_ultra_hdr),

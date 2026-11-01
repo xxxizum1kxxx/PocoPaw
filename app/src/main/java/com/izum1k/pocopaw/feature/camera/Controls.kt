@@ -325,10 +325,12 @@ fun QuickSettingsPanel(
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            QuickRow(stringResource(R.string.settings_look), merged, Modifier.weight(1f)) {
+            // night always finishes with its own look
+            val lookApplies = merged && settings.scene != SceneMode.NIGHT
+            QuickRow(stringResource(R.string.settings_look), lookApplies, Modifier.weight(1f)) {
                 ConnectedChoice(LookStyle.entries, settings.look, {
                     if (it == LookStyle.PIXEL) "Pixel" else stringResource(R.string.look_standard)
-                }, onLook, enabled = merged)
+                }, onLook, enabled = lookApplies)
             }
             QuickRow(stringResource(R.string.settings_ultra_hdr), merged, Modifier.weight(1f)) {
                 ConnectedChoice(listOf(false, true), settings.ultraHdr, {

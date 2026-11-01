@@ -113,13 +113,21 @@ class CameraController(private val manager: CameraManager) {
     private var wbCameraId: String? = null
     private var activeCapture: CaptureCollector? = null
     private var aeWatcher: ((Int?) -> Unit)? = null
-    private var afWatcher: ((Int?) -> Unit)? = null
+    private var afWatcher: ((CaptureResult) -> Unit)? = null
+    /** The tap's AF scan being checked; null once it has locked (or been given up on). */
+    private var tapScan: TapScan? = null
     private var recoveries = 0
+
+    private class TapScan(val fromDioptres: Float?, val retry: Boolean) {
+        var triggered = false
+        var scanned = false
+    }
 
     suspend fun open(info: CameraInfo, texture: SurfaceTexture, controls: PreviewControls) = withContext(dispatcher) {
         mutex.withLock {
             this@CameraController.controls = controls
             focusRegion = null
+            tapScan = null
             aeLock = false
             aeLockDeadline = 0L
             openLocked(info, texture)
@@ -180,15 +188,67 @@ class CameraController(private val manager: CameraManager) {
                 val now = System.currentTimeMillis()
                 aeLockAfter = now + AE_LOCK_MIN_MS
                 aeLockDeadline = now + AE_LOCK_MAX_MS
-                runCatching {
-                    val cancel = previewBuilder() ?: return@withLock
-                    cancel.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_CANCEL)
-                    s.capture(cancel.build(), null, handler)
-                    startPreview()
-                    val trigger = previewBuilder() ?: return@withLock
-                    trigger.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
-                    s.capture(trigger.build(), null, handler)
-                }.onFailure { Log.w(TAG, "focus failed", it) }
+                startTapScan(s, TapScan(_live.value.focusDioptres, retry = false))
+            }
+        }
+    }
+
+    private fun startTapScan(s: CameraCaptureSession, t: TapScan) {
+        tapScan = t
+        runCatching {
+            retriggerFocus(s) { r ->
+                if (tapScan !== t) return@retriggerFocus
+                t.triggered = true
+                checkTapScan(r)
+            }
+        }.onFailure { Log.w(TAG, "focus failed", it) }
+    }
+
+    /** Cancels whatever AF holds and starts a scan on the current regions; [onTrigger] gets the trigger's result. */
+    private fun retriggerFocus(s: CameraCaptureSession, onTrigger: (CaptureResult) -> Unit) {
+        val cancel = previewBuilder() ?: return
+        cancel.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_CANCEL)
+        s.capture(cancel.build(), null, handler)
+        startPreview()
+        val trigger = previewBuilder() ?: return
+        trigger.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
+        s.capture(trigger.build(), triggerCallback(onTrigger), handler)
+    }
+
+    private fun triggerCallback(onResult: (CaptureResult) -> Unit) = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) = onResult(result)
+    }
+
+    /**
+     * A tap's scan can end without focusing, or lock at once where the lens already was (no scan
+     * seen, distance unchanged), which leaves the shot soft. Either way it is triggered once more.
+     * Results before the trigger's own still show the previous state and are skipped.
+     */
+    private fun checkTapScan(result: CaptureResult) {
+        val t = tapScan ?: return
+        if (!t.triggered) return
+        val af = result.get(CaptureResult.CONTROL_AF_STATE)
+        if (af == CaptureResult.CONTROL_AF_STATE_ACTIVE_SCAN) t.scanned = true
+        if (af != CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED && af != CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED) return
+        val to = result.get(CaptureResult.LENS_FOCUS_DISTANCE)
+        val from = t.fromDioptres
+        val unmoved = from != null && to != null && abs(to - from) < FOCUS_UNMOVED_DIOPTRES
+        val failed = af == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED || (unmoved && !t.scanned)
+        val retry = failed && !t.retry
+        Log.i(
+            TAG,
+            "tap focus ${if (af == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED) "locked" else "not focused"} " +
+                "%.2f -> %.2f D, scanned=${t.scanned}${if (retry) ", retriggering" else ""}".format(from ?: Float.NaN, to ?: Float.NaN),
+        )
+        val next = if (retry) TapScan(to, retry = true) else null
+        tapScan = next
+        if (next == null) return
+        scope.launch {
+            mutex.withLock {
+                val s = session ?: return@withLock
+                // a capture, reset or new tap since has taken focus over
+                if (tapScan !== next || focusRegion == null || _state.value !is State.Previewing) return@withLock
+                startTapScan(s, next)
             }
         }
     }
@@ -199,6 +259,7 @@ class CameraController(private val manager: CameraManager) {
             mutex.withLock {
                 if (focusRegion == null && !aeLock) return@withLock
                 focusRegion = null
+                tapScan = null
                 aeLock = false
                 aeLockDeadline = 0L
                 val s = session ?: return@withLock
@@ -525,25 +586,50 @@ class CameraController(private val manager: CameraManager) {
     /**
      * Settles focus before a burst and holds it for every frame: frames focused differently do
      * not merge. Continuous AF is triggered into a lock (true: the caller cancels it afterwards);
-     * a tap has already started its own scan, which is only waited for. Gives up after
-     * [AF_LOCK_TIMEOUT_MS] and shoots anyway.
+     * a tap has already started its own scan, which is waited for and must end focused: a tap
+     * left unfocused is scanned once more. Gives up after [AF_LOCK_TIMEOUT_MS] and shoots anyway.
      */
     private suspend fun lockFocus(s: CameraCaptureSession, info: CameraInfo): Boolean {
         if (!info.hasAutoFocus) return false
         val tapped = focusRegion != null
-        val done = CompletableDeferred<Unit>()
-        afWatcher = { af ->
-            if (af == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED || af == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED) done.complete(Unit)
+        tapScan = null
+        var done = CompletableDeferred<Int>()
+        // after a trigger, results still in flight report the old state until the trigger's own
+        var waitTrigger = false
+        val onResult = { r: CaptureResult ->
+            val af = r.get(CaptureResult.CONTROL_AF_STATE)
+            if (!waitTrigger && (af == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED || af == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED)) done.complete(af)
         }
+        val onTrigger = { r: CaptureResult ->
+            waitTrigger = false
+            onResult(r)
+        }
+        afWatcher = onResult
         try {
             if (!tapped) {
                 val b = previewBuilder() ?: return false
                 b.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
-                s.capture(b.build(), null, handler)
+                waitTrigger = true
+                s.capture(b.build(), triggerCallback(onTrigger), handler)
             }
             val start = System.nanoTime()
-            val locked = withTimeoutOrNull(AF_LOCK_TIMEOUT_MS) { done.await() } != null
-            Log.i(TAG, if (locked) "focus locked in ${(System.nanoTime() - start) / 1_000_000}ms" else "focus did not lock in ${AF_LOCK_TIMEOUT_MS}ms")
+            var af = withTimeoutOrNull(AF_LOCK_TIMEOUT_MS) { done.await() }
+            if (tapped && af == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED) {
+                Log.i(TAG, "tap focus not focused at capture (%.2f D), retriggering".format(_live.value.focusDioptres ?: Float.NaN))
+                done = CompletableDeferred()
+                waitTrigger = true
+                runCatching { retriggerFocus(s, onTrigger) }.onFailure { Log.w(TAG, "focus failed", it) }
+                af = withTimeoutOrNull(AF_LOCK_TIMEOUT_MS) { done.await() }
+            }
+            val ms = (System.nanoTime() - start) / 1_000_000
+            Log.i(
+                TAG,
+                when (af) {
+                    null -> "focus did not lock in ${AF_LOCK_TIMEOUT_MS}ms"
+                    CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED -> "focus locked in ${ms}ms"
+                    else -> "focus locked unfocused in ${ms}ms"
+                } + " at %.2f D".format(_live.value.focusDioptres ?: Float.NaN),
+            )
         } finally {
             afWatcher = null
         }
@@ -660,7 +746,8 @@ class CameraController(private val manager: CameraManager) {
             val af = result.get(CaptureResult.CONTROL_AF_STATE)
             val ae = result.get(CaptureResult.CONTROL_AE_STATE)
             aeWatcher?.invoke(ae)
-            afWatcher?.invoke(af)
+            afWatcher?.invoke(result)
+            checkTapScan(result)
             maybeLockAe(ae)
             trackAutoWb(result)
             val info = camera
@@ -790,6 +877,8 @@ class CameraController(private val manager: CameraManager) {
         private const val PRECAPTURE_TIMEOUT_MS = 1_500L
         private const val MAX_PREVIEW_EXPOSURE_NS = 66_666_666L
         private const val AF_LOCK_TIMEOUT_MS = 1_000L
+        /** A tap's lock this close to where the lens was, with no scan seen, never moved the lens. */
+        private const val FOCUS_UNMOVED_DIOPTRES = 0.02f
         /** AE gets this long on the tap region before its CONVERGED counts, and at most the second. */
         private const val AE_LOCK_MIN_MS = 300L
         private const val AE_LOCK_MAX_MS = 1_200L

@@ -191,6 +191,8 @@ STBIWDEF int stbi_write_bmp_to_func(stbi_write_func *func, void *context, int w,
 STBIWDEF int stbi_write_tga_to_func(stbi_write_func *func, void *context, int w, int h, int comp, const void  *data);
 STBIWDEF int stbi_write_hdr_to_func(stbi_write_func *func, void *context, int w, int h, int comp, const float *data);
 STBIWDEF int stbi_write_jpg_to_func(stbi_write_func *func, void *context, int x, int y, int comp, const void  *data, int quality);
+// PocoPaw: as above, but always 4:2:0 chroma (stb picks 4:4:4 above quality 90)
+STBIWDEF int stbi_write_jpg_420_to_func(stbi_write_func *func, void *context, int x, int y, int comp, const void  *data, int quality);
 
 STBIWDEF void stbi_flip_vertically_on_write(int flip_boolean);
 
@@ -1395,7 +1397,7 @@ static int stbiw__jpg_processDU(stbi__write_context *s, int *bitBuf, int *bitCnt
    return DU[0];
 }
 
-static int stbi_write_jpg_core(stbi__write_context *s, int width, int height, int comp, const void* data, int quality) {
+static int stbi_write_jpg_core(stbi__write_context *s, int width, int height, int comp, const void* data, int quality, int force_subsample) {
    // Constants that don't pollute global namespace
    static const unsigned char std_dc_luminance_nrcodes[] = {0,0,1,5,1,1,1,1,1,1,0,0,0,0,0,0,0};
    static const unsigned char std_dc_luminance_values[] = {0,1,2,3,4,5,6,7,8,9,10,11};
@@ -1476,7 +1478,7 @@ static int stbi_write_jpg_core(stbi__write_context *s, int width, int height, in
    }
 
    quality = quality ? quality : 90;
-   subsample = quality <= 90 ? 1 : 0;
+   subsample = force_subsample || quality <= 90 ? 1 : 0;
    quality = quality < 1 ? 1 : quality > 100 ? 100 : quality;
    quality = quality < 50 ? 5000 / quality : 200 - quality * 2;
 
@@ -1608,7 +1610,14 @@ STBIWDEF int stbi_write_jpg_to_func(stbi_write_func *func, void *context, int x,
 {
    stbi__write_context s = { 0 };
    stbi__start_write_callbacks(&s, func, context);
-   return stbi_write_jpg_core(&s, x, y, comp, (void *) data, quality);
+   return stbi_write_jpg_core(&s, x, y, comp, (void *) data, quality, 0);
+}
+
+STBIWDEF int stbi_write_jpg_420_to_func(stbi_write_func *func, void *context, int x, int y, int comp, const void *data, int quality)
+{
+   stbi__write_context s = { 0 };
+   stbi__start_write_callbacks(&s, func, context);
+   return stbi_write_jpg_core(&s, x, y, comp, (void *) data, quality, 1);
 }
 
 
@@ -1617,7 +1626,7 @@ STBIWDEF int stbi_write_jpg(char const *filename, int x, int y, int comp, const 
 {
    stbi__write_context s = { 0 };
    if (stbi__start_write_file(&s,filename)) {
-      int r = stbi_write_jpg_core(&s, x, y, comp, data, quality);
+      int r = stbi_write_jpg_core(&s, x, y, comp, data, quality, 0);
       stbi__end_write_file(&s);
       return r;
    } else

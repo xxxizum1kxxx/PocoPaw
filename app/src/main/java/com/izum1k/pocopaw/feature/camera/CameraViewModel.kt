@@ -161,7 +161,7 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
             }
         }
         viewModelScope.launch {
-            settings.collect { if (it.scene == SceneMode.NIGHT) motion.start() else motion.stop() }
+            settings.collect { if (needsMotion(it)) motion.start() else motion.stop() }
         }
         // A setting that asks for more frames than are left (8 to 16, DNG to a burst) reopens
         // right away instead of at the next press.
@@ -381,12 +381,16 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
         val s = _ui.value
         val cam = s.current ?: return
         val fires = flashFires(settings.value, cam, live.value)
-        val pipeline = pipelineFor(settings.value, cam, fires)
+        val shake = motion.rms()
+        // KR's super-resolution comes from hand shake; on a tripod it only costs time
+        val still = settings.value.processing == Processing.HDR_PLUS_KR && shake != null && shake < STILL_RAD_PER_SEC
+        if (still) Log.i(TAG, "HDR+ KR -> HDR+: still (gyro rms %.4f rad/s)".format(shake))
+        val pipeline = pipelineFor(settings.value, cam, fires, still)
         _ui.update { it.copy(busy = Busy.CAPTURING, progress = 0f, shutterTick = it.shutterTick + 1) }
         if (settings.value.shutterSound) sound.play(MediaActionSound.SHUTTER_CLICK)
         val spec = CaptureSpec(
             frameCount = pipeline.framesPerCapture,
-            exposure = pipeline.exposureFor(captureExposure(s, cam, fires), live.value.copy(motionRadPerSec = motion.rms()), cam),
+            exposure = pipeline.exposureFor(captureExposure(s, cam, fires), live.value.copy(motionRadPerSec = shake), cam),
             flash = if (fires) settings.value.flash else FlashMode.OFF,
             deviceRotation = deviceRotation,
             zoomRatio = s.zoom,
@@ -423,13 +427,18 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
 
     /**
      * DNG output keeps the single-frame pass-through; JPEG output runs the burst pipeline. A flash
-     * fires for one frame only, so a flash capture is a burst of one.
+     * fires for one frame only, so a flash capture is a burst of one. [still] runs KR as plain HDR+.
      */
-    private fun pipelineFor(cfg: CameraSettings, cam: CameraInfo, flash: Boolean = flashFires(cfg, cam, live.value)): ImagePipeline {
+    private fun pipelineFor(
+        cfg: CameraSettings,
+        cam: CameraInfo,
+        flash: Boolean = flashFires(cfg, cam, live.value),
+        still: Boolean = false,
+    ): ImagePipeline {
         if (cfg.output == OutputFormat.DNG) return PipelineRegistry.create(DngPassthroughPipeline.ID)
         val id = when (cfg.processing) {
             Processing.HDR_PLUS -> HdrPlusPipeline.ID
-            Processing.HDR_PLUS_KR -> HdrPlusPipeline.ID_KR
+            Processing.HDR_PLUS_KR -> if (still) HdrPlusPipeline.ID else HdrPlusPipeline.ID_KR
         }
         return PipelineRegistry.create(
             id,
@@ -491,6 +500,11 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
     companion object {
         private const val TAG = "PocoPawCamera"
         private const val FOCUS_HOLD_MS = 5_000L
+        /** Gyro RMS below which the phone is on a support: ~0.001 on a tripod, above 0.02 in hand. */
+        private const val STILL_RAD_PER_SEC = 0.005f
+
+        /** Night meters hand shake for its exposure; KR checks it to skip super-resolution when still. */
+        fun needsMotion(cfg: CameraSettings) = cfg.scene == SceneMode.NIGHT || cfg.processing == Processing.HDR_PLUS_KR
         const val WB_MAX_STEPS = 10
         private const val MAX_ZOOM = 10f
 

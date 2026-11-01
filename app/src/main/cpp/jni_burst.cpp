@@ -90,7 +90,7 @@ Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeMerge(JNIEnv* env, jclass, jl
 }
 
 // style: "default" uses look as given, "pixel" / "night" replace it with that preset (finish.cpp);
-// look: lscLumaStrength, chromaDenoise, compression, targetKey, contrast, saturation, sharpen, sharpenRadius
+// look: lscLumaStrength, chromaDenoise, compression, targetKey, contrast, saturation, sharpen, sharpenRadius, localContrast
 JNIEXPORT jlong JNICALL
 Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeFinish(JNIEnv* env, jclass, jlong h, jstring jstyle, jfloatArray jlook,
                                                          jboolean keepHdr) {
@@ -104,6 +104,7 @@ Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeFinish(JNIEnv* env, jclass, j
     lp.saturation = v[5];
     lp.sharpen = v[6];
     lp.sharpenRadius = v[7];
+    lp.localContrast = v[8];
     env->ReleaseFloatArrayElements(jlook, v, JNI_ABORT);
     const char* style = env->GetStringUTFChars(jstyle, nullptr);
     if (std::string(style) != "default") apply_look_preset(style, lp);

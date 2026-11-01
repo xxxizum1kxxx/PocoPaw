@@ -329,9 +329,21 @@ void pixel_look(ImageF& rgb, const LookParams& p) {
     parallel_for(rgb.h, [&](int y) {
         float* q = rgb.row(y);
         for (int x = 0; x < rgb.w; x++, q += 3) {
+            float mx = std::max(q[0], std::max(q[1], q[2]));
+            // coloured highlights (lamp-lit wood, skin) roll off on the max channel with hue and saturation kept,
+            // instead of the leading channel clipping first; neutrals are left for the gamut fit below
+            constexpr float kKnee = 0.7f;
+            if (mx > kKnee) {
+                float mn = std::min(q[0], std::min(q[1], q[2]));
+                float t = (mx - kKnee) / (1 - kKnee);
+                float shoulder = kKnee + (1 - kKnee) * t / (1 + t);
+                float chroma = clampf(2 * (mx - std::max(0.f, mn)) / mx, 0.f, 1.f);
+                float g = (mx + (shoulder - mx) * chroma) / mx;
+                for (int c = 0; c < 3; c++) q[c] *= g;
+                mx *= g;
+            }
             // fit out-of-gamut highlights by desaturating toward luminance instead of hard per-channel clipping
             float L = std::min(1.f, std::max(0.f, luma709(q[0], q[1], q[2])));
-            float mx = std::max(q[0], std::max(q[1], q[2]));
             if (mx > 1.f) { float k = (1.f - L) / std::max(1e-6f, mx - L); for (int c = 0; c < 3; c++) q[c] = L + (q[c] - L) * k; }
             for (int c = 0; c < 3; c++) {
                 float v = srgb_oetf(q[c]);
@@ -382,12 +394,14 @@ std::vector<uint8_t> to_rgb8(const ImageF& rgb, int ds, int& w, int& h) {
     return buf;
 }
 
-std::vector<uint8_t> encode_jpeg(const uint8_t* px, int w, int h, int channels, int quality) {
+std::vector<uint8_t> encode_jpeg(const uint8_t* px, int w, int h, int channels, int quality, bool chroma420) {
     std::vector<uint8_t> out;
-    stbi_write_jpg_to_func([](void* ctx, void* data, int size) {
+    auto sink = [](void* ctx, void* data, int size) {
         auto* o = static_cast<std::vector<uint8_t>*>(ctx);
         o->insert(o->end(), (uint8_t*)data, (uint8_t*)data + size);
-    }, &out, w, h, channels, px, quality);
+    };
+    if (chroma420) stbi_write_jpg_420_to_func(sink, &out, w, h, channels, px, quality);
+    else stbi_write_jpg_to_func(sink, &out, w, h, channels, px, quality);
     return out;
 }
 
@@ -406,6 +420,11 @@ void wb_shift(ImageF& rgb, float cool) {
         float* q = rgb.row(y);
         for (int x = 0; x < rgb.w; x++, q += 3) { q[0] *= r; q[1] *= g; q[2] *= b; }
     });
+}
+
+float noise_scaled_local_contrast(float amount, float visibleSigma) {
+    // clean bursts sit at visible sigma 0.004-0.007; dim brackets and dark scenes reach 0.03
+    return amount * clampf(0.006f / std::max(1e-6f, visibleSigma), 0.4f, 1.f);
 }
 
 void local_contrast(ImageF& rgb, float amount, float radiusFrac) {
@@ -498,7 +517,12 @@ void hue_tune(ImageF& rgb, const LookParams& p) {
 }
 
 bool apply_look_preset(const std::string& name, LookParams& p) {
-    if (name == "default") { p = LookParams(); return true; }
+    if (name == "default") {
+        // a little brighter and crisper than the neutral parameters, still well below pixel's noise
+        p = LookParams();
+        p.targetKey = 0.23f; p.sharpen = 0.8f; p.localContrast = 0.3f;
+        return true;
+    }
     if (name == "pixel") {
         // brighter mid-tones, stronger compression and local contrast, crisper, slightly cool,
         // deeper sky blue and gentler skin saturation
