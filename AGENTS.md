@@ -44,3 +44,8 @@ PocoPaw is a Compose RAW camera for the Poco F5 / Redmi Note 12 Turbo (marble), 
 - Kotlin naming conventions; feature-based packages; `StateFlow` over `LiveData`.
 - New files carry no licence header. Ported files keep theirs.
 - Comments only for constraints the code cannot show.
+
+## Git
+
+- One fix or feature per commit, committed and pushed to `origin/main` (GitHub) as soon as it builds and is verified, so GitHub always tracks the latest state.
+- Author email: `244161265+xxxizum1kxxx@users.noreply.github.com`.
