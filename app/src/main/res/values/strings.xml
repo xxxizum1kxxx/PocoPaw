@@ -108,4 +108,5 @@
     <string name="cap_af">Autofocus</string>
     <string name="cap_noise_profile">Noise profile</string>
     <string name="cap_raw_budget">RAW requests per open</string>
+    <string name="focus_held">AE/AF LOCK</string>
 </resources>

@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.LoadingIndicator
@@ -84,6 +85,8 @@ fun Viewfinder(
     gridStyle: GridStyle,
     focus: FocusPoint?,
     focusLocked: Boolean,
+    /** The tap lock holds until released rather than timing out. */
+    focusHeld: Boolean,
     /** Faces in normalised viewfinder (texture) coordinates, like [focus]. */
     faces: List<RectF>,
     evLabel: String?,
@@ -97,7 +100,8 @@ fun Viewfinder(
     controlRotation: Float,
     onSurfaceAvailable: (SurfaceTexture) -> Unit,
     onSurfaceDestroyed: () -> Unit,
-    onTap: (Float, Float) -> Unit,
+    /** Normalised position, and whether it landed on the current focus ring. */
+    onTap: (Float, Float, Boolean) -> Unit,
     onZoom: (Float) -> Unit,
     onEvSteps: (Int) -> Unit,
     onRetry: () -> Unit,
@@ -139,10 +143,10 @@ fun Viewfinder(
             Box(
                 Modifier
                     .fillMaxSize()
-                    .viewfinderGestures(evDragEnabled, onTap, onZoom, onEvSteps),
+                    .viewfinderGestures(focus, evDragEnabled, onTap, onZoom, onEvSteps),
             )
             FaceBoxes(if (focus == null) faces else emptyList(), focusLocked)
-            FocusRing(focus, focusLocked, evLabel, controlRotation)
+            FocusRing(focus, focusLocked, focusHeld, evLabel, controlRotation)
         }
 
         if (grid) GridOverlay(gridStyle, Modifier.framedBand(frame))
@@ -225,12 +229,14 @@ private fun PreviewTexture(
 
 /**
  * One gesture handler so tap, pinch and vertical drag never fight: two fingers zoom, a vertical
- * drag past touch slop steps exposure compensation, anything else that lifts is a focus tap.
+ * drag past touch slop steps exposure compensation, anything else that lifts is a focus tap,
+ * flagged when it lands within [RING_HIT] of [focus].
  */
 @Composable
 private fun Modifier.viewfinderGestures(
+    focus: FocusPoint?,
     evDragEnabled: Boolean,
-    onTap: (Float, Float) -> Unit,
+    onTap: (Float, Float, Boolean) -> Unit,
     onZoom: (Float) -> Unit,
     onEvSteps: (Int) -> Unit,
 ): Modifier {
@@ -238,6 +244,8 @@ private fun Modifier.viewfinderGestures(
     val zoom by rememberUpdatedState(onZoom)
     val ev by rememberUpdatedState(onEvSteps)
     val evEnabled by rememberUpdatedState(evDragEnabled)
+    val ring by rememberUpdatedState(focus)
+    val ringHitPx = with(LocalDensity.current) { RING_HIT.toPx() }
     val slop = LocalViewConfiguration.current.touchSlop
     val stepPx = with(LocalDensity.current) { 28.dp.toPx() }
     return pointerInput(Unit) {
@@ -271,14 +279,20 @@ private fun Modifier.viewfinderGestures(
                 }
             } while (event.changes.any { it.pressed })
             if (!multi && !dragging && travel.getDistance() < slop) {
-                tap(down.position.x / size.width, down.position.y / size.height)
+                val onRing = ring?.let { f ->
+                    (down.position - Offset(f.x * size.width, f.y * size.height)).getDistance() < ringHitPx
+                } ?: false
+                tap(down.position.x / size.width, down.position.y / size.height, onRing)
             }
         }
     }
 }
 
+private val RING_HIT = 56.dp
+
+/** [held]: the lock no longer times out, shown by a label under the ring. */
 @Composable
-private fun BoxScope.FocusRing(focus: FocusPoint?, locked: Boolean, evLabel: String?, controlRotation: Float) {
+private fun BoxScope.FocusRing(focus: FocusPoint?, locked: Boolean, held: Boolean, evLabel: String?, controlRotation: Float) {
     if (focus == null) return
     val morph = remember { Morph(MaterialShapes.Cookie9Sided, MaterialShapes.Circle) }
     val progress by animateFloatAsState(if (locked) 1f else 0f, YoinMotion.defaultSpatialSpec(), label = "focusMorph")
@@ -311,6 +325,30 @@ private fun BoxScope.FocusRing(focus: FocusPoint?, locked: Boolean, evLabel: Str
                     modifier = Modifier.graphicsLayer { rotationZ = controlRotation },
                 )
             }
+        }
+        val labelAlpha by animateFloatAsState(if (held) 1f else 0f, YoinMotion.defaultEffectsSpec(), label = "holdLabel")
+        val ringBottom = y + 2 * half + with(density) { 8.dp.roundToPx() }
+        Box(
+            Modifier
+                .offset { IntOffset(x + half, ringBottom) }
+                .layout { measurable, constraints ->
+                    val p = measurable.measure(constraints.copy(minWidth = 0))
+                    layout(p.width, p.height) { p.place(-p.width / 2, 0) }
+                }
+                .graphicsLayer {
+                    alpha = labelAlpha
+                    rotationZ = controlRotation
+                }
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primary)
+                .padding(horizontal = 8.dp, vertical = 2.dp),
+        ) {
+            Text(
+                stringResource(R.string.focus_held),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onPrimary,
+                softWrap = false,
+            )
         }
     }
 }

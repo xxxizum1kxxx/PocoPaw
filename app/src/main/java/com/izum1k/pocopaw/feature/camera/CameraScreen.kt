@@ -144,6 +144,7 @@ private fun CameraContent(vm: CameraViewModel) {
             gridStyle = settings.gridStyle,
             focus = ui.focus,
             focusLocked = live.focusLocked,
+            focusHeld = ui.focusHeld,
             faces = remember(live.faces, current) {
                 val cam = current ?: return@remember emptyList()
                 live.faces.map { CameraViewModel.sensorToView(it, cam.sensorOrientation, cam.facing == LensFacing.FRONT) }

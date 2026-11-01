@@ -74,6 +74,8 @@ data class CameraUiState(
     /** Pro: AE picks the shutter (with a manual ISO, the one that keeps AE's exposure). */
     val shutterAuto: Boolean = true,
     val focus: FocusPoint? = null,
+    /** The tap's AF/AE lock holds until released, instead of for [FOCUS_HOLD_MS]. */
+    val focusHeld: Boolean = false,
     val countdown: Int? = null,
     val busy: Busy = Busy.IDLE,
     val progress: Float = 0f,
@@ -174,7 +176,7 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
     fun selectCamera(info: CameraInfo) {
         if (info.id == _ui.value.current?.id || _ui.value.busy != Busy.IDLE) return
         focusResetJob?.cancel()
-        _ui.update { it.copy(current = info, zoom = 1f, evIndex = 0, focus = null) }
+        _ui.update { it.copy(current = info, zoom = 1f, evIndex = 0, focus = null, focusHeld = false) }
         viewModelScope.launch { settingsRepo.setLastCameraId(info.id) }
         maybeOpen()
     }
@@ -241,18 +243,38 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
         viewModelScope.launch { controller.reopen() }
     }
 
-    /** A tap at normalised texture coordinates (portrait, as displayed). */
-    fun tapFocus(x: Float, y: Float) {
-        val cam = _ui.value.current ?: return
+    /**
+     * A tap at normalised texture coordinates (portrait, as displayed). With nothing locked it locks
+     * AF and AE at that point for [FOCUS_HOLD_MS]; a tap on that lock's ring holds it until a photo is
+     * taken; a tap anywhere else releases it.
+     */
+    fun tapFocus(x: Float, y: Float, onRing: Boolean) {
+        val s = _ui.value
+        if (s.focus != null) {
+            if (!onRing) {
+                releaseFocus()
+            } else if (!s.focusHeld) {
+                focusResetJob?.cancel()
+                _ui.update { it.copy(focusHeld = true) }
+            }
+            return
+        }
+        val cam = s.current ?: return
         val (u, v) = viewToSensor(x, y, cam.sensorOrientation, cam.facing == LensFacing.FRONT)
         controller.focusAt(u, v)
-        _ui.update { it.copy(focus = FocusPoint(x, y, ++focusSeq)) }
+        _ui.update { it.copy(focus = FocusPoint(x, y, ++focusSeq), focusHeld = false) }
         focusResetJob?.cancel()
         focusResetJob = viewModelScope.launch {
             delay(FOCUS_HOLD_MS)
-            _ui.update { it.copy(focus = null) }
-            controller.resetFocus()
+            releaseFocus()
         }
+    }
+
+    private fun releaseFocus() {
+        focusResetJob?.cancel()
+        if (_ui.value.focus == null) return
+        _ui.update { it.copy(focus = null, focusHeld = false) }
+        controller.resetFocus()
     }
 
     fun setFlash(v: FlashMode) = viewModelScope.launch {
@@ -309,9 +331,11 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
             controller.capture(spec)
         } catch (e: Exception) {
             Log.w(TAG, "capture failed", e)
+            releaseFocus()
             fail(CaptureMessage.CAPTURE_FAILED)
             return
         }
+        releaseFocus()
         _ui.update { it.copy(busy = Busy.PROCESSING) }
         // The burst is in memory now; reopening while it merges keeps the next press from waiting.
         if (!controller.budget.canAfford(nextFrames())) viewModelScope.launch { controller.reopen() }

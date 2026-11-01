@@ -97,6 +97,10 @@ class CameraController(private val manager: CameraManager) {
     private var previewSurface: Surface? = null
     private var controls = PreviewControls()
     private var focusRegion: MeteringRectangle? = null
+    /** AE held at the tap's metering; set once AE has settled on the tap region. */
+    private var aeLock = false
+    private var aeLockAfter = 0L
+    private var aeLockDeadline = 0L
     /** The largest face, as a 3A region; a tap's [focusRegion] overrides it. */
     private var faceRegion: MeteringRectangle? = null
     private var faceSeenAt = 0L
@@ -110,6 +114,8 @@ class CameraController(private val manager: CameraManager) {
         mutex.withLock {
             this@CameraController.controls = controls
             focusRegion = null
+            aeLock = false
+            aeLockDeadline = 0L
             openLocked(info, texture)
         }
     }
@@ -153,7 +159,10 @@ class CameraController(private val manager: CameraManager) {
         }
     }
 
-    /** Focus and meter at a point in normalised sensor coordinates (0..1, sensor's own orientation). */
+    /**
+     * Focuses once at a point in normalised sensor coordinates (0..1, sensor's own orientation) and
+     * holds it, meters there and locks AE once it has settled, until [resetFocus].
+     */
     fun focusAt(u: Float, v: Float) {
         scope.launch {
             mutex.withLock {
@@ -161,6 +170,10 @@ class CameraController(private val manager: CameraManager) {
                 val s = session ?: return@withLock
                 if (_state.value !is State.Previewing) return@withLock
                 focusRegion = meteringRect(info.activeArray, u, v)
+                aeLock = false
+                val now = System.currentTimeMillis()
+                aeLockAfter = now + AE_LOCK_MIN_MS
+                aeLockDeadline = now + AE_LOCK_MAX_MS
                 runCatching {
                     val cancel = previewBuilder() ?: return@withLock
                     cancel.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_CANCEL)
@@ -174,12 +187,14 @@ class CameraController(private val manager: CameraManager) {
         }
     }
 
-    /** Back to continuous focus and whole-frame metering. */
+    /** Back to continuous focus, whole-frame metering and running AE. */
     fun resetFocus() {
         scope.launch {
             mutex.withLock {
-                if (focusRegion == null) return@withLock
+                if (focusRegion == null && !aeLock) return@withLock
                 focusRegion = null
+                aeLock = false
+                aeLockDeadline = 0L
                 val s = session ?: return@withLock
                 if (_state.value !is State.Previewing) return@withLock
                 runCatching {
@@ -429,6 +444,7 @@ class CameraController(private val manager: CameraManager) {
                     else -> CameraMetadata.CONTROL_AE_MODE_ON_ALWAYS_FLASH
                 }
                 b.set(CaptureRequest.CONTROL_AE_MODE, aeMode)
+                b.set(CaptureRequest.CONTROL_AE_LOCK, aeLock)
                 b.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, exposure.evIndex.coerceIn(info.evRange.lower, info.evRange.upper))
                 b.set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_OFF)
             }
@@ -538,6 +554,23 @@ class CameraController(private val manager: CameraManager) {
         }
     }
 
+    /** Locks AE once it has converged on the tap region (or after [AE_LOCK_MAX_MS] regardless). */
+    private fun maybeLockAe(ae: Int?) {
+        if (aeLockDeadline == 0L || aeLock) return
+        val now = System.currentTimeMillis()
+        val settled = ae == CaptureResult.CONTROL_AE_STATE_CONVERGED || ae == CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED
+        if (now < aeLockAfter || (!settled && now < aeLockDeadline)) return
+        aeLockDeadline = 0L
+        scope.launch {
+            mutex.withLock {
+                if (focusRegion == null || _state.value !is State.Previewing) return@withLock
+                aeLock = true
+                runCatching { startPreview() }
+                Log.i(TAG, "AE locked at ISO ${_live.value.iso} ${_live.value.exposureNs?.div(1000)}us")
+            }
+        }
+    }
+
     private fun faceDetectMode(info: CameraInfo): Int {
         val modes = info.characteristics.get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES) ?: return CameraMetadata.STATISTICS_FACE_DETECT_MODE_OFF
         return when {
@@ -573,6 +606,7 @@ class CameraController(private val manager: CameraManager) {
             val ae = result.get(CaptureResult.CONTROL_AE_STATE)
             aeWatcher?.invoke(ae)
             afWatcher?.invoke(af)
+            maybeLockAe(ae)
             val info = camera
             val faces = result.get(CaptureResult.STATISTICS_FACES)
             if (info != null) followFaces(info, faces)
@@ -700,6 +734,9 @@ class CameraController(private val manager: CameraManager) {
         private const val PRECAPTURE_TIMEOUT_MS = 1_500L
         private const val MAX_PREVIEW_EXPOSURE_NS = 66_666_666L
         private const val AF_LOCK_TIMEOUT_MS = 1_000L
+        /** AE gets this long on the tap region before its CONVERGED counts, and at most the second. */
+        private const val AE_LOCK_MIN_MS = 300L
+        private const val AE_LOCK_MAX_MS = 1_200L
         private const val MIN_FACE_SCORE = 50
         private const val FACE_REGION_SCALE = 1.2f
         /** Of the active array's width. */
