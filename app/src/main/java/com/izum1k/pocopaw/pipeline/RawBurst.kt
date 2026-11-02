@@ -58,6 +58,8 @@ class RawMetadata(
     val orientationDegrees: Int,
     /** The viewfinder's zoom; RAW always keeps the full sensor, so a later stage may crop to it. */
     val zoomRatio: Float,
+    /** Digital zoom the processed image is cropped to (the 2x lens step); 1 keeps the full sensor. */
+    val cropZoom: Float,
     val captureTimeMillis: Long,
 ) {
     companion object {
@@ -69,6 +71,7 @@ class RawMetadata(
             result: CaptureResult,
             orientationDegrees: Int,
             zoomRatio: Float,
+            cropZoom: Float,
         ): RawMetadata {
             val pattern = characteristics.get(CameraCharacteristics.SENSOR_BLACK_LEVEL_PATTERN)
             val black = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
@@ -89,6 +92,7 @@ class RawMetadata(
                 hasNoiseProfile = result.get(CaptureResult.SENSOR_NOISE_PROFILE) != null,
                 orientationDegrees = orientationDegrees,
                 zoomRatio = zoomRatio,
+                cropZoom = cropZoom,
                 captureTimeMillis = System.currentTimeMillis(),
             )
         }

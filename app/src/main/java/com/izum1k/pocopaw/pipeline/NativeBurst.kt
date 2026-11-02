@@ -103,6 +103,9 @@ class NativeBurst(private val burst: RawBurst) : Closeable {
         handle = nativeCreate(array, lscGains, buffers, burst.referenceIndex, exposures, isos)
     }
 
+    /** Before [align]: process only the centre 1/[zoom]; [finish] scales the result back to the sensor size. */
+    fun crop(zoom: Float) = nativeCrop(live(), zoom)
+
     fun align() = nativeAlign(live())
 
     fun merge(options: MergeOptions) = nativeMerge(live(), options.toArray())
@@ -148,6 +151,7 @@ class NativeBurst(private val burst: RawBurst) : Closeable {
         @JvmStatic external fun nativeCreate(
             meta: FloatArray, lsc: FloatArray?, frames: Array<ByteBuffer>, ref: Int, exposureNs: LongArray, iso: IntArray,
         ): Long
+        @JvmStatic external fun nativeCrop(handle: Long, zoom: Float)
         @JvmStatic external fun nativeAlign(handle: Long)
         @JvmStatic external fun nativeMerge(handle: Long, options: FloatArray)
         @JvmStatic external fun nativeFinish(handle: Long, style: String, look: FloatArray, keepHdr: Boolean): Long

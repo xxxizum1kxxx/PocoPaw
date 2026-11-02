@@ -32,6 +32,8 @@ data class CaptureSpec(
     /** Device rotation at the press, clockwise from natural portrait: 0, 90, 180 or 270. */
     val deviceRotation: Int = 0,
     val zoomRatio: Float = 1f,
+    /** Centre crop of the processed image (the 2x lens step); RAW still covers the full sensor. */
+    val cropZoom: Float = 1f,
 ) {
     init {
         require(frameCount in 1..RawRequestBudget.DEFAULT_LIMIT) { "frameCount must be 1..${RawRequestBudget.DEFAULT_LIMIT}" }

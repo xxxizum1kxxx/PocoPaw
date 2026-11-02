@@ -699,6 +699,7 @@ class CameraController(private val manager: CameraManager, private val motion: M
                         result = frames.first().result,
                         orientationDegrees = orientationFor(info, spec.deviceRotation),
                         zoomRatio = spec.zoomRatio,
+                        cropZoom = spec.cropZoom,
                     ),
                 )
             } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
