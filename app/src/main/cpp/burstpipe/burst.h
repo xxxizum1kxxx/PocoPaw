@@ -1,6 +1,7 @@
 #pragma once
 #include "demosaic.h"
 #include "finish.h"
+#include "gpu/gpu_burst.h"
 #include "kr.h"
 #include "merge.h"
 #include "ultrahdr.h"
@@ -20,10 +21,14 @@ struct BurstOptions {
 // align() -> merge() -> finish() -> render() / encode_ultrahdr(). Frames are views; they may be
 // released after merge(). A burst whose frames differ in exposure x ISO is a bracket: the shortest
 // exposure becomes the reference and the others are scaled to it before alignment.
+// With use_gpu(), every step runs on the GPU (gpu/gpu_burst.h) where it can and falls back to the CPU
+// code, step by step, when there is no GPU or a GPU step fails.
 class BurstSession {
 public:
     BurstSession(const Meta& m, std::vector<Raw> frames, int ref);
 
+    // before align()
+    void use_gpu(bool on) { gpuWanted_ = on; }
     // Digital zoom: before align(), cuts every frame to its centre 1/zoom (CFA phase kept) into
     // private copies; finish() scales the result back to the sensor size.
     void crop(float zoom);
@@ -31,14 +36,22 @@ public:
     void merge(const BurstOptions& o);
     // keepHdr: also keeps the scene-linear luminance needed by encode_ultrahdr()
     void finish(const LookParams& look, bool keepHdr);
-    int width() const { return rgb_.w; }
-    int height() const { return rgb_.h; }
+    int width() const { return outW_; }
+    int height() const { return outH_; }
     void render(uint8_t* rgba, size_t stride) const;
     std::vector<uint8_t> encode_ultrahdr(int quality, float headroom);
     // One line of measurements for the log: noise model, merge weight, tone gains, timings.
     std::string summary() const;
 
 private:
+    void gpu_failed(const char* step, const std::exception& e);
+    void cpu_align_state();
+    void finish_cpu(const LookParams& look, bool keepHdr);
+
+    bool gpuWanted_ = false, gpuFinished_ = false;
+    std::unique_ptr<GpuBurst> gpu_;
+    std::string gpuSteps_, gpuNote_, gpuProfile_;
+    int outW_ = 0, outH_ = 0;
     Meta m_;
     std::vector<Raw> frames_;
     int ref_ = 0;

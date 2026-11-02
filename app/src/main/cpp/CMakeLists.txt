@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(burstpipe SHARED
     jni_burst.cpp
+    dsp_probe.cpp
     burstpipe/burst.cpp
     burstpipe/align.cpp
     burstpipe/merge.cpp
@@ -15,10 +16,14 @@ add_library(burstpipe SHARED
     burstpipe/demosaic.cpp
     burstpipe/ultrahdr.cpp
     burstpipe/pool.cpp
+    burstpipe/gpu/cl_runtime.cpp
+    burstpipe/gpu/gpu_burst.cpp
     burstpipe/third_party/rtprocess/rcd.cc
     burstpipe/third_party/rtprocess/amaze.cc
     burstpipe/third_party/rtprocess/border.cc)
 
+# Khronos OpenCL headers only: libOpenCL.so is a vendor library, loaded with dlopen at run time
+target_include_directories(burstpipe PRIVATE burstpipe/third_party/opencl)
 # Same flags the measured prototype used; debug builds are optimised too, a burst takes minutes at -O0.
 target_compile_options(burstpipe PRIVATE -O3 -ffast-math -march=armv8.2-a+fp16+dotprod -Wall -Wno-unused-function
     -Wno-unknown-pragmas -Wno-unused-variable -Wno-deprecated-declarations -Wno-nan-infinity-disabled -Wno-absolute-value)

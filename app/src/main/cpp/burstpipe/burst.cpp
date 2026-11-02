@@ -100,22 +100,51 @@ void BurstSession::align() {
             bracket_ = true;
         }
     }
-    gray_.resize(n);
-    mean3_.resize(n);
-    for (int k = 0; k < n; k++) { gray_[k] = gray_from_raw(frames_[k]); mean3_[k] = box3(gray_[k]); }
-    offs_.resize(n);
-    std::vector<ImageF> refPyr = build_pyramid(gray_[ref_]);
-    for (int k = 0; k < n; k++) {
-        if (k == ref_) {
-            Offsets z;
-            z.nx = (gray_[ref_].w + kStride - 1) / kStride;
-            z.ny = (gray_[ref_].h + kStride - 1) / kStride;
-            z.dx.assign((size_t)z.nx * z.ny, 0);
-            z.dy = z.dx;
-            offs_[k] = z;
-            continue;
+    // a frame with the reference's exposure, so the noise fit's residual is noise only
+    int alt = -1;
+    if (n > 1) {
+        alt = ref_ == 0 ? 1 : 0;
+        for (int k = 0; k < n; k++) if (k != ref_ && std::fabs(mo_.g(k) - 1.f) < 0.05f) { alt = k; break; }
+    }
+    if (gpuWanted_) {
+        std::string why;
+        gpu_ = GpuBurst::create(frames_, why);
+        if (!gpu_) gpuNote_ = why;
+    }
+    bool onGpu = false;
+    if (gpu_ && GpuBurst::enabled("align")) {
+        try {
+            ImageF gRef, gAlt;
+            gpu_->align(ref_, alt, offs_, gRef, gAlt);
+            gray_.assign(n, ImageF());
+            gray_[ref_] = std::move(gRef);
+            if (alt >= 0) gray_[alt] = std::move(gAlt);
+            mean3_.clear();
+            onGpu = true;
+            gpuSteps_ += " align";
+        } catch (const std::exception& e) {
+            gpu_failed("align", e);
         }
-        offs_[k] = align_frames(refPyr, build_pyramid(gray_[k]));
+    }
+    if (!onGpu) {
+        cpu_align_state();
+        offs_.resize(n);
+        std::vector<ImageF> refPyr = build_pyramid(gray_[ref_]);
+        for (int k = 0; k < n; k++) {
+            if (k == ref_) {
+                Offsets z;
+                z.nx = (gray_[ref_].w + kStride - 1) / kStride;
+                z.ny = (gray_[ref_].h + kStride - 1) / kStride;
+                z.dx.assign((size_t)z.nx * z.ny, 0);
+                z.dy = z.dx;
+                offs_[k] = z;
+                continue;
+            }
+            offs_[k] = align_frames(refPyr, build_pyramid(gray_[k]));
+        }
+    }
+    for (int k = 0; k < n; k++) {
+        if (k == ref_) continue;
         double sx = 0, sy = 0;
         for (size_t i = 0; i < offs_[k].dx.size(); i++) { sx += offs_[k].dx[i]; sy += offs_[k].dy[i]; }
         sx /= offs_[k].dx.size();
@@ -126,13 +155,25 @@ void BurstSession::align() {
 
     t = Timer();
     float black = (m_.black[0] + m_.black[1] + m_.black[2] + m_.black[3]) / 4;
-    if (n > 1) {
-        // a frame with the reference's exposure, so the residual is noise only
-        int alt = ref_ == 0 ? 1 : 0;
-        for (int k = 0; k < n; k++) if (k != ref_ && std::fabs(mo_.g(k) - 1.f) < 0.05f) { alt = k; break; }
-        nm_ = estimate_noise(gray_[ref_], gray_[alt], offs_[alt], black);
-    }
+    if (n > 1) nm_ = estimate_noise(gray_[ref_], gray_[alt], offs_[alt], black);
     tNoise_ = t.ms();
+}
+
+// gray images and 3x3 means of every frame on the host, for the CPU align and merges (also after a GPU
+// align, which keeps them on the device)
+void BurstSession::cpu_align_state() {
+    int n = (int)frames_.size();
+    gray_.resize(n);
+    mean3_.resize(n);
+    for (int k = 0; k < n; k++) {
+        if (gray_[k].w == 0) gray_[k] = gray_from_raw(frames_[k]);
+        if (mean3_[k].w == 0) mean3_[k] = box3(gray_[k]);
+    }
+}
+
+void BurstSession::gpu_failed(const char* step, const std::exception& e) {
+    gpuNote_ = std::string(step) + " failed (" + e.what() + "), CPU from there";
+    gpu_.reset();
 }
 
 void BurstSession::merge(const BurstOptions& o) {
@@ -146,16 +187,42 @@ void BurstSession::merge(const BurstOptions& o) {
     mo_.robustHi = o.robustHi;
     mo_.dilate = o.dilate;
     kr_ = o.kernelRegression;
-    if (kr_) {
+    KrParams kp;
+    for (int i = 0; i < 2; i++) { kp.lcaR[i] = o.lcaR[i]; kp.lcaB[i] = o.lcaB[i]; }
+    const char* step = kr_ ? "kr" : opt_.freqMerge && n > 1 ? "freq" : "merge";
+    bool onGpu = false;
+    if (gpu_ && GpuBurst::enabled(step)) {
+        try {
+            if (!gpu_->aligned()) {
+                cpu_align_state();
+                gpu_->set_aligned(mean3_, gray_[ref_]);
+            }
+            if (kr_) {
+                gpu_->merge_kr(frames_[ref_], ref_, offs_, m_, nm_, mo_, kp, &ks_);
+                meanWeight_ = ks_.meanWeight;
+            } else if (opt_.freqMerge && n > 1) {
+                meanWeight_ = gpu_->merge_freq(ref_, offs_, m_, nm_, o.freqC, o.freqSpatial);
+            } else {
+                meanWeight_ = gpu_->merge_spatial(ref_, offs_, nm_, black, mo_);
+            }
+            gpu_->drop_frames();
+            onGpu = true;
+            gpuSteps_ += std::string(" ") + step;
+        } catch (const std::exception& e) {
+            gpu_failed(step, e);
+        }
+    }
+    if (onGpu) {
+    } else if (kr_) {
+        cpu_align_state();
         std::vector<Flow> flows(n);
         LkGrad lkg = lk_gradients(mean3_[ref_]);
         for (int k = 0; k < n; k++)
             flows[k] = k == ref_ ? zero_flow(offs_[k]) : refine_flow(mean3_[ref_], mean3_[k], offs_[k], 3, lkg, nm_, black);
-        KrParams kp;
-        for (int i = 0; i < 2; i++) { kp.lcaR[i] = o.lcaR[i]; kp.lcaB[i] = o.lcaB[i]; }
         rgb_ = kr_merge(frames_, ref_, flows, gray_[ref_], mean3_, m_, nm_, mo_, kp, &ks_);
         meanWeight_ = ks_.meanWeight;
     } else if (n > 1) {
+        if (!opt_.freqMerge) cpu_align_state();
         MergeStats ms;
         mosaic_ = opt_.freqMerge ? merge_frames_freq(frames_, ref_, offs_, m_, nm_, o.freqC, o.freqSpatial, &ms)
                                  : merge_frames(frames_, ref_, offs_, mean3_, nm_, black, mo_, &ms);
@@ -173,6 +240,49 @@ void BurstSession::merge(const BurstOptions& o) {
 }
 
 void BurstSession::finish(const LookParams& lp, bool keepHdr) {
+    if (gpu_ && GpuBurst::enabled("finish")) {
+        try {
+            if (!gpu_->merged()) gpu_->set_merged(kr_ ? rgb_ : mosaic_, kr_);
+            GpuBurst::FinishOut o;
+            gpu_->finish(m_, lp, opt_.demosaic, zoom_, keepHdr, o);
+            sigma_ = o.sigma;
+            visibleSigma_ = o.visibleSigma;
+            chroma_ = o.chroma;
+            localContrast_ = o.localContrast;
+            tUpscale_ = o.tUpscale;
+            tone_ = o.tone;
+            ft_ = o.ft;
+            hdr_ = std::move(o.hdr);
+            mosaic_ = ImageF();
+            rgb_ = ImageF();
+            outW_ = gpu_->width();
+            outH_ = gpu_->height();
+            gpuFinished_ = true;
+            gpuSteps_ += " finish";
+            gpuProfile_ = gpu_->profile();
+            return;
+        } catch (const std::exception& e) {
+            if (mosaic_.w == 0 && rgb_.w == 0) {
+                try {
+                    (kr_ ? rgb_ : mosaic_) = gpu_->download_merged();
+                } catch (const std::exception&) {
+                    gpu_.reset();
+                    throw;
+                }
+            }
+            gpu_failed("finish", e);
+        }
+    } else if (gpu_ && gpu_->merged()) {
+        (kr_ ? rgb_ : mosaic_) = gpu_->download_merged();
+    }
+    if (gpu_) gpuProfile_ = gpu_->profile();
+    gpu_.reset();
+    finish_cpu(lp, keepHdr);
+    outW_ = rgb_.w;
+    outH_ = rgb_.h;
+}
+
+void BurstSession::finish_cpu(const LookParams& lp, bool keepHdr) {
     Timer t;
     if (kr_) {
         normalize_rgb(rgb_, m_, lp, 1.f);
@@ -202,11 +312,15 @@ void BurstSession::finish(const LookParams& lp, bool keepHdr) {
     t = Timer(); sharpen_luma(rgb_, lp.sharpen, lp.sharpenRadius); ft_.sharpen = t.ms();
 }
 
-void BurstSession::render(uint8_t* rgba, size_t stride) const { to_rgba8888(rgb_, rgba, stride); }
+void BurstSession::render(uint8_t* rgba, size_t stride) const {
+    if (gpuFinished_ && gpu_) gpu_->render(rgba, stride);
+    else to_rgba8888(rgb_, rgba, stride);
+}
 
 std::vector<uint8_t> BurstSession::encode_ultrahdr(int quality, float headroom) {
     if (hdr_.y.w == 0) return {};
     Timer t;
+    if (gpuFinished_ && gpu_ && rgb_.w == 0) rgb_ = gpu_->download_rgb();
     std::vector<uint8_t> file = ::encode_ultrahdr(rgb_, 1, hdr_, tone_.gainLong, headroom, quality, &us_);
     tUhdr_ = t.ms();
     return file;
@@ -239,6 +353,11 @@ std::string BurstSession::summary() const {
     } else if (tUhdr_ > 0) {
         snprintf(buf, sizeof buf, " | ultrahdr skipped, max boost %.2f", us_.maxBoost);
         s += buf;
+    }
+    if (gpuWanted_) {
+        s += " | gpu:" + (gpuSteps_.empty() ? std::string(" none") : gpuSteps_);
+        if (!gpuNote_.empty()) s += " (" + gpuNote_ + ")";
+        if (!gpuProfile_.empty()) s += " | gpu kernels " + gpuProfile_;
     }
     return s;
 }

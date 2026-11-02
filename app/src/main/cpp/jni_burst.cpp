@@ -4,6 +4,7 @@
 #include <cstdlib>
 
 #include "burstpipe/burst.h"
+#include "dsp_probe.h"
 
 namespace {
 
@@ -11,6 +12,16 @@ BurstSession* session(jlong handle) { return reinterpret_cast<BurstSession*>(han
 
 void throwState(JNIEnv* env, const char* msg) {
     env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), msg);
+}
+
+// C++ exceptions must not cross into the JVM
+template <class F>
+void guarded(JNIEnv* env, F f) {
+    try {
+        f();
+    } catch (const std::exception& e) {
+        throwState(env, e.what());
+    }
 }
 
 }  // namespace
@@ -71,7 +82,12 @@ JNIEXPORT void JNICALL
 Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeCrop(JNIEnv*, jclass, jlong h, jfloat zoom) { session(h)->crop(zoom); }
 
 JNIEXPORT void JNICALL
-Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeAlign(JNIEnv*, jclass, jlong h) { session(h)->align(); }
+Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeUseGpu(JNIEnv*, jclass, jlong h, jboolean on) { session(h)->use_gpu(on); }
+
+JNIEXPORT void JNICALL
+Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeAlign(JNIEnv* env, jclass, jlong h) {
+    guarded(env, [&] { session(h)->align(); });
+}
 
 // options: kernelRegression, robustLo, robustHi, dilate, demosaic (0 MHC, 1 RCD, 2 AMaZE), freqMerge, freqC,
 // freqSpatial, lcaR[2], lcaB[2]
@@ -89,7 +105,7 @@ Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeMerge(JNIEnv* env, jclass, jl
     o.freqSpatial = v[7];
     for (int i = 0; i < 2; i++) { o.lcaR[i] = v[8 + i]; o.lcaB[i] = v[10 + i]; }
     env->ReleaseFloatArrayElements(jopt, v, JNI_ABORT);
-    session(h)->merge(o);
+    guarded(env, [&] { session(h)->merge(o); });
 }
 
 // style: "default" uses look as given, "pixel" / "night" replace it with that preset (finish.cpp);
@@ -113,7 +129,7 @@ Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeFinish(JNIEnv* env, jclass, j
     if (std::string(style) != "default") apply_look_preset(style, lp);
     env->ReleaseStringUTFChars(jstyle, style);
     BurstSession* s = session(h);
-    s->finish(lp, keepHdr);
+    guarded(env, [&] { s->finish(lp, keepHdr); });
     return ((jlong)s->width() << 32) | (jlong)(uint32_t)s->height();
 }
 
@@ -131,7 +147,7 @@ Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeRender(JNIEnv* env, jclass, j
         throwState(env, "cannot lock bitmap");
         return;
     }
-    s->render(static_cast<uint8_t*>(pixels), info.stride);
+    guarded(env, [&] { s->render(static_cast<uint8_t*>(pixels), info.stride); });
     AndroidBitmap_unlockPixels(env, bitmap);
 }
 
@@ -139,7 +155,8 @@ Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeRender(JNIEnv* env, jclass, j
 // the HDR luminance or the encoder failed.
 JNIEXPORT jbyteArray JNICALL
 Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeEncodeUltraHdr(JNIEnv* env, jclass, jlong h, jint quality, jfloat headroom) {
-    std::vector<uint8_t> file = session(h)->encode_ultrahdr(quality, headroom);
+    std::vector<uint8_t> file;
+    guarded(env, [&] { file = session(h)->encode_ultrahdr(quality, headroom); });
     if (file.empty()) return nullptr;
     jbyteArray out = env->NewByteArray((jsize)file.size());
     if (out != nullptr) env->SetByteArrayRegion(out, 0, (jsize)file.size(), reinterpret_cast<const jbyte*>(file.data()));
@@ -155,6 +172,22 @@ JNIEXPORT void JNICALL
 Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeRelease(JNIEnv*, jclass, jlong h) {
     delete session(h);
     pool_trim();
+    Gpu::release_memory();
+}
+
+// Sets where compiled OpenCL programs are cached and creates the device (compiling the kernels on the
+// first run, ~0.5 s): one line per device property, or why the GPU is unavailable.
+JNIEXPORT jstring JNICALL
+Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeGpuInit(JNIEnv* env, jclass, jstring jdir) {
+    const char* dir = env->GetStringUTFChars(jdir, nullptr);
+    Gpu::set_cache_dir(dir);
+    env->ReleaseStringUTFChars(jdir, dir);
+    return env->NewStringUTF(Gpu::describe().c_str());
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeDspProbe(JNIEnv* env, jclass) {
+    return env->NewStringUTF(dsp_probe().c_str());
 }
 
 JNIEXPORT jobject JNICALL

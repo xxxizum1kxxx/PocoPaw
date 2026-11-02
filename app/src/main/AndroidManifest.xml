@@ -17,6 +17,10 @@
         android:enableOnBackInvokedCallback="true"
         android:theme="@style/Theme.PocoPaw">
 
+        <!-- vendor libraries listed in /vendor/etc/public.libraries.txt; apps targeting 31+ must declare them -->
+        <uses-native-library android:name="libOpenCL.so" android:required="false" />
+        <uses-native-library android:name="libcdsprpc.so" android:required="false" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
