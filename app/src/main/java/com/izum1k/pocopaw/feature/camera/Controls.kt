@@ -449,7 +449,10 @@ private fun flashValue(mode: FlashMode, flashRequired: Boolean): AnnotatedString
 
 private const val FLASH_METER_MS = 1_200L
 
-/** One pill per back camera; the selected one shows the live zoom. */
+/**
+ * One pill per back camera; the selected one shows the live zoom. Tapping the selected main lens
+ * (1×) calls [onToggleZoom] for its 2× step instead of showing the focal length.
+ */
 @Composable
 fun LensSelector(
     lenses: List<CameraInfo>,
@@ -457,6 +460,7 @@ fun LensSelector(
     zoom: Float,
     rotation: Float,
     onSelect: (CameraInfo) -> Unit,
+    onToggleZoom: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     if (lenses.size < 2 && (current == null || lenses.none { it.id == current.id })) return
@@ -515,8 +519,13 @@ fun LensSelector(
                         .background(container)
                         .clickable {
                             haptics.performHapticFeedback(HapticFeedbackType.SegmentTick)
-                            focalTap++
-                            onSelect(lens)
+                            if (selected && lens.relativeZoom == 1f) {
+                                showFocal = false
+                                onToggleZoom()
+                            } else {
+                                focalTap++
+                                onSelect(lens)
+                            }
                         }
                         .animateContentSize(YoinMotion.defaultSpatialSpec())
                         .padding(horizontal = LENS_LABEL_PADDING),

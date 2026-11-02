@@ -119,8 +119,9 @@ ImageF box_mean(const ImageF& in, int r) {
 ImageF normalize_mosaic(const ImageF& mosaic, const Meta& m, const LookParams& p) {
     ImageF out(mosaic.w, mosaic.h);
     bool lsc = m.lscRows > 1 && m.lscCols > 1;
+    float sw = m.full_w() - 1.f, sh = m.full_h() - 1.f;
     parallel_for(mosaic.h, [&](int y) {
-        float gy = lsc ? (float)y / (mosaic.h - 1) * (m.lscRows - 1) : 0;
+        float gy = lsc ? (y + m.cropY) / sh * (m.lscRows - 1) : 0;
         int y0 = std::min((int)gy, std::max(0, m.lscRows - 2));
         float fy = gy - y0;
         for (int x = 0; x < mosaic.w; x++) {
@@ -128,7 +129,7 @@ ImageF normalize_mosaic(const ImageF& mosaic, const Meta& m, const LookParams& p
             float v = (mosaic.at(x, y) - m.black[ch]) / (m.white - m.black[ch]);
             float gain = 1.f, clip = 1.f;
             if (lsc) {
-                float gx = (float)x / (mosaic.w - 1) * (m.lscCols - 1);
+                float gx = (x + m.cropX) / sw * (m.lscCols - 1);
                 int x0 = std::min((int)gx, m.lscCols - 2);
                 float fx = gx - x0;
                 auto G = [&](int c) {
@@ -149,11 +150,11 @@ ImageF normalize_mosaic(const ImageF& mosaic, const Meta& m, const LookParams& p
 
 void normalize_rgb(ImageF& rgb, const Meta& m, const LookParams& p, float scale) {
     bool lsc = m.lscRows > 1 && m.lscCols > 1;
-    float sw = m.width - 1.f, sh = m.height - 1.f;
+    float sw = m.full_w() - 1.f, sh = m.full_h() - 1.f;
     float wbG = 0.5f * (m.wb[1] + m.wb[2]);
     float inv[3] = {1.f / (m.white - m.black[0]), 2.f / (2 * m.white - m.black[1] - m.black[2]), 1.f / (m.white - m.black[3])};
     parallel_for(rgb.h, [&](int y) {
-        float ry = clampf((y + 0.5f) / scale - 0.5f, 0.f, sh);
+        float ry = clampf((y + 0.5f) / scale - 0.5f + m.cropY, 0.f, sh);
         float gy = lsc ? ry / sh * (m.lscRows - 1) : 0;
         int y0 = std::min((int)gy, std::max(0, m.lscRows - 2));
         float fy = gy - y0;
@@ -161,7 +162,7 @@ void normalize_rgb(ImageF& rgb, const Meta& m, const LookParams& p, float scale)
         for (int x = 0; x < rgb.w; x++, px += 3) {
             float gain[3] = {1, 1, 1}, clip = 1.f;
             if (lsc) {
-                float rx = clampf((x + 0.5f) / scale - 0.5f, 0.f, sw);
+                float rx = clampf((x + 0.5f) / scale - 0.5f + m.cropX, 0.f, sw);
                 float gx = rx / sw * (m.lscCols - 1);
                 int x0 = std::min((int)gx, m.lscCols - 2);
                 float fx = gx - x0;
@@ -221,6 +222,61 @@ void apply_ccm(ImageF& rgb, const float M[9]) {
             p[2] = M[6] * r + M[7] * g + M[8] * b;
         }
     });
+}
+
+void upscale_lanczos(ImageF& rgb, int W, int H) {
+    if (W == rgb.w && H == rgb.h) return;
+    constexpr int kA = 3;
+    constexpr float kPi = 3.14159265f;
+    struct Taps { int x0; float w[2 * kA]; };
+    auto taps = [&](int n, int N) {
+        std::vector<Taps> t(N);
+        const float s = (float)n / N;
+        for (int X = 0; X < N; X++) {
+            float c = (X + 0.5f) * s - 0.5f;
+            int x0 = (int)std::floor(c) - kA + 1;
+            float sum = 0;
+            for (int i = 0; i < 2 * kA; i++) {
+                float d = std::fabs(c - (x0 + i));
+                float v = d < 1e-6f ? 1.f : (d >= kA ? 0.f : kA * std::sin(kPi * d) * std::sin(kPi * d / kA) / (kPi * kPi * d * d));
+                t[X].w[i] = v;
+                sum += v;
+            }
+            for (int i = 0; i < 2 * kA; i++) t[X].w[i] /= sum;
+            t[X].x0 = x0;
+        }
+        return t;
+    };
+    const int w = rgb.w, h = rgb.h;
+    std::vector<Taps> tx = taps(w, W), ty = taps(h, H);
+    ImageF mid(W, h, 3);
+    parallel_for(h, [&](int y) {
+        const float* s = rgb.row(y);
+        float* o = mid.row(y);
+        for (int X = 0; X < W; X++) {
+            float r = 0, g = 0, b = 0;
+            for (int i = 0; i < 2 * kA; i++) {
+                const float* p = s + 3 * clampi(tx[X].x0 + i, 0, w - 1);
+                float k = tx[X].w[i];
+                r += k * p[0]; g += k * p[1]; b += k * p[2];
+            }
+            o[3 * X] = r; o[3 * X + 1] = g; o[3 * X + 2] = b;
+        }
+    });
+    rgb = ImageF();
+    ImageF out(W, H, 3);
+    parallel_for(H, [&](int Y) {
+        float* o = out.row(Y);
+        const float* rows[2 * kA];
+        for (int i = 0; i < 2 * kA; i++) rows[i] = mid.row(clampi(ty[Y].x0 + i, 0, h - 1));
+        for (int x = 0; x < 3 * W; x++) {
+            float v = 0;
+            for (int i = 0; i < 2 * kA; i++) v += ty[Y].w[i] * rows[i][x];
+            // Lanczos rings below zero next to dark edges; the tone curve expects linear values >= 0
+            o[x] = std::max(0.f, v);
+        }
+    });
+    rgb = std::move(out);
 }
 
 void chroma_denoise(ImageF& rgb, float strength) {

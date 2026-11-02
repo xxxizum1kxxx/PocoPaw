@@ -24,6 +24,9 @@ class BurstSession {
 public:
     BurstSession(const Meta& m, std::vector<Raw> frames, int ref);
 
+    // Digital zoom: before align(), cuts every frame to its centre 1/zoom (CFA phase kept) into
+    // private copies; finish() scales the result back to the sensor size.
+    void crop(float zoom);
     void align();
     void merge(const BurstOptions& o);
     // keepHdr: also keeps the scene-linear luminance needed by encode_ultrahdr()
@@ -39,6 +42,7 @@ private:
     Meta m_;
     std::vector<Raw> frames_;
     int ref_ = 0;
+    float zoom_ = 1.f;
     bool kr_ = false, bracket_ = false;
     BurstOptions opt_;
     MergeOpts mo_;
@@ -51,6 +55,6 @@ private:
     double meanWeight_ = 1, sigma_ = 0, visibleSigma_ = 0, chroma_ = 0, localContrast_ = 0, maxShift_ = 0;
     KrStats ks_;
     ToneInfo tone_{};
-    double tAlign_ = 0, tNoise_ = 0, tMerge_ = 0, tUhdr_ = 0;
+    double tCrop_ = 0, tAlign_ = 0, tNoise_ = 0, tMerge_ = 0, tUpscale_ = 0, tUhdr_ = 0;
     FinishTimes ft_;
 };

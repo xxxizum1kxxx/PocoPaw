@@ -15,13 +15,18 @@ import kotlin.math.roundToInt
 
 private const val TAG = "PocoPawPipeline"
 
-/** Hands the burst to `libburstpipe`, builds the gray pyramids, aligns every frame to the reference and fits the noise model. */
+/**
+ * Hands the burst to `libburstpipe`, crops it to the digital zoom, builds the gray pyramids, aligns
+ * every frame to the reference and fits the noise model.
+ */
 class AlignStage : PipelineStage {
     override val name = "align"
 
     override suspend fun run(ctx: PipelineContext) {
         val native = ctx.own(NativeBurst(ctx.burst))
         ctx[PipelineKeys.Native] = native
+        val zoom = ctx.burst.metadata.cropZoom
+        if (zoom > 1f) native.crop(zoom)
         native.align()
     }
 }
@@ -109,6 +114,7 @@ class JpegWriteStage(private val quality: Int = 95) : PipelineStage {
         exif.setAttribute(ExifInterface.TAG_MAKE, Build.MANUFACTURER)
         exif.setAttribute(ExifInterface.TAG_MODEL, Build.MODEL)
         exif.setAttribute(ExifInterface.TAG_SOFTWARE, "PocoPaw (${ctx.burst.size} frames)")
+        meta.cropZoom.takeIf { it > 1f }?.let { exif.setAttribute(ExifInterface.TAG_DIGITAL_ZOOM_RATIO, it.toString()) }
         @Suppress("DEPRECATION")
         result.get(CaptureResult.SENSOR_SENSITIVITY)?.let { exif.setAttribute(ExifInterface.TAG_ISO_SPEED_RATINGS, it.toString()) }
         result.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { exif.setAttribute(ExifInterface.TAG_EXPOSURE_TIME, (it / 1e9).toString()) }

@@ -815,6 +815,7 @@ class CameraController(private val manager: CameraManager, private val motion: M
                     result = frames.first().result,
                     orientationDegrees = orientationFor(info, spec.deviceRotation),
                     zoomRatio = spec.zoomRatio,
+                    cropZoom = spec.cropZoom,
                 )
                 if (BuildConfig.DEBUG) meterStats?.let { m ->
                     Log.i(TAG, "meter grid ${(frames.first().timestampNs - m.timestampNs) / 1_000_000}ms before frame 0 " + SceneMeter.gridString(m))

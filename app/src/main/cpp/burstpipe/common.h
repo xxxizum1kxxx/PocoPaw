@@ -160,6 +160,11 @@ struct Meta {
     std::vector<double> exposureNs;
     std::vector<int> iso;
     std::string camera;
+    // digital-zoom crop: width/height are the cropped frame, these place it on the full sensor frame
+    // (lens shading and the lateral CA centre are defined on the full frame)
+    int cropX = 0, cropY = 0, fullW = 0, fullH = 0;
+    int full_w() const { return fullW > 0 ? fullW : width; }
+    int full_h() const { return fullH > 0 ? fullH : height; }
 };
 
 // Bayer channel index (0=R,1=G_even,2=G_odd,3=B) at (x,y) for a Camera2 CFA enum
