@@ -11,6 +11,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -135,6 +136,13 @@ private fun CameraContent(vm: CameraViewModel) {
         haptics.performHapticFeedback(HapticFeedbackType.Reject)
         snackbar.showSnackbar(if (m == CaptureMessage.CAPTURE_FAILED) failedText else saveFailedText)
         vm.consumeMessage()
+    }
+    val zoomAnim = remember { Animatable(1f) }
+    val zoomSpec = YoinMotion.defaultSpatialSpec<Float>()
+    LaunchedEffect(ui.zoomAnimId) {
+        val target = ui.zoomTarget ?: return@LaunchedEffect
+        zoomAnim.snapTo(ui.zoom)
+        zoomAnim.animateTo(target, zoomSpec) { vm.setZoom(value) }
     }
 
     val current = ui.current
@@ -310,6 +318,7 @@ private fun CameraContent(vm: CameraViewModel) {
                                 zoom = ui.zoom,
                                 rotation = rotation,
                                 onSelect = vm::selectCamera,
+                                onToggleZoom = vm::toggleTwoX,
                             )
                         }
                     }

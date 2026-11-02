@@ -99,6 +99,11 @@ data class CameraUiState(
     val current: CameraInfo? = null,
     val mode: CaptureMode = CaptureMode.PHOTO,
     val zoom: Float = 1f,
+    /** The main lens's 2x step: the photo is cropped to the centre 1/[cropZoom]. Pinch zoom only zooms the viewfinder. */
+    val cropZoom: Float = 1f,
+    /** Where the viewfinder animates [zoom] to (null: no animation); [zoomAnimId] restarts or cancels it. */
+    val zoomTarget: Float? = null,
+    val zoomAnimId: Int = 0,
     val evIndex: Int = 0,
     /** Warm (+) / cool (−) steps off auto white balance, within ±[WB_MAX_STEPS]. */
     val wbShift: Int = 0,
@@ -223,7 +228,12 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
     fun selectCamera(info: CameraInfo) {
         if (info.id == _ui.value.current?.id || _ui.value.busy != Busy.IDLE) return
         focusResetJob?.cancel()
-        _ui.update { it.copy(current = info, zoom = 1f, evIndex = 0, wbShift = 0, focus = null, focusHeld = false) }
+        _ui.update {
+            it.copy(
+                current = info, zoom = 1f, cropZoom = 1f, zoomTarget = null, zoomAnimId = it.zoomAnimId + 1,
+                evIndex = 0, wbShift = 0, focus = null, focusHeld = false,
+            )
+        }
         viewModelScope.launch { settingsRepo.setLastCameraId(info.id) }
         maybeOpen()
     }
@@ -260,6 +270,28 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
         val cam = _ui.value.current ?: return
         val z = (_ui.value.zoom * factor).coerceIn(cam.zoomRange.lower, cam.zoomRange.upper.coerceAtMost(MAX_ZOOM))
         if (abs(z - _ui.value.zoom) < 0.005f) return
+        _ui.update {
+            // a pinch leaves the 2x step: the photo would no longer match the viewfinder
+            val anim = if (it.zoomTarget != null) it.zoomAnimId + 1 else it.zoomAnimId
+            it.copy(zoom = z, cropZoom = 1f, zoomTarget = null, zoomAnimId = anim)
+        }
+        pushControls()
+    }
+
+    /** Tap on the selected main lens: 1x and the cropped 2x in turn; the viewfinder animates there. */
+    fun toggleTwoX() {
+        val s = _ui.value
+        val cam = s.current ?: return
+        if (cam.facing != LensFacing.BACK || cam.relativeZoom != 1f || s.busy == Busy.CAPTURING) return
+        val target = if (s.cropZoom > 1f) 1f else TWO_X.coerceAtMost(cam.zoomRange.upper)
+        _ui.update { it.copy(cropZoom = target, zoomTarget = target, zoomAnimId = it.zoomAnimId + 1) }
+    }
+
+    /** One frame of the [CameraUiState.zoomTarget] animation. */
+    fun setZoom(value: Float) {
+        val cam = _ui.value.current ?: return
+        val z = value.coerceIn(cam.zoomRange.lower, cam.zoomRange.upper)
+        if (abs(z - _ui.value.zoom) < 0.001f) return
         _ui.update { it.copy(zoom = z) }
         pushControls()
     }
@@ -394,6 +426,7 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
             flash = if (fires) settings.value.flash else FlashMode.OFF,
             deviceRotation = deviceRotation,
             zoomRatio = s.zoom,
+            cropZoom = s.cropZoom,
         )
         val burst = try {
             controller.capture(spec)
@@ -507,6 +540,7 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
         fun needsMotion(cfg: CameraSettings) = cfg.scene == SceneMode.NIGHT || cfg.processing == Processing.HDR_PLUS_KR
         const val WB_MAX_STEPS = 10
         private const val MAX_ZOOM = 10f
+        private const val TWO_X = 2f
 
         val ISO_STOPS = listOf(50, 64, 80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600, 2000, 2500, 3200, 4000, 5000, 6400)
 
