@@ -99,7 +99,7 @@ data class CameraUiState(
     val current: CameraInfo? = null,
     val mode: CaptureMode = CaptureMode.PHOTO,
     val zoom: Float = 1f,
-    /** The main lens's 2x step: the photo is cropped to the centre 1/[cropZoom]. Pinch zoom only zooms the viewfinder. */
+    /** The main lens's 2x step: the photo is cropped to the centre 1/[cropZoom]. */
     val cropZoom: Float = 1f,
     /** Where the viewfinder animates [zoom] to (null: no animation); [zoomAnimId] restarts or cancels it. */
     val zoomTarget: Float? = null,
@@ -263,18 +263,6 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
             s.copy(mode = mode)
         }
         _ui.value = next
-        pushControls()
-    }
-
-    fun zoomBy(factor: Float) {
-        val cam = _ui.value.current ?: return
-        val z = (_ui.value.zoom * factor).coerceIn(cam.zoomRange.lower, cam.zoomRange.upper.coerceAtMost(MAX_ZOOM))
-        if (abs(z - _ui.value.zoom) < 0.005f) return
-        _ui.update {
-            // a pinch leaves the 2x step: the photo would no longer match the viewfinder
-            val anim = if (it.zoomTarget != null) it.zoomAnimId + 1 else it.zoomAnimId
-            it.copy(zoom = z, cropZoom = 1f, zoomTarget = null, zoomAnimId = anim)
-        }
         pushControls()
     }
 
@@ -539,7 +527,6 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
         /** Night meters hand shake for its exposure; KR checks it to skip super-resolution when still. */
         fun needsMotion(cfg: CameraSettings) = cfg.scene == SceneMode.NIGHT || cfg.processing == Processing.HDR_PLUS_KR
         const val WB_MAX_STEPS = 10
-        private const val MAX_ZOOM = 10f
         private const val TWO_X = 2f
 
         val ISO_STOPS = listOf(50, 64, 80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600, 2000, 2500, 3200, 4000, 5000, 6400)
