@@ -20,7 +20,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -118,7 +117,6 @@ fun Viewfinder(
     onSurfaceDestroyed: () -> Unit,
     /** Normalised position, and whether it landed on the current focus ring. */
     onTap: (Float, Float, Boolean) -> Unit,
-    onZoom: (Float) -> Unit,
     onEvSteps: (Int) -> Unit,
     onWbSteps: (Int) -> Unit,
     onRetry: () -> Unit,
@@ -172,7 +170,7 @@ fun Viewfinder(
             Box(
                 Modifier
                     .fillMaxSize()
-                    .viewfinderGestures(focus, ev != null, wb != null, controlRotation, onTap, onZoom, onEvSteps, onWbSteps) { swiping = it },
+                    .viewfinderGestures(focus, ev != null, wb != null, controlRotation, onTap, onEvSteps, onWbSteps) { swiping = it },
             )
             FaceBoxes(if (focus == null) faces else emptyList(), focusLocked)
             FocusRing(focus, focusLocked, focusHeld, evLabel, controlRotation)
@@ -261,7 +259,7 @@ private fun PreviewTexture(
 }
 
 /**
- * One gesture handler so tap, pinch and swipes never fight: two fingers zoom; a swipe along the
+ * One gesture handler so tap and swipes never fight: two fingers do nothing; a swipe along the
  * user's up/down axis (the phone as held, from [controlRotation]) past touch slop steps EV on the
  * user's left half and white balance on the right, up being more; anything else that lifts is a
  * focus tap, flagged when it lands within [RING_HIT] of [focus]. [onSwipe] reports the side being
@@ -274,13 +272,11 @@ private fun Modifier.viewfinderGestures(
     wbEnabled: Boolean,
     controlRotation: Float,
     onTap: (Float, Float, Boolean) -> Unit,
-    onZoom: (Float) -> Unit,
     onEvSteps: (Int) -> Unit,
     onWbSteps: (Int) -> Unit,
     onSwipe: (SwipeSide?) -> Unit,
 ): Modifier {
     val tap by rememberUpdatedState(onTap)
-    val zoom by rememberUpdatedState(onZoom)
     val ev by rememberUpdatedState(onEvSteps)
     val wb by rememberUpdatedState(onWbSteps)
     val swipe by rememberUpdatedState(onSwipe)
@@ -306,8 +302,6 @@ private fun Modifier.viewfinderGestures(
                 val pressed = event.changes.count { it.pressed }
                 if (pressed >= 2) {
                     multi = true
-                    val z = event.calculateZoom()
-                    if (z != 1f) zoom(z)
                     event.changes.forEach { it.consume() }
                 } else if (!multi) {
                     val change = event.changes.first()

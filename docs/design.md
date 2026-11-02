@@ -16,7 +16,7 @@ PocoPaw follows the Yoin design language (see Yoin's `docs/design.md`) and the c
 
 - **Top bar**: flash, timer, aspect ratio and grid as text toggles in one translucent block; settings on the right.
 - **Viewfinder**: 4:3 (16:9 crops the preview only, the RAW frame is always full sensor). Thirds grid. Tap to focus and meter: a cookie-shaped ring that morphs to a circle when focus locks; drag vertically beside it to set exposure compensation. Timer countdown and shutter flash draw over the picture.
-- **Lens row**: one pill per back camera (0.6x, 1x); pinch zooms within a lens. Tapping the selected 1x pill springs the zoom between 1x and 2x.
+- **Lens row**: one pill per back camera (0.6x, 1x). Tapping the selected 1x pill springs the zoom between 1x and 2x; there is no pinch zoom.
 - **Mode bar**: Photo (auto exposure) and Pro (manual ISO, shutter, EV within the camera's ranges).
 - **Shutter row**: last capture thumbnail (opens the JPEG, or the DNG for DNG-only output, in the system viewer), the shutter (morphs on press, shows a loading indicator while the pipeline runs), front/back switch.
 - **Developer chip** (setting): the RAW size, the remaining RAW requests before the device is reopened, and the frame count and time of the last pipeline run.
@@ -27,4 +27,4 @@ PocoPaw follows the Yoin design language (see Yoin's `docs/design.md`) and the c
 - Output (setting): DNG + JPEG (default), JPEG, or DNG. JPEG output runs the burst pipeline chosen under Processing (HDR+ merge, or kernel regression merge) on 4, 8 or 16 frames; DNG + JPEG also writes the reference frame as DNG before the merge. DNG alone keeps the single-frame pass-through. Files go to `DCIM/PocoPaw`.
 - In Photo mode a burst is shot manually: the preview AE's exposure × ISO, one stop under, at the lowest ISO with the shutter capped at 66 ms (OIS) or 33 ms. Pro mode keeps the user's values. With the flash on, the burst is a single frame at auto exposure.
 - When the remaining RAW requests cannot cover a capture, the device is closed and reopened first.
-- RAW always keeps the full sensor. Pinch zoom and the 16:9 ratio shape the viewfinder only; the zoom ratio travels with the burst (`RawMetadata.zoomRatio`) for a later stage to crop. The 2x step (`RawMetadata.cropZoom`) crops the JPEG: the burst is cropped to the centre half before alignment and the merged image is Lanczos-upscaled back to sensor size before tone mapping. The DNG stays full sensor.
+- RAW always keeps the full sensor. The 16:9 ratio shapes the viewfinder only; the zoom ratio travels with the burst (`RawMetadata.zoomRatio`) for a later stage to crop. The 2x step (`RawMetadata.cropZoom`) crops the JPEG: the burst is cropped to the centre half before alignment and the merged image is Lanczos-upscaled back to sensor size before tone mapping. The DNG stays full sensor.
