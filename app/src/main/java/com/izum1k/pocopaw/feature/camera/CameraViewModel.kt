@@ -475,6 +475,7 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
                 },
                 ultraHdr = cfg.ultraHdr,
                 lca = LensCalibration.lca(cam.id),
+                gpu = cfg.gpuAcceleration,
             ),
         )
     }

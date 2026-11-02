@@ -52,6 +52,8 @@ data class CameraSettings(
     val look: LookStyle = LookStyle.STANDARD,
     val scene: SceneMode = SceneMode.AUTO,
     val ultraHdr: Boolean = false,
+    /** Burst processing on the GPU (OpenCL), each step falling back to the CPU on failure. */
+    val gpuAcceleration: Boolean = true,
     val lastCameraId: String? = null,
 )
 
@@ -76,6 +78,7 @@ class SettingsRepository(context: Context, scope: CoroutineScope) {
         val look = stringPreferencesKey("look")
         val scene = stringPreferencesKey("scene")
         val ultraHdr = booleanPreferencesKey("ultra_hdr")
+        val gpuAcceleration = booleanPreferencesKey("gpu_acceleration")
         val lastCameraId = stringPreferencesKey("last_camera_id")
     }
 
@@ -97,6 +100,7 @@ class SettingsRepository(context: Context, scope: CoroutineScope) {
             look = p[Keys.look].toEnum(d.look),
             scene = p[Keys.scene].toEnum(d.scene),
             ultraHdr = p[Keys.ultraHdr] ?: d.ultraHdr,
+            gpuAcceleration = p[Keys.gpuAcceleration] ?: d.gpuAcceleration,
             lastCameraId = p[Keys.lastCameraId],
         )
     }.stateIn(scope, SharingStarted.Eagerly, CameraSettings())
@@ -116,6 +120,7 @@ class SettingsRepository(context: Context, scope: CoroutineScope) {
     suspend fun setLook(v: LookStyle) = put(Keys.look, v.name)
     suspend fun setScene(v: SceneMode) = put(Keys.scene, v.name)
     suspend fun setUltraHdr(v: Boolean) = put(Keys.ultraHdr, v)
+    suspend fun setGpuAcceleration(v: Boolean) = put(Keys.gpuAcceleration, v)
     suspend fun setLastCameraId(v: String) = put(Keys.lastCameraId, v)
 
     private suspend fun <T> put(key: Preferences.Key<T>, value: T) {

@@ -148,6 +148,13 @@ fun SettingsScreen() {
         }
         item {
             Section(title = stringResource(R.string.settings_developer)) {
+                SwitchRow(
+                    title = stringResource(R.string.settings_gpu),
+                    value = stringResource(R.string.settings_gpu_value),
+                    checked = settings.gpuAcceleration,
+                    onCheckedChange = { scope.launch { repo.setGpuAcceleration(it) } },
+                    enabled = settings.output != OutputFormat.DNG,
+                )
                 SettingRow(
                     title = stringResource(R.string.capabilities_title),
                     icon = YoinSymbols.Info,

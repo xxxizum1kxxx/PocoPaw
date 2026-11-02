@@ -16,6 +16,7 @@ import com.izum1k.pocopaw.camera.LensFacing
 import com.izum1k.pocopaw.camera.RawRequestBudget
 import com.izum1k.pocopaw.container
 import com.izum1k.pocopaw.feature.camera.CameraFormat
+import com.izum1k.pocopaw.pipeline.NativeBurst
 import com.izum1k.pocopaw.ui.component.PawPage
 import com.izum1k.pocopaw.ui.component.Section
 import com.izum1k.pocopaw.ui.component.SettingRow
@@ -27,11 +28,32 @@ import java.util.Locale
 fun CapabilitiesScreen() {
     val context = LocalContext.current
     var cameras by remember { mutableStateOf<List<CameraInfo>>(emptyList()) }
+    var gpu by remember { mutableStateOf<String?>(null) }
+    var dsp by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
         cameras = withContext(Dispatchers.IO) { context.container.catalog.cameras }
+        gpu = context.container.gpuInfo.await()
+        dsp = withContext(Dispatchers.IO) { NativeBurst.dspProbe() }
     }
     PawPage(title = stringResource(R.string.capabilities_title)) {
         items(cameras, key = { it.id }) { cam -> CameraSection(cam) }
+        item(key = "gpu") { ProbeSection(stringResource(R.string.cap_gpu), gpu) }
+        item(key = "dsp") { ProbeSection(stringResource(R.string.cap_dsp), dsp) }
+    }
+}
+
+/** "property: value" lines of a native probe; null while it runs. */
+@Composable
+private fun ProbeSection(title: String, report: String?) {
+    Section(title = title) {
+        if (report == null) {
+            SettingRow(title = stringResource(R.string.cap_probing))
+        } else {
+            for (line in report.lines().filter { it.isNotBlank() }) {
+                val colon = line.indexOf(": ")
+                if (colon < 0) SettingRow(title = line) else SettingRow(title = line.substring(0, colon), value = line.substring(colon + 2))
+            }
+        }
     }
 }
 

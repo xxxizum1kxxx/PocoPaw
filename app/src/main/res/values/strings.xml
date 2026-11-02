@@ -73,6 +73,8 @@
     <string name="look_pixel">Pixel style</string>
     <string name="settings_ultra_hdr">Ultra HDR</string>
     <string name="settings_ultra_hdr_value">JPEG with a gain map; brighter highlights on HDR screens</string>
+    <string name="settings_gpu">GPU acceleration</string>
+    <string name="settings_gpu_value">Align, merge and finish on the GPU (OpenCL); any failing step falls back to the CPU</string>
     <string name="dev_processed">%1$d f · %2$.1f s</string>
     <string name="pipeline_single">Single frame</string>
     <string name="scene_bracket_short">Bracket</string>
@@ -112,6 +114,9 @@
     <string name="cap_af">Autofocus</string>
     <string name="cap_noise_profile">Noise profile</string>
     <string name="cap_raw_budget">RAW requests per open</string>
+    <string name="cap_gpu">GPU (OpenCL)</string>
+    <string name="cap_dsp">cDSP / NPU (read-only probe)</string>
+    <string name="cap_probing">Probing…</string>
     <string name="focus_held">AE/AF LOCK</string>
 
     <string name="p1_title">P1 capture set</string>

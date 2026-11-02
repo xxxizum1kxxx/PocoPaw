@@ -103,6 +103,9 @@ class NativeBurst(private val burst: RawBurst) : Closeable {
         handle = nativeCreate(array, lscGains, buffers, burst.referenceIndex, exposures, isos)
     }
 
+    /** Before [align]: run the steps on the GPU (OpenCL) where possible, each falling back to the CPU on failure. */
+    fun useGpu(enabled: Boolean) = nativeUseGpu(live(), enabled)
+
     /** Before [align]: process only the centre 1/[zoom]; [finish] scales the result back to the sensor size. */
     fun crop(zoom: Float) = nativeCrop(live(), zoom)
 
@@ -134,30 +137,43 @@ class NativeBurst(private val burst: RawBurst) : Closeable {
 
     private fun live(): Long = handle.also { check(it != 0L) { "NativeBurst already closed" } }
 
-    private companion object {
-        const val META_SIZE = 23
+    companion object {
+        private const val META_SIZE = 23
+
+        /**
+         * Points the OpenCL program cache at [cacheDir] and creates the GPU device, compiling the kernels
+         * on the first run (~0.5 s; call off the main thread, before the first GPU burst): the device's
+         * properties, one per line, or why there is no usable GPU.
+         */
+        fun gpuInit(cacheDir: String): String = nativeGpuInit(cacheDir)
+
+        /** Read-only findings about the Hexagon cDSP (FastRPC capabilities, unsigned protection domain), one per line. */
+        fun dspProbe(): String = nativeDspProbe()
 
         init {
             System.loadLibrary("burstpipe")
         }
 
         /** Bayer channel (0 R, 1 G on even rows, 2 G on odd rows, 3 B) at a 2×2 position, as in `cfa_channel`. */
-        fun channelAt(cfa: Int, x: Int, y: Int): Int {
+        private fun channelAt(cfa: Int, x: Int, y: Int): Int {
             val layouts = arrayOf(intArrayOf(0, 1, 2, 3), intArrayOf(1, 0, 3, 2), intArrayOf(1, 3, 0, 2), intArrayOf(3, 1, 2, 0))
             val ch = layouts[cfa][(y and 1) * 2 + (x and 1)]
             return if (ch == 1 || ch == 2) (if (y and 1 == 1) 2 else 1) else ch
         }
 
-        @JvmStatic external fun nativeCreate(
+        @JvmStatic private external fun nativeCreate(
             meta: FloatArray, lsc: FloatArray?, frames: Array<ByteBuffer>, ref: Int, exposureNs: LongArray, iso: IntArray,
         ): Long
-        @JvmStatic external fun nativeCrop(handle: Long, zoom: Float)
-        @JvmStatic external fun nativeAlign(handle: Long)
-        @JvmStatic external fun nativeMerge(handle: Long, options: FloatArray)
-        @JvmStatic external fun nativeFinish(handle: Long, style: String, look: FloatArray, keepHdr: Boolean): Long
-        @JvmStatic external fun nativeEncodeUltraHdr(handle: Long, quality: Int, headroom: Float): ByteArray?
-        @JvmStatic external fun nativeRender(handle: Long, bitmap: Bitmap)
-        @JvmStatic external fun nativeSummary(handle: Long): String
-        @JvmStatic external fun nativeRelease(handle: Long)
+        @JvmStatic private external fun nativeCrop(handle: Long, zoom: Float)
+        @JvmStatic private external fun nativeUseGpu(handle: Long, enabled: Boolean)
+        @JvmStatic private external fun nativeAlign(handle: Long)
+        @JvmStatic private external fun nativeMerge(handle: Long, options: FloatArray)
+        @JvmStatic private external fun nativeFinish(handle: Long, style: String, look: FloatArray, keepHdr: Boolean): Long
+        @JvmStatic private external fun nativeEncodeUltraHdr(handle: Long, quality: Int, headroom: Float): ByteArray?
+        @JvmStatic private external fun nativeRender(handle: Long, bitmap: Bitmap)
+        @JvmStatic private external fun nativeSummary(handle: Long): String
+        @JvmStatic private external fun nativeRelease(handle: Long)
+        @JvmStatic private external fun nativeGpuInit(cacheDir: String): String
+        @JvmStatic private external fun nativeDspProbe(): String
     }
 }

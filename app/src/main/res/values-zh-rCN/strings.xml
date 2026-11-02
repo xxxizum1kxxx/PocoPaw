@@ -71,6 +71,8 @@
     <string name="look_pixel">Pixel 风格</string>
     <string name="settings_ultra_hdr">Ultra HDR</string>
     <string name="settings_ultra_hdr_value">带增益图的 JPEG，HDR 屏上高光更亮</string>
+    <string name="settings_gpu">GPU 加速</string>
+    <string name="settings_gpu_value">对齐、合并和后处理在 GPU（OpenCL）上运行，任一步失败自动回退 CPU</string>
     <string name="dev_processed">%1$d 帧 · %2$.1f 秒</string>
     <string name="pipeline_single">单帧直出</string>
     <string name="scene_bracket_short">包围</string>
@@ -110,6 +112,9 @@
     <string name="cap_af">自动对焦</string>
     <string name="cap_noise_profile">噪声模型</string>
     <string name="cap_raw_budget">每次打开的 RAW 请求上限</string>
+    <string name="cap_gpu">GPU（OpenCL）</string>
+    <string name="cap_dsp">cDSP / NPU（只读探测）</string>
+    <string name="cap_probing">探测中…</string>
     <string name="focus_held">AE/AF 锁定</string>
 
     <string name="p1_title">P1 素材采集</string>

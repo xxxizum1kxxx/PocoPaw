@@ -142,6 +142,8 @@ data class PipelineOptions(
     val ultraHdr: Boolean = false,
     /** Lateral CA of the capturing lens, applied by the kernel-regression merge. */
     val lca: LensLca? = null,
+    /** Run the native steps on the GPU where possible ([NativeBurst.useGpu]). */
+    val gpu: Boolean = false,
 )
 
 /** The single-frame pipeline: quick look, then the reference frame written as DNG unchanged. */
@@ -190,7 +192,7 @@ class HdrPlusPipeline(
                 add(DngWriteStage())
             }
             val night = o.scene == BurstScene.NIGHT
-            add(AlignStage())
+            add(AlignStage(o.gpu))
             add(MergeStage(MergeOptions(kernelRegression = kernelRegression, frequencyMerge = night, lca = o.lca)))
             add(FinishStage(if (night) o.look.copy(style = "night") else o.look, o.ultraHdr))
             if (o.writeJpeg) add(JpegWriteStage())
