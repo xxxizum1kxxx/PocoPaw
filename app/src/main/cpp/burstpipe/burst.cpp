@@ -58,6 +58,34 @@ float display_gain(const ImageF& rgb, float targetKey) {
 BurstSession::BurstSession(const Meta& m, std::vector<Raw> frames, int ref)
     : m_(m), frames_(std::move(frames)), ref_(clampi(ref, 0, (int)frames_.size() - 1)) {}
 
+void BurstSession::crop(float zoom) {
+    if (zoom <= 1.f || frames_.empty()) return;
+    Timer t;
+    const int W = m_.width, H = m_.height;
+    const int cw = (int)std::lround(W / zoom) & ~1, ch = (int)std::lround(H / zoom) & ~1;
+    const int x0 = ((W - cw) / 2) & ~1, y0 = ((H - ch) / 2) & ~1;
+    for (Raw& r : frames_) {
+        auto own = std::make_shared<std::vector<uint16_t>>((size_t)cw * ch);
+        for (int y = 0; y < ch; y++) {
+            const uint16_t* s = r.d + (size_t)(y0 + y) * r.w + x0;
+            std::copy(s, s + cw, own->data() + (size_t)y * cw);
+        }
+        r.own = std::move(own);
+        r.d = r.own->data();
+        r.w = cw;
+        r.h = ch;
+    }
+    m_.fullW = m_.full_w();
+    m_.fullH = m_.full_h();
+    m_.cropX += x0;
+    m_.cropY += y0;
+    m_.width = cw;
+    m_.height = ch;
+    m_.rowStride = cw * 2;
+    zoom_ = zoom;
+    tCrop_ = t.ms();
+}
+
 void BurstSession::align() {
     Timer t;
     int n = (int)frames_.size();
@@ -166,6 +194,7 @@ void BurstSession::finish(const LookParams& lp, bool keepHdr) {
     chroma *= lp.chromaDenoiseScale;
     chroma_ = chroma;
     t = Timer(); chroma_denoise(rgb_, chroma); ft_.chroma = t.ms();
+    if (zoom_ > 1.f) { t = Timer(); upscale_lanczos(rgb_, m_.full_w(), m_.full_h()); tUpscale_ = t.ms(); }
     hdr_ = keepHdr ? hdr_luma(rgb_, 1) : HdrLuma();
     t = Timer(); tone_ = local_tonemap(rgb_, lp); ft_.tonemap = t.ms();
     localContrast_ = noise_scaled_local_contrast(lp.localContrast, (float)visibleSigma_);
@@ -199,6 +228,11 @@ std::string BurstSession::summary() const {
              visibleSigma_, chroma_, localContrast_, tone_.keyBefore, tone_.gainShort, tone_.gainLong, tAlign_, tNoise_, tMerge_,
              ft_.lscwb, ft_.demosaic, ft_.color, ft_.chroma, ft_.tonemap, ft_.look, ft_.sharpen);
     std::string s = buf;
+    if (zoom_ > 1.f) {
+        snprintf(buf, sizeof buf, " | zoom %.2fx crop at (%d, %d) %.0f ms upscale to %dx%d %.0f ms", zoom_, m_.cropX, m_.cropY, tCrop_,
+                 m_.full_w(), m_.full_h(), tUpscale_);
+        s += buf;
+    }
     if (us_.bytes) {
         snprintf(buf, sizeof buf, " | ultrahdr max boost %.2f gain map %zu B file %zu B %.0f ms", us_.maxBoost, us_.gainMapBytes, us_.bytes, tUhdr_);
         s += buf;

@@ -27,6 +27,8 @@ void normalize_rgb(ImageF& rgb, const Meta& m, const LookParams& p, float scale)
 ImageF demosaic_mhc(const ImageF& cfa, int cfaType);
 void apply_ccm(ImageF& rgb, const float ccm[9]);
 void chroma_denoise(ImageF& rgb, float strength);
+// separable Lanczos-3 resize of a linear RGB image to W x H (for the zoom crop back to sensor size)
+void upscale_lanczos(ImageF& rgb, int W, int H);
 struct ToneInfo { float gainShort, gainLong, keyBefore; };
 ToneInfo local_tonemap(ImageF& rgb, const LookParams& p);    // HDR+ synthetic exposure fusion, in-place, output linear
 void pixel_look(ImageF& rgb, const LookParams& p);          // sRGB OETF + S-curve + vibrance, output display-referred

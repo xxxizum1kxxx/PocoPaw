@@ -278,7 +278,8 @@ ImageF kr_merge(const std::vector<Raw>& frames, int ref, const std::vector<Flow>
     const float32x4_t lane = vld1q_f32(laneInit);
 #endif
     const bool lca = p.lcaR[0] != 0 || p.lcaR[1] != 0 || p.lcaB[0] != 0 || p.lcaB[1] != 0;
-    const float lcx = (W - 1) * 0.5f, lcy = (H - 1) * 0.5f, invR2 = 1.f / (lcx * lcx + lcy * lcy);
+    const float fcx = (m.full_w() - 1) * 0.5f, fcy = (m.full_h() - 1) * 0.5f, invR2 = 1.f / (fcx * fcx + fcy * fcy);
+    const float lcx = fcx - m.cropX, lcy = fcy - m.cropY;
     parallel_for(OH, [&](int Y) {
         float* o = out.row(Y);
         float ly = (Y + 0.5f) / sc;
