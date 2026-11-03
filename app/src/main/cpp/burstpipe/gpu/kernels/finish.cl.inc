@@ -439,10 +439,10 @@ __kernel void hue_tune(__global float* rgb, int n, float4 sky, float4 skin, floa
     q[0] = clamp(r, 0.f, 1.f); q[1] = clamp(g, 0.f, 1.f); q[2] = clamp(b, 0.f, 1.f);
 }
 
-__kernel void sharpen_apply(__global float* rgb, int n, __global const float* L, __global const float* B, float amount) {
+__kernel void sharpen_apply(__global float* rgb, int n, __global const float* L, __global const float* B, float amount,
+                            float core) {
     int i = get_global_id(0);
     if (i >= n) return;
-    const float core = 0.004f;
     float d = L[i] - B[i];
     d = d > core ? d - core : (d < -core ? d + core : 0.f);
     float delta = amount * d;

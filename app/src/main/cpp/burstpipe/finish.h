@@ -32,7 +32,11 @@ void upscale_lanczos(ImageF& rgb, int W, int H);
 struct ToneInfo { float gainShort, gainLong, keyBefore; };
 ToneInfo local_tonemap(ImageF& rgb, const LookParams& p);    // HDR+ synthetic exposure fusion, in-place, output linear
 void pixel_look(ImageF& rgb, const LookParams& p);          // sRGB OETF + S-curve + vibrance, output display-referred
-void sharpen_luma(ImageF& rgb, float amount, float radius);
+// display-luma unsharp mask; detail below `core` (sharpen_core) is left alone so grain is not boosted
+void sharpen_luma(ImageF& rgb, float amount, float radius, float core);
+float sharpen_core(float visibleSigma);
+// targetKey lowered where reaching it would lift the visible noise above kKeyNoiseCap (dark scenes, high ISO)
+float noise_limited_key(float targetKey, float visibleSigma);
 void wb_shift(ImageF& rgb, float cool);                      // linear sRGB
 void local_contrast(ImageF& rgb, float amount, float radiusFrac);  // display referred
 // local contrast amount eased off when the visible noise is high, so it does not pull up shadow grain

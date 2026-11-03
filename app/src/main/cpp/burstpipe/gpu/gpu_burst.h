@@ -45,7 +45,7 @@ public:
     void set_merged(const ImageF& im, bool kernelRegression);
 
     struct FinishOut {
-        double sigma = 0, visibleSigma = 0, chroma = 0, localContrast = 0, tUpscale = 0;
+        double sigma = 0, visibleSigma = 0, chroma = 0, localContrast = 0, tUpscale = 0, targetKey = 0, sharpenCore = 0;
         ToneInfo tone{};
         FinishTimes ft;
         HdrLuma hdr;
@@ -74,7 +74,7 @@ private:
     void upscale(int W, int H);
     ToneInfo local_tonemap(const LookParams& p);
     void local_contrast(float amount, float radiusFrac);
-    void sharpen(float amount, float radius);
+    void sharpen(float amount, float radius, float core);
     GImg luma(const GImg& rgb, float floorv);
 
     Gpu& g_;

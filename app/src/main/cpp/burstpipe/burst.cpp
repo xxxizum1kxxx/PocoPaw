@@ -254,6 +254,8 @@ void BurstSession::finish(const LookParams& lp, bool keepHdr) {
             visibleSigma_ = o.visibleSigma;
             chroma_ = o.chroma;
             localContrast_ = o.localContrast;
+            targetKey_ = o.targetKey;
+            sharpenCore_ = o.sharpenCore;
             tUpscale_ = o.tUpscale;
             tone_ = o.tone;
             ft_ = o.ft;
@@ -287,8 +289,9 @@ void BurstSession::finish(const LookParams& lp, bool keepHdr) {
     outH_ = rgb_.h;
 }
 
-void BurstSession::finish_cpu(const LookParams& lp, bool keepHdr) {
+void BurstSession::finish_cpu(const LookParams& look, bool keepHdr) {
     Timer t;
+    LookParams lp = look;
     if (kr_) {
         normalize_rgb(rgb_, m_, lp, 1.f);
         ft_.lscwb = t.ms();
@@ -304,6 +307,8 @@ void BurstSession::finish_cpu(const LookParams& lp, bool keepHdr) {
     }
     t = Timer(); apply_ccm(rgb_, m_.ccm); wb_shift(rgb_, lp.wbCool); ft_.color = t.ms();
     float chroma = lp.chromaDenoise;
+    lp.targetKey = noise_limited_key(lp.targetKey, (float)(sigma_ * display_gain(rgb_, lp.targetKey)));
+    targetKey_ = lp.targetKey;
     visibleSigma_ = sigma_ * display_gain(rgb_, lp.targetKey);
     if (chroma < 0) chroma = clampf((float)visibleSigma_ / 0.01f, 1.f, 6.f);
     chroma *= lp.chromaDenoiseScale;
@@ -314,7 +319,8 @@ void BurstSession::finish_cpu(const LookParams& lp, bool keepHdr) {
     t = Timer(); tone_ = local_tonemap(rgb_, lp); ft_.tonemap = t.ms();
     localContrast_ = noise_scaled_local_contrast(lp.localContrast, (float)visibleSigma_);
     t = Timer(); pixel_look(rgb_, lp); local_contrast(rgb_, localContrast_, lp.localRadius); hue_tune(rgb_, lp); ft_.look = t.ms();
-    t = Timer(); sharpen_luma(rgb_, lp.sharpen, lp.sharpenRadius); ft_.sharpen = t.ms();
+    sharpenCore_ = sharpen_core((float)visibleSigma_);
+    t = Timer(); sharpen_luma(rgb_, lp.sharpen, lp.sharpenRadius, (float)sharpenCore_); ft_.sharpen = t.ms();
 }
 
 void BurstSession::render(uint8_t* rgba, size_t stride) const {
@@ -341,11 +347,11 @@ std::string BurstSession::summary() const {
     if (kr_ && (opt_.lcaR[0] != 0 || opt_.lcaB[0] != 0)) mode += " lca";
     snprintf(buf, sizeof buf,
              "%s %dx%d ref=%d threads=%d | noise var=%.4f*S+%.3f %s robust %.2f-%.2f weight=%.3f shift=%.1f | sigma=%.5f visible=%.4f chroma=%.2f local=%.2f | "
-             "tone key=%.4f short=%.2f long=%.2f | ms align %.0f noise %.0f merge %.0f lsc+wb %.0f demosaic %.0f ccm %.0f "
+             "tone key=%.4f target=%.3f short=%.2f long=%.2f core=%.4f | ms align %.0f noise %.0f merge %.0f lsc+wb %.0f demosaic %.0f ccm %.0f "
              "chroma %.0f tonemap %.0f look %.0f sharpen %.0f",
              mode.c_str(), m_.width, m_.height, ref_, g_threads, nm_.a, nm_.b, calibrated_ ? "calibrated" : "estimated", mo_.robustLo,
              mo_.robustHi, meanWeight_, maxShift_, sigma_,
-             visibleSigma_, chroma_, localContrast_, tone_.keyBefore, tone_.gainShort, tone_.gainLong, tAlign_, tNoise_, tMerge_,
+             visibleSigma_, chroma_, localContrast_, tone_.keyBefore, targetKey_, tone_.gainShort, tone_.gainLong, sharpenCore_, tAlign_, tNoise_, tMerge_,
              ft_.lscwb, ft_.demosaic, ft_.color, ft_.chroma, ft_.tonemap, ft_.look, ft_.sharpen);
     std::string s = buf;
     if (zoom_ > 1.f) {

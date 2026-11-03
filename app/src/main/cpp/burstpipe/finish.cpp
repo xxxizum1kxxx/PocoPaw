@@ -414,12 +414,23 @@ void pixel_look(ImageF& rgb, const LookParams& p) {
     });
 }
 
-void sharpen_luma(ImageF& rgb, float amount, float radius) {
+float sharpen_core(float visibleSigma) {
+    // clean bursts (visible sigma 0.003-0.007) keep the fixed 0.004
+    return std::max(0.004f, 0.6f * visibleSigma);
+}
+
+float noise_limited_key(float targetKey, float visibleSigma) {
+    // visible sigma goes linearly with the key; above the cap the key follows its square root, at most 1 EV down
+    constexpr float kKeyNoiseCap = 0.015f;
+    if (visibleSigma <= kKeyNoiseCap) return targetKey;
+    return targetKey * std::max(0.5f, std::sqrt(kKeyNoiseCap / visibleSigma));
+}
+
+void sharpen_luma(ImageF& rgb, float amount, float radius, float core) {
     if (amount <= 0) return;
     ImageF L(rgb.w, rgb.h);
     parallel_for(rgb.h, [&](int y) { const float* q = rgb.row(y); for (int x = 0; x < rgb.w; x++, q += 3) L.at(x, y) = luma709(q[0], q[1], q[2]); });
     ImageF B = gaussian_blur(L, radius);
-    const float core = 0.004f;
     parallel_for(rgb.h, [&](int y) {
         float* q = rgb.row(y);
         for (int x = 0; x < rgb.w; x++, q += 3) {

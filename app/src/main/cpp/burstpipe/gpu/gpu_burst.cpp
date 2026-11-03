@@ -521,15 +521,16 @@ void GpuBurst::local_contrast(float amount, float radiusFrac) {
     g_.run("lc_apply", gs(W), gs(H), rgb_, W, H, L, mA, mB, sw, sh, amount);
 }
 
-void GpuBurst::sharpen(float amount, float radius) {
+void GpuBurst::sharpen(float amount, float radius, float core) {
     if (amount <= 0) return;
     const int n = rgb_.w * rgb_.h;
     GImg L = luma(rgb_, -3.4e38f);
     GImg B = gaussian(L, radius);
-    g_.run("sharpen_apply", gs(n), 1, rgb_, n, L, B, amount);
+    g_.run("sharpen_apply", gs(n), 1, rgb_, n, L, B, amount, core);
 }
 
-void GpuBurst::finish(const Meta& m, const LookParams& lp, Demosaic dm, float zoom, bool keepHdr, FinishOut& out) {
+void GpuBurst::finish(const Meta& m, const LookParams& look, Demosaic dm, float zoom, bool keepHdr, FinishOut& out) {
+    LookParams lp = look;
     Timer t;
     auto lap = [&](double& field) { g_.finish(); field = t.ms(); t = Timer(); };
     const int W = merged_.w, H = merged_.h;
@@ -593,7 +594,10 @@ void GpuBurst::finish(const Meta& m, const LookParams& lp, Demosaic dm, float zo
     double ls = 0;
     for (float v : lv) ls += v;
     long cnt = (long)gr * ((rgb_.w + 7) / 8);
-    float dgain = clampf(lp.targetKey / (float)std::exp(ls / std::max(1L, cnt)), 1.f, 64.f);
+    const float logKey = (float)std::exp(ls / std::max(1L, cnt));
+    lp.targetKey = noise_limited_key(lp.targetKey, (float)out.sigma * clampf(lp.targetKey / logKey, 1.f, 64.f));
+    out.targetKey = lp.targetKey;
+    float dgain = clampf(lp.targetKey / logKey, 1.f, 64.f);
     out.visibleSigma = out.sigma * dgain;
     float chroma = lp.chromaDenoise;
     if (chroma < 0) chroma = clampf((float)out.visibleSigma / 0.01f, 1.f, 6.f);
@@ -628,7 +632,8 @@ void GpuBurst::finish(const Meta& m, const LookParams& lp, Demosaic dm, float zo
                f4(lp.skySat, lp.skinSat, lp.skyHue * (float)M_PI / 180.f, lp.skinHue * (float)M_PI / 180.f));
     }
     lap(out.ft.look);
-    sharpen(lp.sharpen, lp.sharpenRadius);
+    out.sharpenCore = sharpen_core((float)out.visibleSigma);
+    sharpen(lp.sharpen, lp.sharpenRadius, (float)out.sharpenCore);
     lap(out.ft.sharpen);
     merged_ = GImg();
 }
