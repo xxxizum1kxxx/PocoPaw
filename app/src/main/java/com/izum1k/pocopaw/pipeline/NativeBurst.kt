@@ -192,6 +192,10 @@ class NativeBurst(private val burst: RawBurst) : Closeable {
             return nativeSharpestFrame(Array(min(3, burst.size)) { burst.frames[it].data }, f.width, f.height)
         }
 
+        /** [bitmap] (ARGB_8888) as a 4:2:0 JPEG through libjpeg-turbo, or null; several times faster than Bitmap.compress. */
+        fun encodeJpeg(bitmap: Bitmap, quality: Int): ByteArray? = nativeEncodeJpeg(bitmap, quality)
+
+        @JvmStatic private external fun nativeEncodeJpeg(bitmap: Bitmap, quality: Int): ByteArray?
         @JvmStatic private external fun nativeSharpestFrame(frames: Array<ByteBuffer>, width: Int, height: Int): Int
         @JvmStatic private external fun nativeSetNoiseCurve(handle: Long, iso: FloatArray, a: FloatArray, b: FloatArray)
         @JvmStatic private external fun nativeAlign(handle: Long)

@@ -55,4 +55,7 @@ std::vector<uint8_t> to_rgb8(const ImageF& rgb, int downscale, int& w, int& h); 
 // Display-referred RGB -> RGBA8888 rows (Android ARGB_8888 memory order), dithered
 void to_rgba8888(const ImageF& rgb, uint8_t* out, size_t stride);
 // chroma420: 4:2:0 at any quality (otherwise 4:4:4 above 90), as Android's Bitmap.compress
+// libjpeg-turbo, strip-parallel; channels 1 (gray), 3 (RGB) or 4 (RGBA, alpha ignored)
 std::vector<uint8_t> encode_jpeg(const uint8_t* px, int w, int h, int channels, int quality, bool chroma420 = false);
+// stb_image_write, the earlier encoder, for comparisons
+std::vector<uint8_t> encode_jpeg_stb(const uint8_t* px, int w, int h, int channels, int quality, bool chroma420 = false);

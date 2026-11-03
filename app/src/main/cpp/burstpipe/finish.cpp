@@ -1,6 +1,10 @@
 #include "finish.h"
 
+#include <csetjmp>
+#include <cstdio>
 #include <cstring>
+
+#include "third_party/libultrahdr/include/jpeglib.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "third_party/stb_image_write.h"
@@ -551,7 +555,7 @@ std::vector<uint8_t> to_rgb8(const ImageF& rgb, int ds, int& w, int& h) {
     return buf;
 }
 
-std::vector<uint8_t> encode_jpeg(const uint8_t* px, int w, int h, int channels, int quality, bool chroma420) {
+std::vector<uint8_t> encode_jpeg_stb(const uint8_t* px, int w, int h, int channels, int quality, bool chroma420) {
     std::vector<uint8_t> out;
     auto sink = [](void* ctx, void* data, int size) {
         auto* o = static_cast<std::vector<uint8_t>*>(ctx);
@@ -562,10 +566,114 @@ std::vector<uint8_t> encode_jpeg(const uint8_t* px, int w, int h, int channels, 
     return out;
 }
 
+namespace {
+
+struct JpegError {
+    jpeg_error_mgr mgr;
+    jmp_buf jump;
+};
+
+void jpeg_fail(j_common_ptr c) { longjmp(reinterpret_cast<JpegError*>(c->err)->jump, 1); }
+
+// one complete baseline JPEG of h rows (standard Huffman tables, so every strip's tables match)
+std::vector<uint8_t> jpeg_one(const uint8_t* px, int w, int h, int channels, int quality, bool chroma420) {
+    jpeg_compress_struct c;
+    JpegError err;
+    c.err = jpeg_std_error(&err.mgr);
+    err.mgr.error_exit = jpeg_fail;
+    unsigned char* buf = nullptr;
+    unsigned long size = 0;
+    if (setjmp(err.jump)) {
+        jpeg_destroy_compress(&c);
+        free(buf);
+        return {};
+    }
+    jpeg_create_compress(&c);
+    jpeg_mem_dest(&c, &buf, &size);
+    c.image_width = w;
+    c.image_height = h;
+    c.input_components = channels;
+    c.in_color_space = channels == 1 ? JCS_GRAYSCALE : channels == 3 ? JCS_RGB : JCS_EXT_RGBA;
+    jpeg_set_defaults(&c);
+    jpeg_set_quality(&c, quality, TRUE);
+    if (channels > 1) c.comp_info[0].h_samp_factor = c.comp_info[0].v_samp_factor = chroma420 ? 2 : 1;
+    jpeg_start_compress(&c, TRUE);
+    const size_t stride = (size_t)w * channels;
+    while (c.next_scanline < c.image_height) {
+        JSAMPROW row = const_cast<JSAMPROW>(px + c.next_scanline * stride);
+        jpeg_write_scanlines(&c, &row, 1);
+    }
+    jpeg_finish_compress(&c);
+    std::vector<uint8_t> out(buf, buf + size);
+    jpeg_destroy_compress(&c);
+    free(buf);
+    return out;
+}
+
+}  // namespace
+
+std::vector<uint8_t> encode_jpeg(const uint8_t* px, int w, int h, int channels, int quality, bool chroma420) {
+    // horizontal strips encoded in parallel, joined into one scan with a restart marker between them (DRI = one
+    // strip's MCUs): the strips' entropy-coded segments are exactly what a single encoder with that restart
+    // interval would write
+    const int mcu = channels > 1 && chroma420 ? 16 : 8;
+    const int mcuRows = (h + mcu - 1) / mcu, mcuCols = (w + mcu - 1) / mcu;
+    int rowsPer = std::max(4, (mcuRows + g_threads - 1) / g_threads);
+    rowsPer = std::min(rowsPer, 65535 / mcuCols);
+    const int strips = rowsPer > 0 ? (mcuRows + rowsPer - 1) / rowsPer : 1;
+    if (strips <= 1 || rowsPer <= 0) return jpeg_one(px, w, h, channels, quality, chroma420);
+    std::vector<std::vector<uint8_t>> part(strips);
+    parallel_for(strips, [&](int s) {
+        int y0 = s * rowsPer * mcu, y1 = std::min(h, y0 + rowsPer * mcu);
+        part[s] = jpeg_one(px + (size_t)y0 * w * channels, w, y1 - y0, channels, quality, chroma420);
+    });
+    // the scan data of each strip starts after its SOS segment and ends before EOI
+    auto scan_start = [](const std::vector<uint8_t>& j, size_t* sosAt, size_t* sofAt) -> size_t {
+        size_t p = 2;
+        while (p + 4 <= j.size() && j[p] == 0xFF) {
+            int marker = j[p + 1], len = (j[p + 2] << 8) | j[p + 3];
+            if (marker >= 0xC0 && marker <= 0xC2 && sofAt) *sofAt = p;
+            if (marker == 0xDA) {
+                if (sosAt) *sosAt = p;
+                return p + 2 + len;
+            }
+            p += 2 + len;
+        }
+        return 0;
+    };
+    for (auto& j : part)
+        if (j.size() < 4 || scan_start(j, nullptr, nullptr) == 0) return jpeg_one(px, w, h, channels, quality, chroma420);
+    size_t sos = 0, sof = 0;
+    scan_start(part[0], &sos, &sof);
+    size_t total = part[0].size() + 6;
+    for (int s = 1; s < strips; s++) total += part[s].size();
+    std::vector<uint8_t> out;
+    out.reserve(total);
+    out.insert(out.end(), part[0].begin(), part[0].begin() + sos);
+    out[sof + 5] = (uint8_t)(h >> 8);
+    out[sof + 6] = (uint8_t)(h & 0xFF);
+    const int ri = rowsPer * mcuCols;
+    const uint8_t dri[6] = {0xFF, 0xDD, 0x00, 0x04, (uint8_t)(ri >> 8), (uint8_t)(ri & 0xFF)};
+    out.insert(out.end(), dri, dri + 6);
+    out.insert(out.end(), part[0].begin() + sos, part[0].end() - 2);
+    for (int s = 1; s < strips; s++) {
+        out.push_back(0xFF);
+        out.push_back((uint8_t)(0xD0 + ((s - 1) & 7)));
+        out.insert(out.end(), part[s].begin() + scan_start(part[s], nullptr, nullptr), part[s].end() - 2);
+    }
+    out.push_back(0xFF);
+    out.push_back(0xD9);
+    return out;
+}
+
 bool write_jpeg(const std::string& path, const ImageF& rgb, int quality, int ds) {
     int w, h;
     std::vector<uint8_t> buf = to_rgb8(rgb, ds, w, h);
-    return stbi_write_jpg(path.c_str(), w, h, 3, buf.data(), quality) != 0;
+    std::vector<uint8_t> jpg = encode_jpeg(buf.data(), w, h, 3, quality);
+    FILE* f = jpg.empty() ? nullptr : fopen(path.c_str(), "wb");
+    if (!f) return false;
+    bool ok = fwrite(jpg.data(), 1, jpg.size(), f) == jpg.size();
+    return fclose(f) == 0 && ok;
 }
 
 void wb_shift(ImageF& rgb, float cool) {

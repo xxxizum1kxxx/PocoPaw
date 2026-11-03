@@ -102,7 +102,8 @@ class JpegWriteStage(private val quality: Int = 95) : PipelineStage {
         val tmp = File.createTempFile("pocopaw", ".jpg")
         try {
             val ultraHdr = ctx[PipelineKeys.UltraHdrJpeg]
-            if (ultraHdr != null) tmp.writeBytes(ultraHdr)
+            val jpeg = ultraHdr ?: NativeBurst.encodeJpeg(rendered, quality)
+            if (jpeg != null) tmp.writeBytes(jpeg)
             else tmp.outputStream().buffered().use { rendered.compress(Bitmap.CompressFormat.JPEG, quality, it) }
             writeExif(tmp, ctx)
             val saved = ctx.sink.write(OutputKind.JPEG, MediaStoreWriter.baseName(meta.captureTimeMillis), meta.captureTimeMillis) { out ->
