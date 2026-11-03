@@ -84,6 +84,22 @@ Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeCrop(JNIEnv*, jclass, jlong h
 JNIEXPORT void JNICALL
 Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeUseGpu(JNIEnv*, jclass, jlong h, jboolean on) { session(h)->use_gpu(on); }
 
+// iso / a / b: the camera's noise curve (NoiseCurve in merge.h), equal lengths
+JNIEXPORT void JNICALL
+Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeSetNoiseCurve(JNIEnv* env, jclass, jlong h, jfloatArray jiso, jfloatArray ja,
+                                                                jfloatArray jb) {
+    NoiseCurve c;
+    int n = env->GetArrayLength(jiso);
+    if (env->GetArrayLength(ja) != n || env->GetArrayLength(jb) != n) return;
+    c.iso.resize(n);
+    c.a.resize(n);
+    c.b.resize(n);
+    env->GetFloatArrayRegion(jiso, 0, n, c.iso.data());
+    env->GetFloatArrayRegion(ja, 0, n, c.a.data());
+    env->GetFloatArrayRegion(jb, 0, n, c.b.data());
+    session(h)->set_noise_curve(std::move(c));
+}
+
 JNIEXPORT void JNICALL
 Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeAlign(JNIEnv* env, jclass, jlong h) {
     guarded(env, [&] { session(h)->align(); });

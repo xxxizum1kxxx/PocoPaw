@@ -35,11 +35,20 @@ enum class DemosaicMethod { MHC, RCD, AMAZE }
  */
 data class LensLca(val kr1: Float, val kr2: Float, val kb1: Float, val kb2: Float)
 
-/** How [NativeBurst.merge] combines the frames (`BurstOptions` in `cpp/burstpipe/burst.h`). */
+/**
+ * Per-ISO sensor noise, variance = a · signal + b in raw DN (tools/noise_calib.py curve); linear in ISO between
+ * the points. With one, the native session skips estimating the noise from the burst.
+ */
+class NoiseCurve(val iso: FloatArray, val a: FloatArray, val b: FloatArray)
+
+/**
+ * How [NativeBurst.merge] combines the frames (`BurstOptions` in `cpp/burstpipe/burst.h`).
+ * [robustLo] / [robustHi] 0 pick the ramp that matches the noise source (calibrated or estimated).
+ */
 data class MergeOptions(
     val kernelRegression: Boolean = false,
-    val robustLo: Float = 2f,
-    val robustHi: Float = 4.5f,
+    val robustLo: Float = 0f,
+    val robustHi: Float = 0f,
     val motionDilate: Int = 1,
     val demosaic: DemosaicMethod = DemosaicMethod.RCD,
     /** Frequency-domain Wiener merge (classic path); the night mode uses it with spatial shrinkage 2. */
@@ -106,6 +115,9 @@ class NativeBurst(private val burst: RawBurst) : Closeable {
     /** Before [align]: run the steps on the GPU (OpenCL) where possible, each falling back to the CPU on failure. */
     fun useGpu(enabled: Boolean) = nativeUseGpu(live(), enabled)
 
+    /** Before [align]: use the camera's calibrated noise instead of estimating it from the burst. */
+    fun setNoiseCurve(curve: NoiseCurve) = nativeSetNoiseCurve(live(), curve.iso, curve.a, curve.b)
+
     /** Before [align]: process only the centre 1/[zoom]; [finish] scales the result back to the sensor size. */
     fun crop(zoom: Float) = nativeCrop(live(), zoom)
 
@@ -166,6 +178,7 @@ class NativeBurst(private val burst: RawBurst) : Closeable {
         ): Long
         @JvmStatic private external fun nativeCrop(handle: Long, zoom: Float)
         @JvmStatic private external fun nativeUseGpu(handle: Long, enabled: Boolean)
+        @JvmStatic private external fun nativeSetNoiseCurve(handle: Long, iso: FloatArray, a: FloatArray, b: FloatArray)
         @JvmStatic private external fun nativeAlign(handle: Long)
         @JvmStatic private external fun nativeMerge(handle: Long, options: FloatArray)
         @JvmStatic private external fun nativeFinish(handle: Long, style: String, look: FloatArray, keepHdr: Boolean): Long

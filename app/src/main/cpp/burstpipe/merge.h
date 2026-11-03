@@ -2,12 +2,26 @@
 #include "align.h"
 
 // Raw-domain noise model: variance = a * signal + b (signal in raw DN above black).
-// Camera2 exposes this as SENSOR_NOISE_PROFILE, but this HAL does not, so it is
-// estimated from the residual between the reference and an aligned frame.
+// Camera2 exposes this as SENSOR_NOISE_PROFILE, but this HAL does not, so it comes from an offline
+// calibration (NoiseCurve) or is estimated from the residual between the reference and an aligned frame.
 struct NoiseModel {
     double a = 1, b = 4;
     double var(double s) const { return a * std::max(0.0, s) + b; }
 };
+
+// Per-ISO noise measured offline (tools/noise_calib.py curve), in raw DN of an unscaled frame; linear in ISO
+// between the points, a proportional to ISO below the first, held above the last.
+struct NoiseCurve {
+    std::vector<float> iso, a, b;
+    bool empty() const { return iso.empty(); }
+    // for a frame whose values above black were multiplied by `scale` (bracket scaling)
+    NoiseModel at(float frameIso, float scale = 1.f) const;
+};
+
+// Robustness ramps (in noise sigmas) for each noise source: the residual estimate runs 10-25% low, so the
+// calibrated model needs a proportionally tighter ramp for the same ghost rejection (RESULTS.md "noise-cal").
+constexpr float kRobustEstimated[2] = {2.f, 4.5f};
+constexpr float kRobustCalibrated[2] = {1.75f, 3.9f};
 
 // sample of frame k's gray/mean image at reference quad (qx,qy), blending the
 // 4 overlapping tiles with raised-cosine weights

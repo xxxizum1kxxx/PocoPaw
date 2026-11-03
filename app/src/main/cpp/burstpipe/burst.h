@@ -9,7 +9,7 @@
 // How the frames are merged; see pipeline/out/p1/RESULTS.md for the measurements behind the defaults.
 struct BurstOptions {
     bool kernelRegression = false;
-    float robustLo = 2.f, robustHi = 4.5f;
+    float robustLo = 0, robustHi = 0;    // 0: kRobustCalibrated / kRobustEstimated by the noise source
     int dilate = 1;                      // motion mask dilation, in quads
     Demosaic demosaic = Demosaic::RCD;   // classic path only
     bool freqMerge = false;              // classic path: frequency-domain Wiener merge (night)
@@ -29,6 +29,9 @@ public:
 
     // before align()
     void use_gpu(bool on) { gpuWanted_ = on; }
+    // Before align(): the camera's calibrated noise at each ISO, used instead of estimating it from the
+    // burst (works for single frames too). Empty keeps the estimate.
+    void set_noise_curve(NoiseCurve c) { curve_ = std::move(c); }
     // Digital zoom: before align(), cuts every frame to its centre 1/zoom (CFA phase kept) into
     // private copies; finish() scales the result back to the sensor size.
     void crop(float zoom);
@@ -62,6 +65,8 @@ private:
     std::vector<ImageF> gray_, mean3_;
     std::vector<Offsets> offs_;
     NoiseModel nm_;
+    NoiseCurve curve_;
+    bool calibrated_ = false;
     ImageF mosaic_, rgb_;
     HdrLuma hdr_;
     UltraHdrStats us_;

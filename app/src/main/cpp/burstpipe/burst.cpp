@@ -89,12 +89,15 @@ void BurstSession::crop(float zoom) {
 void BurstSession::align() {
     Timer t;
     int n = (int)frames_.size();
+    float refScale = 1.f;  // bracket factor applied to the reference's raw values above black
     if (n > 1 && (int)m_.exposureNs.size() >= n) {
         auto expo = [&](int k) { return m_.exposureNs[k] * (m_.iso.size() > (size_t)k ? m_.iso[k] : 100); };
         int r = ref_;
         for (int k = 0; k < n; k++) if (expo(k) < expo(r) * 0.9) r = k;
         float refWhite;
         if (scale_to_reference(frames_, r, m_, mo_, refWhite)) {
+            float black = (m_.black[0] + m_.black[1] + m_.black[2] + m_.black[3]) / 4;
+            refScale = (refWhite - black) / (m_.white - black);
             ref_ = r;
             m_.white = refWhite;
             bracket_ = true;
@@ -155,7 +158,9 @@ void BurstSession::align() {
 
     t = Timer();
     float black = (m_.black[0] + m_.black[1] + m_.black[2] + m_.black[3]) / 4;
-    if (n > 1) nm_ = estimate_noise(gray_[ref_], gray_[alt], offs_[alt], black);
+    calibrated_ = !curve_.empty() && (int)m_.iso.size() > ref_;
+    if (calibrated_) nm_ = curve_.at((float)m_.iso[ref_], refScale);
+    else if (n > 1) nm_ = estimate_noise(gray_[ref_], gray_[alt], offs_[alt], black);
     tNoise_ = t.ms();
 }
 
@@ -183,8 +188,8 @@ void BurstSession::merge(const BurstOptions& o) {
     opt_ = o;
     // the frequency merge has no exposure weighting
     if (bracket_) opt_.freqMerge = false;
-    mo_.robustLo = o.robustLo;
-    mo_.robustHi = o.robustHi;
+    mo_.robustLo = o.robustLo > 0 ? o.robustLo : (calibrated_ ? kRobustCalibrated[0] : kRobustEstimated[0]);
+    mo_.robustHi = o.robustHi > 0 ? o.robustHi : (calibrated_ ? kRobustCalibrated[1] : kRobustEstimated[1]);
     mo_.dilate = o.dilate;
     kr_ = o.kernelRegression;
     KrParams kp;
@@ -335,10 +340,11 @@ std::string BurstSession::summary() const {
     }
     if (kr_ && (opt_.lcaR[0] != 0 || opt_.lcaB[0] != 0)) mode += " lca";
     snprintf(buf, sizeof buf,
-             "%s %dx%d ref=%d threads=%d | noise var=%.4f*S+%.3f weight=%.3f shift=%.1f | sigma=%.5f visible=%.4f chroma=%.2f local=%.2f | "
+             "%s %dx%d ref=%d threads=%d | noise var=%.4f*S+%.3f %s robust %.2f-%.2f weight=%.3f shift=%.1f | sigma=%.5f visible=%.4f chroma=%.2f local=%.2f | "
              "tone key=%.4f short=%.2f long=%.2f | ms align %.0f noise %.0f merge %.0f lsc+wb %.0f demosaic %.0f ccm %.0f "
              "chroma %.0f tonemap %.0f look %.0f sharpen %.0f",
-             mode.c_str(), m_.width, m_.height, ref_, g_threads, nm_.a, nm_.b, meanWeight_, maxShift_, sigma_,
+             mode.c_str(), m_.width, m_.height, ref_, g_threads, nm_.a, nm_.b, calibrated_ ? "calibrated" : "estimated", mo_.robustLo,
+             mo_.robustHi, meanWeight_, maxShift_, sigma_,
              visibleSigma_, chroma_, localContrast_, tone_.keyBefore, tone_.gainShort, tone_.gainLong, tAlign_, tNoise_, tMerge_,
              ft_.lscwb, ft_.demosaic, ft_.color, ft_.chroma, ft_.tonemap, ft_.look, ft_.sharpen);
     std::string s = buf;

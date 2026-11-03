@@ -17,16 +17,17 @@ private const val TAG = "PocoPawPipeline"
 
 /**
  * Hands the burst to `libburstpipe`, crops it to the digital zoom, builds the gray pyramids, aligns
- * every frame to the reference and fits the noise model. With [gpu] this and the later native steps
+ * every frame to the reference and fits the noise model (or takes the camera's calibrated [noise]). With [gpu] this and the later native steps
  * run on the GPU where they can.
  */
-class AlignStage(private val gpu: Boolean = false) : PipelineStage {
+class AlignStage(private val gpu: Boolean = false, private val noise: NoiseCurve? = null) : PipelineStage {
     override val name = "align"
 
     override suspend fun run(ctx: PipelineContext) {
         val native = ctx.own(NativeBurst(ctx.burst))
         ctx[PipelineKeys.Native] = native
         native.useGpu(gpu)
+        noise?.let { native.setNoiseCurve(it) }
         val zoom = ctx.burst.metadata.cropZoom
         if (zoom > 1f) native.crop(zoom)
         native.align()

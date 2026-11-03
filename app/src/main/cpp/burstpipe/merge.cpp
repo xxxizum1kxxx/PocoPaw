@@ -29,6 +29,29 @@ inline TileTaps taps(int qx, int qy, const Offsets& o) {
 
 }  // namespace
 
+NoiseModel NoiseCurve::at(float frameIso, float scale) const {
+    NoiseModel nm;
+    const int n = (int)iso.size();
+    if (n == 0) return nm;
+    double a0, b0;
+    if (frameIso <= iso[0]) {
+        a0 = a[0] * frameIso / iso[0];
+        b0 = b[0];
+    } else if (frameIso >= iso[n - 1]) {
+        a0 = a[n - 1];
+        b0 = b[n - 1];
+    } else {
+        int i = 0;
+        while (frameIso > iso[i + 1]) i++;
+        double t = (frameIso - iso[i]) / (iso[i + 1] - iso[i]);
+        a0 = a[i] + t * (a[i + 1] - a[i]);
+        b0 = b[i] + t * (b[i + 1] - b[i]);
+    }
+    nm.a = a0 * scale;
+    nm.b = b0 * scale * scale;
+    return nm;
+}
+
 NoiseModel estimate_noise(const ImageF& gref, const ImageF& galt, const Offsets& off, float black) {
     const int kBins = 48;
     float maxS = 0;
