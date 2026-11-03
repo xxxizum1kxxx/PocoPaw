@@ -1,6 +1,23 @@
 #include "merge.h"
 
+#include <cstring>
+#if defined(__ARM_NEON) && !defined(BURSTPIPE_NO_NEON)
+#include <arm_neon.h>
+#define MERGE_NEON 1
+#endif
+
 namespace {
+
+#ifdef MERGE_NEON
+// the 2x2 Bayer quad at (2 sx, 2 sy) as {top-left, top-right, bottom-left, bottom-right}
+inline float32x4_t load_quad(const Raw& F, int sx, int sy) {
+    const uint16_t* p = F.row(2 * sy) + 2 * sx;
+    uint32_t a, b;
+    memcpy(&a, p, 4);
+    memcpy(&b, p + F.w, 4);
+    return vcvtq_f32_u32(vmovl_u16(vreinterpret_u16_u32(vset_lane_u32(b, vdup_n_u32(a), 1))));
+}
+#endif
 
 float g_win[2 * kStride];
 
@@ -26,6 +43,36 @@ inline TileTaps taps(int qx, int qy, const Offsets& o) {
     t.wy[0] = g_win[uy + kStride]; t.wy[1] = g_win[uy];
     return t;
 }
+
+#ifdef MERGE_NEON
+// merge_frames pass 1 for quads qx..qx+3 (qx a multiple of 4, so one tile column); false where a tap
+// reaches past the left / right edge and the scalar path has to clamp per quad
+bool rob_quads4(ImageF& rob, int qx, int qy, const Offsets& of, const ImageF& m3, const ImageF& m3ref, float black,
+                const NoiseModel& nm, float g, const MergeOpts& o) {
+    const int qw = rob.w, qh = rob.h;
+    TileTaps t = taps(qx, qy, of);
+    const int ux = qx % kStride;
+    const float32x4_t wx[2] = {vld1q_f32(g_win + ux + kStride), vld1q_f32(g_win + ux)};
+    float32x4_t mu = vdupq_n_f32(0);
+    for (int b = 0; b < 2; b++)
+        for (int c = 0; c < 2; c++) {
+            int sx = qx + of.x(t.i[c], t.j[b]);
+            if (sx < 0 || sx + 4 > qw) return false;
+            int sy = clampi(qy + of.y(t.i[c], t.j[b]), 0, qh - 1);
+            mu = vfmaq_f32(mu, vmulq_n_f32(wx[c], t.wy[b]), vld1q_f32(m3.row(sy) + sx));
+        }
+    const float a = (float)nm.a, bb = (float)nm.b;
+    float32x4_t mu0 = vld1q_f32(m3ref.row(qy) + qx);
+    float32x4_t sig = vmaxq_f32(vdupq_n_f32(0.f), vsubq_f32(vmulq_n_f32(mu0, 0.25f), vdupq_n_f32(black)));
+    float32x4_t vRef = vfmaq_n_f32(vdupq_n_f32(bb), sig, a), vAlt = vfmaq_n_f32(vdupq_n_f32(g * g * bb), sig, g * a);
+    float32x4_t varMu = vmulq_n_f32(vaddq_f32(vRef, vAlt), 4.f / 9.f);
+    float32x4_t z = vdivq_f32(vabdq_f32(mu, mu0), vsqrtq_f32(vmaxq_f32(varMu, vdupq_n_f32(1e-3f))));
+    float32x4_t ramp = vmulq_n_f32(vsubq_f32(vdupq_n_f32(o.robustHi), z), 1.f / (o.robustHi - o.robustLo));
+    ramp = vminq_f32(vmaxq_f32(ramp, vdupq_n_f32(0.f)), vdupq_n_f32(1.f));
+    vst1q_f32(rob.row(qy) + qx, vmulq_f32(ramp, vdivq_f32(vRef, vAlt)));
+    return true;
+}
+#endif
 
 }  // namespace
 
@@ -96,21 +143,21 @@ void min_filter(ImageF& img, int r) {
     if (r <= 0) return;
     const int w = img.w, h = img.h;
     ImageF tmp(w, h);
+    // offsets in the outer loop so the inner loops run over contiguous pixels (vectorised)
     parallel_for(h, [&](int y) {
         const float* s = img.row(y);
         float* d = tmp.row(y);
-        for (int x = 0; x < w; x++) {
-            float v = s[x];
-            for (int u = std::max(0, x - r); u <= std::min(w - 1, x + r); u++) v = std::min(v, s[u]);
-            d[x] = v;
-        }
+        std::copy(s, s + w, d);
+        for (int u = 1; u <= r; u++)
+            for (int x = 0; x < w; x++) d[x] = std::min(d[x], std::min(s[std::max(0, x - u)], s[std::min(w - 1, x + u)]));
     });
     parallel_for(h, [&](int y) {
         float* d = img.row(y);
-        for (int x = 0; x < w; x++) {
-            float v = tmp.at(x, y);
-            for (int t = std::max(0, y - r); t <= std::min(h - 1, y + r); t++) v = std::min(v, tmp.at(x, t));
-            d[x] = v;
+        std::copy(tmp.row(y), tmp.row(y) + w, d);
+        for (int u = 1; u <= r; u++) {
+            const float* a = tmp.row(std::max(0, y - u));
+            const float* b = tmp.row(std::min(h - 1, y + u));
+            for (int x = 0; x < w; x++) d[x] = std::min(d[x], std::min(a[x], b[x]));
         }
     });
 }
@@ -167,9 +214,17 @@ ImageF merge_frames(const std::vector<Raw>& frames, int ref, const std::vector<O
         const Offsets& of = offs[k];
         const Raw& F = frames[k];
         const float g = o.g(k), clip = o.clipAt(k);
+        const bool checkClip = !o.clip.empty();
         // pass 1: robustness per quad; pass 2: dilate the rejections; pass 3: accumulate
         parallel_for(qh, [&](int qy) {
             for (int qx = 0; qx < qw; qx++) {
+#ifdef MERGE_NEON
+                // 4 quads in one tile column share the offsets, so their 3x3 means are contiguous
+                if (!checkClip && (qx & 3) == 0 && qx + 4 <= qw && rob_quads4(rob, qx, qy, of, mean3[k], mean3[ref], black, nm, g, o)) {
+                    qx += 3;
+                    continue;
+                }
+#endif
                 TileTaps t = taps(qx, qy, of);
                 float mu = 0;
                 bool clipped = false;
@@ -178,8 +233,13 @@ ImageF merge_frames(const std::vector<Raw>& frames, int ref, const std::vector<O
                         int sx = clampi(qx + of.x(t.i[c], t.j[b]), 0, qw - 1);
                         int sy = clampi(qy + of.y(t.i[c], t.j[b]), 0, qh - 1);
                         mu += t.wx[c] * t.wy[b] * mean3[k].at(sx, sy);
+                        if (!checkClip) continue;
+#ifdef MERGE_NEON
+                        clipped |= vmaxvq_f32(load_quad(F, sx, sy)) >= clip;
+#else
                         clipped |= std::max(std::max(F.at(2 * sx, 2 * sy), F.at(2 * sx + 1, 2 * sy)),
                                             std::max(F.at(2 * sx, 2 * sy + 1), F.at(2 * sx + 1, 2 * sy + 1))) >= clip;
+#endif
                     }
                 rob.at(qx, qy) = clipped ? 0.f : frame_weight(mean3[ref].at(qx, qy), mu, black, nm, g, o);
             }
@@ -192,6 +252,21 @@ ImageF merge_frames(const std::vector<Raw>& frames, int ref, const std::vector<O
                 float w = rob.at(qx, qy);
                 if (w <= 0) continue;
                 TileTaps t = taps(qx, qy, of);
+                int rx = 2 * qx, ry = 2 * qy;
+#ifdef MERGE_NEON
+                float32x4_t q = vdupq_n_f32(0);
+                for (int b = 0; b < 2; b++)
+                    for (int c = 0; c < 2; c++) {
+                        int sx = clampi(qx + of.x(t.i[c], t.j[b]), 0, qw - 1);
+                        int sy = clampi(qy + of.y(t.i[c], t.j[b]), 0, qh - 1);
+                        q = vfmaq_n_f32(q, load_quad(F, sx, sy), t.wx[c] * t.wy[b]);
+                    }
+                float32x4_t d = vmulq_n_f32(vsubq_f32(q, vdupq_n_f32(black)), w);
+                float* o0 = out.row(ry) + rx;
+                float* o1 = out.row(ry + 1) + rx;
+                vst1_f32(o0, vadd_f32(vld1_f32(o0), vget_low_f32(d)));
+                vst1_f32(o1, vadd_f32(vld1_f32(o1), vget_high_f32(d)));
+#else
                 float a[4] = {0, 0, 0, 0};
                 for (int b = 0; b < 2; b++)
                     for (int c = 0; c < 2; c++) {
@@ -201,9 +276,9 @@ ImageF merge_frames(const std::vector<Raw>& frames, int ref, const std::vector<O
                         a[0] += tw * F.at(2 * sx, 2 * sy); a[1] += tw * F.at(2 * sx + 1, 2 * sy);
                         a[2] += tw * F.at(2 * sx, 2 * sy + 1); a[3] += tw * F.at(2 * sx + 1, 2 * sy + 1);
                     }
-                int rx = 2 * qx, ry = 2 * qy;
                 out.at(rx, ry) += w * (a[0] - black); out.at(rx + 1, ry) += w * (a[1] - black);
                 out.at(rx, ry + 1) += w * (a[2] - black); out.at(rx + 1, ry + 1) += w * (a[3] - black);
+#endif
                 wsum.at(qx, qy) += w;
                 acc += std::min(w, 1.f);
             }

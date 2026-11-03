@@ -1,6 +1,10 @@
 #include "align.h"
 
 #include <climits>
+#if defined(__ARM_NEON) && !defined(BURSTPIPE_NO_NEON)
+#include <arm_neon.h>
+#define ALIGN_NEON 1
+#endif
 
 namespace {
 
@@ -36,6 +40,27 @@ float tile_cost(const ImageF& ref, const ImageF& alt, int x0, int y0, int t, int
     float s = 0;
     bool inside = x0 >= 0 && y0 >= 0 && x0 + t <= ref.w && y0 + t <= ref.h &&
                   x0 + ox >= 0 && y0 + oy >= 0 && x0 + ox + t <= alt.w && y0 + oy + t <= alt.h;
+#ifdef ALIGN_NEON
+    if (inside && (t & 7) == 0) {
+        // early out every 4 rows: the horizontal sum is the expensive part of a 16-wide row
+        float32x4_t s0 = vdupq_n_f32(0), s1 = vdupq_n_f32(0);
+        for (int v = 0; v < t; v++) {
+            const float* a = ref.row(y0 + v) + x0;
+            const float* b = alt.row(y0 + v + oy) + x0 + ox;
+            for (int u = 0; u < t; u += 8) {
+                float32x4_t d0 = vsubq_f32(vld1q_f32(a + u), vld1q_f32(b + u));
+                float32x4_t d1 = vsubq_f32(vld1q_f32(a + u + 4), vld1q_f32(b + u + 4));
+                if (l1) { s0 = vaddq_f32(s0, vabsq_f32(d0)); s1 = vaddq_f32(s1, vabsq_f32(d1)); }
+                else { s0 = vfmaq_f32(s0, d0, d0); s1 = vfmaq_f32(s1, d1, d1); }
+            }
+            if ((v & 3) == 3) {
+                s = vaddvq_f32(vaddq_f32(s0, s1));
+                if (s > best) return s;
+            }
+        }
+        return s;
+    }
+#endif
     for (int v = 0; v < t; v++) {
         if (inside) {
             const float* a = ref.row(y0 + v) + x0;

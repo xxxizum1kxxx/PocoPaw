@@ -44,11 +44,12 @@ struct MergeOpts {
 // Robustness of one alternate-frame quad: linear ramp of the 3x3 local-mean mismatch (z-score against
 // the summed noise of both frames), times the inverse-variance weight of the frame's exposure.
 inline float frame_weight(float mu0, float mu, float black, const NoiseModel& nm, float g, const MergeOpts& o) {
-    double s = std::max(0.0, (double)mu0 / 4 - black);
-    double vRef = nm.a * s + nm.b, vAlt = g * nm.a * s + (double)g * g * nm.b;
-    float varMu = (float)(4.0 * (vRef + vAlt) / 9.0);
+    float s = std::max(0.f, mu0 / 4 - black);
+    float a = (float)nm.a, b = (float)nm.b;
+    float vRef = a * s + b, vAlt = g * a * s + g * g * b;
+    float varMu = 4.f * (vRef + vAlt) / 9.f;
     float z = std::fabs(mu - mu0) / std::sqrt(std::max(varMu, 1e-3f));
-    return clampf((o.robustHi - z) / (o.robustHi - o.robustLo), 0.f, 1.f) * (float)(vRef / vAlt);
+    return clampf((o.robustHi - z) / (o.robustHi - o.robustLo), 0.f, 1.f) * (vRef / vAlt);
 }
 
 // separable running minimum over a (2r+1)^2 window, edges clamped
