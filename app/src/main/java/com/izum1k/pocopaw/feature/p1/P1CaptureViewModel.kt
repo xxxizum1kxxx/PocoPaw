@@ -1,6 +1,7 @@
 package com.izum1k.pocopaw.feature.p1
 
 import android.graphics.SurfaceTexture
+import android.hardware.camera2.CaptureResult
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -132,8 +133,11 @@ class P1CaptureViewModel(private val container: AppContainer, private val store:
             val dir = withContext(Dispatchers.IO) { store.newSet(item) }
             val writer = ProbeWriter(dir)
             try {
+                var focus: Float? = null
                 for (chunk in plan.chunked(CHUNK_FRAMES)) {
-                    val burst = controller.capture(CaptureSpec(frameCount = chunk.size, exposure = ExposurePlan.PerFrame(chunk)))
+                    val spec = CaptureSpec(frameCount = chunk.size, exposure = ExposurePlan.PerFrame(chunk), focusDioptres = focus)
+                    val burst = controller.capture(spec)
+                    if (cam.hasAutoFocus && focus == null) focus = burst.frames.firstOrNull()?.result?.get(CaptureResult.LENS_FOCUS_DISTANCE)
                     try {
                         for (frame in burst.frames.sortedBy { it.timestampNs }) {
                             withContext(Dispatchers.IO) { writer.write(frame) }

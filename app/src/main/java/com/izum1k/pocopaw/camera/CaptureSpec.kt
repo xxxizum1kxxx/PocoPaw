@@ -34,6 +34,11 @@ data class CaptureSpec(
     val zoomRatio: Float = 1f,
     /** Centre crop of the processed image (the 2x lens step); RAW still covers the full sensor. */
     val cropZoom: Float = 1f,
+    /**
+     * Lens distance (dioptres) held with AF off for the whole capture, for the later parts of a
+     * burst split over several captures: a reopen for the RAW budget loses the AF lock. Null focuses as usual.
+     */
+    val focusDioptres: Float? = null,
 ) {
     init {
         require(frameCount in 1..RawRequestBudget.DEFAULT_LIMIT) { "frameCount must be 1..${RawRequestBudget.DEFAULT_LIMIT}" }

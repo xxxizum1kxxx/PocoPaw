@@ -132,6 +132,8 @@ class CameraController(private val manager: CameraManager, private val motion: M
     private var tapFocus: Float? = null
     /** Lens distance the scene's sweep settled on, held with AF off while no tap overrides it. */
     private var sceneFocus: Float? = null
+    /** [CaptureSpec.focusDioptres] of the capture in progress; overrides every other focus. */
+    private var burstFocus: Float? = null
     /** The scene as measured after its last sweep, to tell how much it changed since; set from the next meter frame. */
     private var sceneStats: MeterStats? = null
     private var sceneBaselinePending = false
@@ -354,7 +356,7 @@ class CameraController(private val manager: CameraManager, private val motion: M
     }
 
     /** The distance held with AF off: a swept tap's, else the scene's while no tap holds the regions. */
-    private fun heldFocus(): Float? = tapFocus ?: if (focusRegion == null) sceneFocus else null
+    private fun heldFocus(): Float? = burstFocus ?: tapFocus ?: if (focusRegion == null) sceneFocus else null
 
     /** After a tap's AF has stopped at [d0]: a fine sweep there, or a full one when AF failed or the fine one finds no clear peak. */
     private fun startTapSweep(d0: Float?, focused: Boolean) {
@@ -773,7 +775,9 @@ class CameraController(private val manager: CameraManager, private val motion: M
             }
             val s = session ?: throw CameraFailure(Reason.UNKNOWN)
             val reader = rawReader ?: throw CameraFailure(Reason.UNKNOWN)
-            if (cancelSweep()) runCatching { startPreview() }
+            val swept = cancelSweep()
+            if (info.hasAutoFocus) burstFocus = spec.focusDioptres
+            if (swept || burstFocus != null) runCatching { startPreview() }
             _state.value = State.Capturing(info.id)
             if (tapPendingSince != 0L) {
                 tapPendingSince = 0L
@@ -825,6 +829,7 @@ class CameraController(private val manager: CameraManager, private val motion: M
             } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
                 throw CameraFailure(Reason.TIMEOUT, e)
             } finally {
+                burstFocus = null
                 activeCapture?.release()
                 activeCapture = null
                 reader.setOnImageAvailableListener(null, null)
@@ -1216,13 +1221,20 @@ class CameraController(private val manager: CameraManager, private val motion: M
                 if (r.get(CaptureResult.LENS_STATE) != CaptureResult.LENS_STATE_MOVING && at != null && abs(at - d) <= BURST_FOCUS_TOLERANCE) arrived.complete(Unit)
             }
             val start = System.nanoTime()
+            // after a reopen the lens starts from its rest position
+            val settle = if (burstFocus != null) BURST_HOLD_SETTLE_MAX_MS else HOLD_SETTLE_MAX_MS
             val ok = try {
-                withTimeoutOrNull(HOLD_SETTLE_MAX_MS) { arrived.await() } != null
+                withTimeoutOrNull(settle) { arrived.await() } != null
             } finally {
                 afWatcher = null
             }
             val ms = (System.nanoTime() - start) / 1_000_000
-            Log.i(TAG, "focus held at %.2f D (${if (tapFocus != null) "tap" else "scene"} sweep), lens ${if (ok) "there in ${ms}ms" else "not there"}".format(d))
+            val from = when {
+                burstFocus != null -> "burst"
+                tapFocus != null -> "tap sweep"
+                else -> "scene sweep"
+            }
+            Log.i(TAG, "focus held at %.2f D ($from), lens ${if (ok) "there in ${ms}ms" else "not there"}".format(d))
             return false
         }
         val tapped = focusRegion != null
@@ -1585,6 +1597,7 @@ class CameraController(private val manager: CameraManager, private val motion: M
         private const val SMALL_EV_CHANGE = 1.0
         private const val BURST_FOCUS_TOLERANCE = 0.05f
         private const val HOLD_SETTLE_MAX_MS = 300L
+        private const val BURST_HOLD_SETTLE_MAX_MS = 1_000L
         /** Red and blue gain ratio per white balance step (about 4%, a few hundred kelvin near daylight). */
         private const val WB_STEP = 1.04
         private const val MIN_FACE_SCORE = 50

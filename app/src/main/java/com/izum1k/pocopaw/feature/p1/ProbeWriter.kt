@@ -43,7 +43,7 @@ class P1Store(context: Context) {
  * endian, rows tightly packed) per frame in capture order, then [finish] writes `meta.json`.
  */
 class ProbeWriter(val dir: File) {
-    private data class Shot(val exposureNs: Long?, val iso: Int?, val timestampNs: Long)
+    private data class Shot(val exposureNs: Long?, val iso: Int?, val timestampNs: Long, val focusDioptres: Float?)
 
     private val shots = mutableListOf<Shot>()
     private var first: CaptureResult? = null
@@ -63,7 +63,7 @@ class ProbeWriter(val dir: File) {
             width = frame.width
             height = frame.height
         }
-        shots += Shot(frame.exposureNs, frame.iso, frame.timestampNs)
+        shots += Shot(frame.exposureNs, frame.iso, frame.timestampNs, frame.result.get(CaptureResult.LENS_FOCUS_DISTANCE))
     }
 
     fun finish(item: P1Item, cam: CameraInfo, meter: LiveExposure, gyroRms: Double) {
@@ -111,7 +111,8 @@ class ProbeWriter(val dir: File) {
         j.append("  \"frames\": [")
         shots.forEachIndexed { i, s ->
             if (i > 0) j.append(",\n    ")
-            j.append("{\"exposureNs\": ${s.exposureNs}, \"iso\": ${s.iso}, \"timestampNs\": ${s.timestampNs}}")
+            val focus = s.focusDioptres?.let { String.format(Locale.US, "%.3f", it) }
+            j.append("{\"exposureNs\": ${s.exposureNs}, \"iso\": ${s.iso}, \"timestampNs\": ${s.timestampNs}, \"focusDioptres\": $focus}")
         }
         j.append("]\n}\n")
         File(dir, P1Store.META).writeText(j.toString())
