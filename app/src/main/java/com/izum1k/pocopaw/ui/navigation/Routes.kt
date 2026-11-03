@@ -15,10 +15,10 @@ sealed interface Route : NavKey {
     /** RAW specifications of every usable camera. */
     @Serializable data object Capabilities : Route
 
-    /** The CAPTURE_P1 list, for collecting the offline pipeline's test material. */
+    /** The P1 capture list (docs/research/VALIDATION.md appendix A), for collecting the offline pipeline's test material. */
     @Serializable data object P1Captures : Route
 
-    /** One CAPTURE_P1 item, by its name. */
+    /** One P1 capture list item, by its name. */
     @Serializable data class P1Capture(val item: String) : Route
 }
 

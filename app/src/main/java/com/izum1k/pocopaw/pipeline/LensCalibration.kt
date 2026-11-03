@@ -2,7 +2,7 @@ package com.izum1k.pocopaw.pipeline
 
 /**
  * Per-lens calibrations measured on the Poco F5 (marble) with the research prototype; see
- * docs/research/P1_REPORT.md. Camera ids are the Camera2 ids of this phone.
+ * docs/research/IMPLEMENTATION.md §2.1 and §3.6. Camera ids are the Camera2 ids of this phone.
  */
 object LensCalibration {
     /**

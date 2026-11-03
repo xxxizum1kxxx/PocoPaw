@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.asStateFlow
 /**
  * RAW requests left before the device must be reopened. marble's CHI layer leaks one RAW target
  * buffer node per RAW request and fails the device at the 66th; only closing and reopening the
- * CameraDevice resets it (REPORT.md §4.1). Requests without a RAW output are not counted.
+ * CameraDevice resets it (docs/research/CAMERA_HAL.md §4.1). Requests without a RAW output are not counted.
  *
  * A single burst of [limit] works on a fresh device, but spread over many captures with preview
  * running in between the device fails a pipeline depth earlier (seen at the 61st), so a device

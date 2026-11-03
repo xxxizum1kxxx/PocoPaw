@@ -121,7 +121,7 @@
     <string name="focus_held">AE/AF 锁定</string>
 
     <string name="p1_title">P1 素材采集</string>
-    <string name="p1_entry_value">按 CAPTURE_P1 清单采集 RAW 连拍，probe 格式</string>
+    <string name="p1_entry_value">按 P1 拍摄清单采集 RAW 连拍，probe 格式</string>
     <string name="p1_group_motion">手持与运动</string>
     <string name="p1_group_bracket">包围曝光（强逆光）</string>
     <string name="p1_group_night">夜景（运动测光）</string>

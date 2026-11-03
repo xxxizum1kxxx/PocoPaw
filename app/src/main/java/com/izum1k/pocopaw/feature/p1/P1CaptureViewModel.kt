@@ -40,7 +40,7 @@ data class P1CaptureUiState(
 )
 
 /**
- * Fully automatic capture for one CAPTURE_P1 item: auto preview (AE, AF, AWB) for metering, then
+ * Fully automatic capture for one P1 capture list item: auto preview (AE, AF, AWB) for metering, then
  * the item's manual RAW burst written to disk in probe's format and offered for review. No
  * pipeline runs.
  */

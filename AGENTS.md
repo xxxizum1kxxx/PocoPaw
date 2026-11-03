@@ -6,7 +6,7 @@ This file applies to the entire repository.
 
 ## Project
 
-PocoPaw is a Compose RAW camera for the Poco F5 / Redmi Note 12 Turbo (marble), in the Yoin design language shared by PiliPaw and ScalePaw. Its layout follows LineageOS Aperture. `docs/design.md` is the source of truth for UI decisions; `docs/research/REPORT.md` records the camera HAL limits the camera layer is built around, and `docs/research/PIPELINE_REPORT.md` / `ALGORITHM_UPGRADE.md` the processing pipeline (each marks what PocoPaw implements).
+PocoPaw is a Compose RAW camera for the Poco F5 / Redmi Note 12 Turbo (marble), in the Yoin design language shared by PiliPaw and ScalePaw. Its layout follows LineageOS Aperture. `docs/design.md` is the source of truth for UI decisions; `docs/research/` holds the research behind the app, copied from the research workspace: `CAMERA_HAL.md` records the camera HAL limits the camera layer is built around, `PIPELINE.md` the algorithm choices and roadmap, `IMPLEMENTATION.md` how each pipeline module was built and measured, and `VALIDATION.md` the real-scene comparisons (each marks what PocoPaw implements).
 
 ## Build & Run
 

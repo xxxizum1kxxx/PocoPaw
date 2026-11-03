@@ -161,7 +161,7 @@ class DngPassthroughPipeline : StagedPipeline(ID, listOf(QuickLookStage(), DngWr
 }
 
 /**
- * The multi-frame CPU pipeline of `docs/research/PIPELINE_REPORT.md`: HDR+ tile alignment, then
+ * The multi-frame CPU pipeline of `docs/research/PIPELINE.md`: HDR+ tile alignment, then
  * either the spatial robust merge plus Malvar-He-Cutler demosaic ([kernelRegression] false) or the
  * handheld super-resolution kernel-regression merge at 1x (true), then LSC / WB, CCM, chroma
  * denoise, synthetic-exposure fusion, tone curve, sharpening and JPEG. With [PipelineOptions.writeDng]

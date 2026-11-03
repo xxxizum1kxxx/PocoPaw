@@ -24,11 +24,11 @@ Requires the Android SDK (compileSdk 36), NDK 29.0.14206865 and CMake 3.22.1. mi
 - `feature/camera`: the viewfinder screen; `feature/settings`: settings and the device capability page
 - `data`: DataStore settings
 - `ui`: theme, shared components, navigation
-- `docs/design.md`: design rules; `docs/research/`: the camera HAL report, the pipeline report and the algorithm studies; `AGENTS.md`: conventions for contributors and coding agents
+- `docs/design.md`: design rules; `docs/research/`: the camera HAL report (`CAMERA_HAL.md`), algorithm choices and roadmap (`PIPELINE.md`), implementation and measurements (`IMPLEMENTATION.md`) and real-scene validation (`VALIDATION.md`); `AGENTS.md`: conventions for contributors and coding agents
 
 ## Device notes
 
-The camera layer is built around the limits measured in `docs/research/REPORT.md`: at most 65 RAW requests per opened `CameraDevice`, logical cameras 4, 5 and 6 hang or crash the HAL, no `noiseProfile`, and auto exposure holds the shutter at 1/100 s under 50 Hz anti-banding.
+The camera layer is built around the limits measured in `docs/research/CAMERA_HAL.md`: at most 65 RAW requests per opened `CameraDevice`, logical cameras 4, 5 and 6 hang or crash the HAL, no `noiseProfile`, and auto exposure holds the shutter at 1/100 s under 50 Hz anti-banding.
 
 ## Credits
 

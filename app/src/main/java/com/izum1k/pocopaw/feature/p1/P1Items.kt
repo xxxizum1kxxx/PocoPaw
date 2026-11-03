@@ -45,7 +45,7 @@ enum class P1Hold(@StringRes val label: Int) {
     FIXED(R.string.p1_hold_fixed),
 }
 
-/** One row of CAPTURE_P1.md and what a press captures for it. */
+/** One row of the P1 capture list (docs/research/VALIDATION.md appendix A) and what a press captures for it. */
 data class P1Item(
     val name: String,
     val group: P1Group,

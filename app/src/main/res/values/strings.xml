@@ -123,7 +123,7 @@
     <string name="focus_held">AE/AF LOCK</string>
 
     <string name="p1_title">P1 capture set</string>
-    <string name="p1_entry_value">RAW bursts from the CAPTURE_P1 list, probe format</string>
+    <string name="p1_entry_value">RAW bursts from the P1 capture list, probe format</string>
     <string name="p1_group_motion">Handheld and motion</string>
     <string name="p1_group_bracket">Bracketing (strong backlight)</string>
     <string name="p1_group_night">Night (motion metering)</string>
