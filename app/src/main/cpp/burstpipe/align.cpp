@@ -66,6 +66,49 @@ ImageF gray_from_raw(const Raw& r) {
     return g;
 }
 
+double sharpness(const Raw& r) {
+    const int bw = r.w / 4, bh = r.h / 4, x0 = bw / 8, y0 = bh / 8, nx = bw - 2 * x0, ny = bh - 2 * y0;
+    if (nx < 2 || ny < 2) return 0;
+    std::vector<double> rows(ny);
+    parallel_for(ny, [&](int j) {
+        auto bin = [&](int by, std::vector<float>& o) {
+            for (int i = 0; i < nx; i++) {
+                float s = 0;
+                for (int v = 0; v < 4; v++) {
+                    const uint16_t* p = r.row(4 * (y0 + by) + v) + 4 * (x0 + i);
+                    s += (float)p[0] + p[1] + p[2] + p[3];
+                }
+                o[i] = s;
+            }
+        };
+        std::vector<float> a(nx), b(nx);
+        bin(j, a);
+        double e = 0;
+        for (int i = 0; i + 1 < nx; i++) e += (double)(a[i + 1] - a[i]) * (a[i + 1] - a[i]);
+        if (j + 1 < ny) {
+            bin(j + 1, b);
+            for (int i = 0; i < nx; i++) e += (double)(b[i] - a[i]) * (b[i] - a[i]);
+        }
+        rows[j] = e;
+    });
+    double e = 0;
+    for (double v : rows) e += v;
+    return e / ((double)nx * ny);
+}
+
+// a later frame must beat the earlier ones by more than the sample noise of the measure (~0.5% on a tripod)
+constexpr double kSharperBy = 1.03;
+
+int sharpest_frame(const std::vector<Raw>& frames, int count) {
+    int best = 0;
+    double bestE = -1;
+    for (int k = 0; k < std::min(count, (int)frames.size()); k++) {
+        double e = sharpness(frames[k]);
+        if (e > bestE * kSharperBy) { bestE = e; best = k; }
+    }
+    return best;
+}
+
 std::vector<ImageF> build_pyramid(const ImageF& g0) {
     std::vector<ImageF> p;
     p.push_back(g0);

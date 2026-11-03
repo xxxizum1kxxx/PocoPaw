@@ -15,6 +15,15 @@ import kotlin.math.roundToInt
 
 private const val TAG = "PocoPawPipeline"
 
+/** Picks the frame the burst is merged onto ([NativeBurst.referenceFor]), before the DNG and quick look use it. */
+class ReferenceStage : PipelineStage {
+    override val name = "reference"
+
+    override suspend fun run(ctx: PipelineContext) {
+        ctx.burst.referenceIndex = NativeBurst.referenceFor(ctx.burst)
+    }
+}
+
 /**
  * Hands the burst to `libburstpipe`, crops it to the digital zoom, builds the gray pyramids, aligns
  * every frame to the reference and fits the noise model (or takes the camera's calibrated [noise]). With [gpu] this and the later native steps

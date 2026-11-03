@@ -84,6 +84,23 @@ Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeCrop(JNIEnv*, jclass, jlong h
 JNIEXPORT void JNICALL
 Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeUseGpu(JNIEnv*, jclass, jlong h, jboolean on) { session(h)->use_gpu(on); }
 
+JNIEXPORT jint JNICALL
+Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeSharpestFrame(JNIEnv* env, jclass, jobjectArray jframes, jint w, jint h) {
+    int n = env->GetArrayLength(jframes);
+    std::vector<Raw> frames(n);
+    for (int k = 0; k < n; k++) {
+        jobject buf = env->GetObjectArrayElement(jframes, k);
+        auto* p = static_cast<const uint16_t*>(env->GetDirectBufferAddress(buf));
+        jlong cap = env->GetDirectBufferCapacity(buf);
+        env->DeleteLocalRef(buf);
+        if (p == nullptr || cap < (jlong)w * h * 2) return 0;
+        frames[k].w = w;
+        frames[k].h = h;
+        frames[k].d = p;
+    }
+    return sharpest_frame(frames, n);
+}
+
 // iso / a / b: the camera's noise curve (NoiseCurve in merge.h), equal lengths
 JNIEXPORT void JNICALL
 Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeSetNoiseCurve(JNIEnv* env, jclass, jlong h, jfloatArray jiso, jfloatArray ja,

@@ -103,9 +103,16 @@ class RawMetadata(
 class RawBurst(
     val frames: List<RawFrame>,
     val metadata: RawMetadata,
-    val referenceIndex: Int = 0,
+    referenceIndex: Int = 0,
 ) : Closeable {
     override fun close() = frames.forEach { it.release() }
+
+    /** Set by [ReferenceStage] before the other stages read [reference]. */
+    var referenceIndex: Int = referenceIndex
+        set(value) {
+            require(value in frames.indices)
+            field = value
+        }
 
     init {
         require(frames.isNotEmpty()) { "A burst needs at least one frame" }

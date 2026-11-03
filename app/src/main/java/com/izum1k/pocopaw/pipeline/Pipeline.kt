@@ -160,7 +160,7 @@ class DngPassthroughPipeline : StagedPipeline(ID, listOf(QuickLookStage(), DngWr
  * either the spatial robust merge plus Malvar-He-Cutler demosaic ([kernelRegression] false) or the
  * handheld super-resolution kernel-regression merge at 1x (true), then LSC / WB, CCM, chroma
  * denoise, synthetic-exposure fusion, tone curve, sharpening and JPEG. With [PipelineOptions.writeDng]
- * the reference frame is also saved as DNG, before the merge so the RAW is safe early.
+ * the reference frame ([ReferenceStage]) is also saved as DNG, before the merge so the RAW is safe early.
  * [BurstScene.BRACKET] captures two short frames per long one (merged on the short frame's scale);
  * [BurstScene.NIGHT] meters a motion-limited shutter, merges in the frequency domain (classic path)
  * and finishes with the night look.
@@ -189,6 +189,7 @@ class HdrPlusPipeline(
         const val DEFAULT_FRAMES = 8
 
         private fun stagesFor(kernelRegression: Boolean, o: PipelineOptions): List<PipelineStage> = buildList {
+            add(ReferenceStage())
             if (o.writeDng) {
                 add(QuickLookStage())
                 add(DngWriteStage())

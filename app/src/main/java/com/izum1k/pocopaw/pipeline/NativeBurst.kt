@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import com.izum1k.pocopaw.camera.CfaPattern
 import java.io.Closeable
 import java.nio.ByteBuffer
+import kotlin.math.min
 
 /**
  * Finishing parameters of the native pipeline (`LookParams` in `cpp/burstpipe/finish.h`).
@@ -178,6 +179,20 @@ class NativeBurst(private val burst: RawBurst) : Closeable {
         ): Long
         @JvmStatic private external fun nativeCrop(handle: Long, zoom: Float)
         @JvmStatic private external fun nativeUseGpu(handle: Long, enabled: Boolean)
+        /**
+         * The frame to merge onto: a bracket's shortest exposure (it keeps the highlights), otherwise the sharpest
+         * of the first three frames by gradient energy (a handheld burst's first frame is often shaken by the press).
+         */
+        fun referenceFor(burst: RawBurst): Int {
+            if (burst.size < 2) return 0
+            val expo = burst.frames.map { (it.exposureNs ?: 0L).toDouble() * (it.iso ?: 100) }
+            val shortest = expo.indices.minBy { expo[it] }
+            if (expo[shortest] < expo.max() * 0.9) return shortest
+            val f = burst.frames[0]
+            return nativeSharpestFrame(Array(min(3, burst.size)) { burst.frames[it].data }, f.width, f.height)
+        }
+
+        @JvmStatic private external fun nativeSharpestFrame(frames: Array<ByteBuffer>, width: Int, height: Int): Int
         @JvmStatic private external fun nativeSetNoiseCurve(handle: Long, iso: FloatArray, a: FloatArray, b: FloatArray)
         @JvmStatic private external fun nativeAlign(handle: Long)
         @JvmStatic private external fun nativeMerge(handle: Long, options: FloatArray)

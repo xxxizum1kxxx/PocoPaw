@@ -1439,7 +1439,7 @@ class CameraController(private val manager: CameraManager, private val motion: M
 
     /**
      * Frames shot while the lens moved, or away from where the rest of the burst sat, would merge
-     * soft: they are left out, never the first (the metadata's) and never below two frames.
+     * soft: they are left out, never below two frames.
      * Bracketed bursts keep every frame, their exposures go in a fixed pattern.
      */
     private fun steadyFrames(frames: List<RawFrame>, spec: CaptureSpec): List<RawFrame> {
@@ -1447,7 +1447,7 @@ class CameraController(private val manager: CameraManager, private val motion: M
         val ds = frames.map { it.result.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: return frames }
         val median = ds.sorted()[ds.size / 2]
         val off = frames.indices.filter { i ->
-            i != 0 && (frames[i].result.get(CaptureResult.LENS_STATE) == CaptureResult.LENS_STATE_MOVING || abs(ds[i] - median) > BURST_FOCUS_TOLERANCE)
+            frames[i].result.get(CaptureResult.LENS_STATE) == CaptureResult.LENS_STATE_MOVING || abs(ds[i] - median) > BURST_FOCUS_TOLERANCE
         }
         if (off.isEmpty() || frames.size - off.size < 2) return frames
         Log.w(TAG, "leaving out ${off.size} of ${frames.size} frames shot off focus (median %.2f D)".format(median))

@@ -20,3 +20,7 @@ ImageF gray_from_raw(const Raw& r);                       // sum of each 2x2 qua
 std::vector<ImageF> build_pyramid(const ImageF& g0);      // downsample factors 2, 4, 4
 Offsets align_frames(const std::vector<ImageF>& ref, const std::vector<ImageF>& alt);
 ImageF box3(const ImageF& g);                             // 3x3 mean
+// gradient energy of the 4x4-binned centre (3/4 of each side); higher is sharper at equal exposure
+double sharpness(const Raw& r);
+// the sharpest of the first `count` frames, the reference a handheld burst should align to
+int sharpest_frame(const std::vector<Raw>& frames, int count = 3);
