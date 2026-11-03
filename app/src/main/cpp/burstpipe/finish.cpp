@@ -1,5 +1,7 @@
 #include "finish.h"
 
+#include <cstring>
+
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "third_party/stb_image_write.h"
 
@@ -320,25 +322,9 @@ void chroma_denoise(ImageF& rgb, float strength) {
     });
 }
 
-ToneInfo local_tonemap(ImageF& rgb, const LookParams& p) {
-    ImageF Y(rgb.w, rgb.h);
-    parallel_for(rgb.h, [&](int y) {
-        const float* q = rgb.row(y);
-        float* o = Y.row(y);
-        for (int x = 0; x < rgb.w; x++, q += 3) o[x] = std::max(1e-6f, luma709(q[0], q[1], q[2]));
-    });
-    std::vector<float> samp;
-    double lsum = 0;
-    for (int y = 0; y < Y.h; y += 8)
-        for (int x = 0; x < Y.w; x += 8) { float v = Y.at(x, y); samp.push_back(v); lsum += std::log(v + 1e-4); }
-    float key = (float)std::exp(lsum / samp.size());
-    std::nth_element(samp.begin(), samp.begin() + (size_t)(samp.size() * 0.995), samp.end());
-    float p995 = samp[(size_t)(samp.size() * 0.995)];
-    float gL = clampf(p.targetKey / key, 1.f, 64.f);
-    float maxRatio = p.compression > 0 ? p.compression : 8.f;
-    float gS = clampf(1.f / p995, gL / maxRatio, gL);
-
-    // synthetic short / long exposures, display referred
+// Laplacian pyramid exposure fusion (Mertens et al. 2007) of a bright and a dark synthetic exposure of Y, as in HDR+
+// finishing; returns the fused display-referred luma
+static ImageF fuse_exposures(const ImageF& Y, float gS, float gL) {
     ImageF eS(Y.w, Y.h), eL(Y.w, Y.h), wS(Y.w, Y.h);
     parallel_for(Y.h, [&](int y) {
         for (int x = 0; x < Y.w; x++) {
@@ -348,7 +334,6 @@ ToneInfo local_tonemap(ImageF& rgb, const LookParams& p) {
             eS.at(x, y) = s; eL.at(x, y) = l; wS.at(x, y) = ws / (ws + wl);
         }
     });
-    // Laplacian pyramid exposure fusion (Mertens et al. 2007), as in HDR+ finishing
     int levels = 1;
     for (int m = std::min(Y.w, Y.h); m > 24; m /= 2) levels++;
     std::vector<ImageF> gs, gl, gw;
@@ -370,11 +355,116 @@ ToneInfo local_tonemap(ImageF& rgb, const LookParams& p) {
         sub_inplace(gs[l], pyr_up(gs[l + 1], gs[l].w, gs[l].h), -1.f);
         gs[l + 1] = ImageF();
     }
-    ImageF& acc = gs[0];
+    return std::move(gs[0]);
+}
+
+// log2 / exp2 to ~1e-4 for the per-pixel tone gain (polynomial fits on the mantissa / fraction)
+static inline float fast_log2(float x) {
+    uint32_t i;
+    memcpy(&i, &x, 4);
+    float e = (float)((int)(i >> 23) - 127);
+    i = (i & 0x7FFFFFu) | 0x3F800000u;
+    float t;
+    memcpy(&t, &i, 4);
+    t -= 1.f;
+    return e + t * (1.44253315f + t * (-0.716105633f + t * (0.439540816f + t * (-0.225090121f + t * 0.059238473f))));
+}
+
+static inline float fast_exp2(float x) {
+    x = clampf(x, -126.f, 126.f);
+    float n = std::floor(x), f = x - n;
+    float p = 1.000007283f + f * (0.692931289f + f * (0.241710262f + f * (0.051666877f + f * 0.013676531f)));
+    uint32_t i;
+    memcpy(&i, &p, 4);
+    i += (uint32_t)((int)n << 23);
+    memcpy(&p, &i, 4);
+    return p;
+}
+
+ToneInfo local_tonemap(ImageF& rgb, const LookParams& p) {
+    auto Yat = [&](int x, int y) { const float* q = rgb.row(y) + (size_t)x * 3; return std::max(1e-6f, luma709(q[0], q[1], q[2])); };
+    std::vector<float> samp;
+    double lsum = 0;
+    for (int y = 0; y < rgb.h; y += 8)
+        for (int x = 0; x < rgb.w; x += 8) { float v = Yat(x, y); samp.push_back(v); lsum += std::log(v + 1e-4); }
+    float key = (float)std::exp(lsum / samp.size());
+    std::nth_element(samp.begin(), samp.begin() + (size_t)(samp.size() * 0.995), samp.end());
+    float p995 = samp[(size_t)(samp.size() * 0.995)];
+    float gL = clampf(p.targetKey / key, 1.f, 64.f);
+    float maxRatio = p.compression > 0 ? p.compression : 8.f;
+    float gS = clampf(1.f / p995, gL / maxRatio, gL);
+
+    if (p.toneFull) {
+        ImageF Y(rgb.w, rgb.h);
+        parallel_for(rgb.h, [&](int y) { for (int x = 0; x < rgb.w; x++) Y.at(x, y) = Yat(x, y); });
+        ImageF acc = fuse_exposures(Y, gS, gL);
+        parallel_for(rgb.h, [&](int y) {
+            float* q = rgb.row(y);
+            for (int x = 0; x < rgb.w; x++, q += 3) {
+                float ratio = srgb_eotf(acc.at(x, y)) / Y.at(x, y);
+                q[0] *= ratio; q[1] *= ratio; q[2] *= ratio;
+            }
+        });
+        return {gS, gL, key};
+    }
+    // fusion on the binned luma; its gain (log2 fused / input) is brought back to full size by a fast guided filter
+    // (He & Sun 2015) on log2 luma, so it follows the edges the binning blurred
+    constexpr int kSub = kToneSub;
+    const int sw = (rgb.w + kSub - 1) / kSub, sh = (rgb.h + kSub - 1) / kSub;
+    ImageF Ys(sw, sh);
+    parallel_for(sh, [&](int y) {
+        for (int x = 0; x < sw; x++) {
+            float acc = 0; int cnt = 0;
+            for (int v = 0; v < kSub; v++) for (int u = 0; u < kSub; u++) {
+                int X = x * kSub + u, Yy = y * kSub + v;
+                if (X < rgb.w && Yy < rgb.h) { acc += Yat(X, Yy); cnt++; }
+            }
+            Ys.at(x, y) = acc / cnt;
+        }
+    });
+    ImageF fused = fuse_exposures(Ys, gS, gL);
+    ImageF G(sw, sh), Lg(sw, sh), GG(sw, sh), GL(sw, sh);
+    parallel_for(sh, [&](int y) {
+        for (int x = 0; x < sw; x++) {
+            float g = fast_log2(Ys.at(x, y)), l = fast_log2(std::max(1e-6f, srgb_eotf(fused.at(x, y)))) - g;
+            G.at(x, y) = g; Lg.at(x, y) = l; GG.at(x, y) = g * g; GL.at(x, y) = g * l;
+        }
+    });
+    ImageF mG = box_mean(G, kToneGuideRadius), mL = box_mean(Lg, kToneGuideRadius), mGG = box_mean(GG, kToneGuideRadius),
+           mGL = box_mean(GL, kToneGuideRadius);
+    ImageF A(sw, sh), B(sw, sh);
+    parallel_for(sh, [&](int y) {
+        for (int x = 0; x < sw; x++) {
+            float mg = mG.at(x, y), ml = mL.at(x, y);
+            float a = (mGL.at(x, y) - mg * ml) / (std::max(0.f, mGG.at(x, y) - mg * mg) + kToneGuideEps);
+            A.at(x, y) = a; B.at(x, y) = ml - a * mg;
+        }
+    });
+    ImageF mA = box_mean(A, kToneGuideRadius), mB = box_mean(B, kToneGuideRadius);
+    std::vector<int> x0s(rgb.w);
+    std::vector<float> axs(rgb.w);
+    for (int x = 0; x < rgb.w; x++) {
+        float fx = clampf((x + 0.5f) / kSub - 0.5f, 0.f, sw - 1.001f);
+        x0s[x] = (int)fx;
+        axs[x] = fx - x0s[x];
+    }
     parallel_for(rgb.h, [&](int y) {
+        float fy = clampf((y + 0.5f) / kSub - 0.5f, 0.f, sh - 1.001f);
+        int y0 = (int)fy, y1 = std::min(y0 + 1, sh - 1);
+        float ay = fy - y0;
+        std::vector<float> ra(sw + 1), rb(sw + 1);
+        for (int x = 0; x < sw; x++) {
+            ra[x] = (1 - ay) * mA.at(x, y0) + ay * mA.at(x, y1);
+            rb[x] = (1 - ay) * mB.at(x, y0) + ay * mB.at(x, y1);
+        }
+        ra[sw] = ra[sw - 1];
+        rb[sw] = rb[sw - 1];
         float* q = rgb.row(y);
         for (int x = 0; x < rgb.w; x++, q += 3) {
-            float ratio = srgb_eotf(acc.at(x, y)) / Y.at(x, y);
+            int x0 = x0s[x];
+            float ax = axs[x];
+            float a = ra[x0] + ax * (ra[x0 + 1] - ra[x0]), b = rb[x0] + ax * (rb[x0 + 1] - rb[x0]);
+            float ratio = fast_exp2(a * fast_log2(std::max(1e-6f, luma709(q[0], q[1], q[2]))) + b);
             q[0] *= ratio; q[1] *= ratio; q[2] *= ratio;
         }
     });

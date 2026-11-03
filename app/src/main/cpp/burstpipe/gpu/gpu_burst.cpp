@@ -464,23 +464,8 @@ void GpuBurst::upscale(int W, int H) {
     rgb_ = out;
 }
 
-ToneInfo GpuBurst::local_tonemap(const LookParams& p) {
-    const int W = rgb_.w, H = rgb_.h, n = W * H;
-    GImg Y = luma(rgb_, 1e-6f);
-    const int sw = (W + 7) / 8, sh = (H + 7) / 8;
-    GImg sub = g_.image(sw, sh);
-    g_.run("subsample8", gs(sw), gs(sh), Y, W, H, sub, sw, sh);
-    std::vector<float> samp((size_t)sw * sh);
-    g_.read(sub.b, samp.data(), samp.size() * 4);
-    double lsum = 0;
-    for (float v : samp) lsum += std::log(v + 1e-4);
-    float key = (float)std::exp(lsum / samp.size());
-    std::nth_element(samp.begin(), samp.begin() + (size_t)(samp.size() * 0.995), samp.end());
-    float p995 = samp[(size_t)(samp.size() * 0.995)];
-    float gL = clampf(p.targetKey / key, 1.f, 64.f);
-    float maxRatio = p.compression > 0 ? p.compression : 8.f;
-    float gS = clampf(1.f / p995, gL / maxRatio, gL);
-
+GImg GpuBurst::fuse_exposures(const GImg& Y, float gS, float gL) {
+    const int W = Y.w, H = Y.h, n = W * H;
     GImg eS = g_.image(W, H), eL = g_.image(W, H), wS = g_.image(W, H);
     g_.run("tm_exposures", gs(n), 1, Y, n, oetf_, gS, gL, eS, eL, wS);
     int levels = 1;
@@ -500,7 +485,43 @@ ToneInfo GpuBurst::local_tonemap(const LookParams& p) {
         pyr_up_sub(gsP[l + 1], gsP[l], -1.f);
         gsP[l + 1] = GImg();
     }
-    g_.run("tm_apply", gs(n), 1, rgb_, n, gsP[0], Y, eotf_);
+    return gsP[0];
+}
+
+ToneInfo GpuBurst::local_tonemap(const LookParams& p) {
+    const int W = rgb_.w, H = rgb_.h, n = W * H;
+    const int s8w = (W + 7) / 8, s8h = (H + 7) / 8;
+    GImg sub = g_.image(s8w, s8h);
+    g_.run("tm_key_samples", gs(s8w), gs(s8h), rgb_, W, H, sub, s8w, s8h);
+    std::vector<float> samp((size_t)s8w * s8h);
+    g_.read(sub.b, samp.data(), samp.size() * 4);
+    double lsum = 0;
+    for (float v : samp) lsum += std::log(v + 1e-4);
+    float key = (float)std::exp(lsum / samp.size());
+    std::nth_element(samp.begin(), samp.begin() + (size_t)(samp.size() * 0.995), samp.end());
+    float p995 = samp[(size_t)(samp.size() * 0.995)];
+    float gL = clampf(p.targetKey / key, 1.f, 64.f);
+    float maxRatio = p.compression > 0 ? p.compression : 8.f;
+    float gS = clampf(1.f / p995, gL / maxRatio, gL);
+
+    if (p.toneFull) {
+        GImg Y = luma(rgb_, 1e-6f);
+        GImg acc = fuse_exposures(Y, gS, gL);
+        g_.run("tm_apply", gs(n), 1, rgb_, n, acc, Y, eotf_);
+        return {gS, gL, key};
+    }
+    const int sw = (W + kToneSub - 1) / kToneSub, sh = (H + kToneSub - 1) / kToneSub, sn = sw * sh;
+    GImg Ys = g_.image(sw, sh);
+    g_.run("tm_down", gs(sw), gs(sh), rgb_, W, H, Ys, sw, sh);
+    GImg fused = fuse_exposures(Ys, gS, gL);
+    GImg G = g_.image(sw, sh), Lg = g_.image(sw, sh), GG = g_.image(sw, sh), GL = g_.image(sw, sh);
+    g_.run("tm_guide", gs(sn), 1, Ys, fused, eotf_, G, Lg, GG, GL, sn);
+    const int r = kToneGuideRadius;
+    GImg mG = box(G, r), mL = box(Lg, r), mGG = box(GG, r), mGL = box(GL, r);
+    GImg A = g_.image(sw, sh), B = g_.image(sw, sh);
+    g_.run("tm_coef", gs(sn), 1, mG, mL, mGG, mGL, A, B, sn, kToneGuideEps);
+    GImg mA = box(A, r), mB = box(B, r);
+    g_.run("tm_apply_guided", gs(W), gs(H), rgb_, W, H, mA, mB, sw, sh);
     return {gS, gL, key};
 }
 

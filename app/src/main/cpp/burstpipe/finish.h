@@ -16,7 +16,14 @@ struct LookParams {
     float skySat = 1.f, skyHue = 0.f;    // hue-selective saturation / rotation (degrees) for sky blues
     float skinSat = 1.f, skinHue = 0.f;  // ... and for skin tones
     float chromaDenoiseScale = 1.f; // multiplies the automatic chroma denoise strength
+    bool toneFull = false;          // exposure fusion at full resolution instead of kToneSub (the reference it approximates)
 };
+
+// local_tonemap: fusion at 1/kToneSub of each side, gain upsampled by a guided filter of this radius (binned px) and
+// epsilon (log2 luma squared)
+constexpr int kToneSub = 4;
+constexpr int kToneGuideRadius = 2;
+constexpr float kToneGuideEps = 0.02f;
 
 struct FinishTimes { double lscwb = 0, demosaic = 0, color = 0, chroma = 0, tonemap = 0, look = 0, sharpen = 0; };
 

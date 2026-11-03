@@ -73,6 +73,7 @@ private:
     void chroma_denoise(float strength);
     void upscale(int W, int H);
     ToneInfo local_tonemap(const LookParams& p);
+    GImg fuse_exposures(const GImg& Y, float gS, float gL);
     void local_contrast(float amount, float radiusFrac);
     void sharpen(float amount, float radius, float core);
     GImg luma(const GImg& rgb, float floorv);

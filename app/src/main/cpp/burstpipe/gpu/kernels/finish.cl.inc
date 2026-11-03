@@ -249,12 +249,6 @@ __kernel void luma_of(__global const float* rgb, int n, float floorv, __global f
     Y[i] = max(floorv, luma709(q[0], q[1], q[2]));
 }
 
-__kernel void subsample8(__global const float* Y, int W, int H, __global float* out, int sw, int sh) {
-    int x = get_global_id(0), y = get_global_id(1);
-    if (x >= sw || y >= sh) return;
-    out[y * sw + x] = Y[(size_t)(y * 8) * W + x * 8];
-}
-
 __kernel void tm_exposures(__global const float* Y, int n, __global const float* oetf, float gS, float gL,
                            __global float* eS, __global float* eL, __global float* wS) {
     int i = get_global_id(0);
@@ -307,6 +301,66 @@ __kernel void tm_blend(__global float* a, __global const float* b, __global cons
     int i = get_global_id(0);
     if (i >= n) return;
     a[i] = w[i] * a[i] + (1 - w[i]) * b[i];
+}
+
+// low-resolution tone mapping (finish.cpp local_tonemap): key samples, binned luma, guided-filter gain
+__kernel void tm_key_samples(__global const float* rgb, int W, int H, __global float* out, int sw, int sh) {
+    int x = get_global_id(0), y = get_global_id(1);
+    if (x >= sw || y >= sh) return;
+    __global const float* q = rgb + ((size_t)(y * 8) * W + x * 8) * 3;
+    out[y * sw + x] = max(1e-6f, luma709(q[0], q[1], q[2]));
+}
+
+__kernel void tm_down(__global const float* rgb, int W, int H, __global float* Ys, int sw, int sh) {
+    int x = get_global_id(0), y = get_global_id(1);
+    if (x >= sw || y >= sh) return;
+    float acc = 0;
+    int cnt = 0;
+    for (int v = 0; v < 4; v++)
+        for (int u = 0; u < 4; u++) {
+            int X = x * 4 + u, Y = y * 4 + v;
+            if (X < W && Y < H) {
+                __global const float* q = rgb + ((size_t)Y * W + X) * 3;
+                acc += max(1e-6f, luma709(q[0], q[1], q[2]));
+                cnt++;
+            }
+        }
+    Ys[y * sw + x] = acc / cnt;
+}
+
+__kernel void tm_guide(__global const float* Ys, __global const float* fused, __global const float* eotf, __global float* G,
+                       __global float* Lg, __global float* GG, __global float* GL, int n) {
+    int i = get_global_id(0);
+    if (i >= n) return;
+    float g = log2(Ys[i]), l = log2(max(1e-6f, lut_interp(eotf, fused[i]))) - g;
+    G[i] = g; Lg[i] = l; GG[i] = g * g; GL[i] = g * l;
+}
+
+__kernel void tm_coef(__global const float* mG, __global const float* mL, __global const float* mGG, __global const float* mGL,
+                      __global float* A, __global float* B, int n, float eps) {
+    int i = get_global_id(0);
+    if (i >= n) return;
+    float mg = mG[i], ml = mL[i];
+    float a = (mGL[i] - mg * ml) / (max(0.f, mGG[i] - mg * mg) + eps);
+    A[i] = a;
+    B[i] = ml - a * mg;
+}
+
+inline float up4(__global const float* im, int sw, int sh, int x, int y) {
+    float fx = clamp((x + 0.5f) / 4 - 0.5f, 0.f, sw - 1.001f), fy = clamp((y + 0.5f) / 4 - 0.5f, 0.f, sh - 1.001f);
+    int x0 = (int)fx, y0 = (int)fy;
+    float ax = fx - x0, ay = fy - y0;
+    int x1 = min(x0 + 1, sw - 1), y1 = min(y0 + 1, sh - 1);
+    return (1 - ay) * ((1 - ax) * im[y0 * sw + x0] + ax * im[y0 * sw + x1]) + ay * ((1 - ax) * im[y1 * sw + x0] + ax * im[y1 * sw + x1]);
+}
+
+__kernel void tm_apply_guided(__global float* rgb, int W, int H, __global const float* mA, __global const float* mB, int sw,
+                              int sh) {
+    int x = get_global_id(0), y = get_global_id(1);
+    if (x >= W || y >= H) return;
+    __global float* q = rgb + ((size_t)y * W + x) * 3;
+    float ratio = exp2(up4(mA, sw, sh, x, y) * log2(max(1e-6f, luma709(q[0], q[1], q[2]))) + up4(mB, sw, sh, x, y));
+    q[0] *= ratio; q[1] *= ratio; q[2] *= ratio;
 }
 
 __kernel void tm_apply(__global float* rgb, int n, __global const float* acc, __global const float* Y,
@@ -394,13 +448,6 @@ __kernel void lc_coef(__global const float* mI, __global const float* mII, __glo
     B[i] = m - a * m;
 }
 
-inline float up4(__global const float* im, int sw, int sh, int x, int y) {
-    float fx = clamp((x + 0.5f) / 4 - 0.5f, 0.f, sw - 1.001f), fy = clamp((y + 0.5f) / 4 - 0.5f, 0.f, sh - 1.001f);
-    int x0 = (int)fx, y0 = (int)fy;
-    float ax = fx - x0, ay = fy - y0;
-    int x1 = min(x0 + 1, sw - 1), y1 = min(y0 + 1, sh - 1);
-    return (1 - ay) * ((1 - ax) * im[y0 * sw + x0] + ax * im[y0 * sw + x1]) + ay * ((1 - ax) * im[y1 * sw + x0] + ax * im[y1 * sw + x1]);
-}
 
 __kernel void lc_apply(__global float* rgb, int W, int H, __global const float* L, __global const float* mA,
                        __global const float* mB, int sw, int sh, float amount) {
