@@ -81,11 +81,16 @@ object P1Items {
             "tp_main_iso100", P1Group.TRIPOD, "0", P1Hold.FIXED, null,
             P1Variant(frames = 64, iso = 100, maxExposureNs = 250_000_000L),
         ),
+        P1Item(
+            "tp_main_bright", P1Group.TRIPOD, "0", P1Hold.FIXED, R.string.p1_scene_bright,
+            P1Variant(frames = 64, iso = 100, ev = 0.0, maxExposureNs = 250_000_000L),
+        ),
+        P1Item("tp_main_iso400", P1Group.TRIPOD, "0", P1Hold.FIXED, null, P1Variant(frames = 64, iso = 400, ev = -1.0)),
         P1Item("tp_main_iso800", P1Group.TRIPOD, "0", P1Hold.FIXED, null, P1Variant(frames = 64, iso = 800, ev = -2.0)),
-        P1Item("tp_main_iso3200", P1Group.TRIPOD, "0", P1Hold.FIXED, null, P1Variant(frames = 64, iso = 3200, ev = -4.0)),
+        // The main camera's ISO tops out at 876; higher requests are clamped to it.
         P1Item(
             "dk_main", P1Group.DARK, "0", P1Hold.FIXED, null,
-            P1Variant(mode = P1Mode.DARK, frames = 8, darkIsos = listOf(100, 400, 800, 1600, 3200, 6400)),
+            P1Variant(mode = P1Mode.DARK, frames = 8, darkIsos = listOf(100, 200, 400, 800, 876)),
         ),
         P1Item("lca_main", P1Group.LCA, "0", P1Hold.FIXED, null, standard(8)),
         P1Item("lca_uw", P1Group.LCA, "2", P1Hold.FIXED, null, standard(8)),

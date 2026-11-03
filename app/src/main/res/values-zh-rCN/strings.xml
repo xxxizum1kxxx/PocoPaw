@@ -142,6 +142,7 @@
     <string name="p1_scene_cool">冷白 LED 或荧光灯</string>
     <string name="p1_scene_mixed">窗外日光加室内暖灯混合</string>
     <string name="p1_scene_street_light">夜晚路灯（钠灯或 LED）</string>
+    <string name="p1_scene_bright">明亮的静止场景：白天窗边或开强光，最亮处不要过曝</string>
     <string name="p1_hold_hand">手持</string>
     <string name="p1_hold_brace">靠稳</string>
     <string name="p1_hold_fixed">固定</string>

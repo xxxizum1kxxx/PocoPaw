@@ -144,6 +144,7 @@
     <string name="p1_scene_cool">Cool white LED or fluorescent</string>
     <string name="p1_scene_mixed">Window daylight mixed with warm indoor light</string>
     <string name="p1_scene_street_light">Street lights at night (sodium or LED)</string>
+    <string name="p1_scene_bright">Bright static scene: a window by day or strong lights, highlights not clipped</string>
     <string name="p1_hold_hand">Handheld</string>
     <string name="p1_hold_brace">Braced</string>
     <string name="p1_hold_fixed">Fixed</string>
