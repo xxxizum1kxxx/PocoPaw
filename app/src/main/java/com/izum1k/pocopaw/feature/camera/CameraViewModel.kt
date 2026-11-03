@@ -416,9 +416,11 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
             zoomRatio = s.zoom,
             cropZoom = s.cropZoom,
         )
+        val stream = pipeline.openStream(spec.exposure)
         val burst = try {
-            controller.capture(spec)
+            controller.capture(spec, stream)
         } catch (e: Exception) {
+            stream?.close()
             Log.w(TAG, "capture failed", e)
             releaseFocus()
             fail(CaptureMessage.CAPTURE_FAILED)

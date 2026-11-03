@@ -20,19 +20,24 @@ class ReferenceStage : PipelineStage {
     override val name = "reference"
 
     override suspend fun run(ctx: PipelineContext) {
-        ctx.burst.referenceIndex = NativeBurst.referenceFor(ctx.burst)
+        val stream = ctx.burst.stream
+        ctx.burst.referenceIndex = if (stream != null) stream.reference() else NativeBurst.referenceFor(ctx.burst)
     }
 }
 
 /**
  * Hands the burst to `libburstpipe`, crops it to the digital zoom, builds the gray pyramids, aligns
  * every frame to the reference and fits the noise model (or takes the camera's calibrated [noise]). With [gpu] this and the later native steps
- * run on the GPU where they can.
+ * run on the GPU where they can. A streamed burst ([RawBurst.stream]) is aligned and merged already; this waits for its last frames.
  */
 class AlignStage(private val gpu: Boolean = false, private val noise: NoiseCurve? = null) : PipelineStage {
     override val name = "align"
 
     override suspend fun run(ctx: PipelineContext) {
+        ctx.burst.stream?.let { stream ->
+            ctx[PipelineKeys.Native] = ctx.own(stream.finish())
+            return
+        }
         val native = ctx.own(NativeBurst(ctx.burst))
         ctx[PipelineKeys.Native] = native
         native.useGpu(gpu)

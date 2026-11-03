@@ -53,23 +53,20 @@ void GpuBurst::set_disabled(const std::string& off) {
 
 bool GpuBurst::enabled(const char* stage) { return !g_off.count(stage) && !g_off.count("all"); }
 
-std::unique_ptr<GpuBurst> GpuBurst::create(const std::vector<Raw>& frames, std::string& why) {
-    if (frames.empty()) { why = "no frames"; return nullptr; }
+std::unique_ptr<GpuBurst> GpuBurst::open(int width, int height, int slots, std::string& why) {
     Gpu* g = Gpu::get();
     if (!g) { why = Gpu::describe(); return nullptr; }
     auto lock = g->try_acquire();
     if (!lock.owns_lock()) { why = "GPU busy with another burst"; return nullptr; }
     std::unique_ptr<GpuBurst> b(new GpuBurst(*g, std::move(lock)));
     try {
-        b->n_ = (int)frames.size();
-        b->W_ = frames[0].w;
-        b->H_ = frames[0].h;
+        b->n_ = slots;
+        b->W_ = width;
+        b->H_ = height;
         b->qw_ = b->W_ / 2;
         b->qh_ = b->H_ / 2;
-        const size_t fs = (size_t)b->W_ * b->H_;
-        b->frames_ = g->alloc(fs * 2 * b->n_);
-        for (int k = 0; k < b->n_; k++) g->write(b->frames_, frames[k].row(0), fs * 2, fs * 2 * k);
-        b->mean3_ = g->alloc((size_t)b->qw_ * b->qh_ * 4 * b->n_);
+        b->frames_ = g->alloc((size_t)b->W_ * b->H_ * 2 * slots);
+        b->mean3_ = g->alloc((size_t)b->qw_ * b->qh_ * 4 * slots);
         const Tables& t = tables();
         b->win_ = g->alloc(sizeof t.win);
         g->write(b->win_, t.win, sizeof t.win);
@@ -83,6 +80,22 @@ std::unique_ptr<GpuBurst> GpuBurst::create(const std::vector<Raw>& frames, std::
     }
     return b;
 }
+
+std::unique_ptr<GpuBurst> GpuBurst::create(const std::vector<Raw>& frames, std::string& why) {
+    if (frames.empty()) { why = "no frames"; return nullptr; }
+    std::unique_ptr<GpuBurst> b = open(frames[0].w, frames[0].h, (int)frames.size(), why);
+    if (!b) return nullptr;
+    try {
+        const size_t fs = (size_t)b->W_ * b->H_;
+        for (int k = 0; k < b->n_; k++) b->g_.write(b->frames_, frames[k].row(0), fs * 2, fs * 2 * k);
+    } catch (const GpuError& e) {
+        why = e.what();
+        return nullptr;
+    }
+    return b;
+}
+
+std::unique_ptr<GpuBurst> GpuBurst::create_stream(int width, int height, std::string& why) { return open(width, height, 2, why); }
 
 GImg GpuBurst::upload(const ImageF& im) {
     GImg g = g_.image(im.w, im.h, im.c);
@@ -100,23 +113,53 @@ std::string GpuBurst::profile() { return g_.take_profile(); }
 
 // ---- align
 
-void GpuBurst::align(int ref, int alt, std::vector<Offsets>& offs, ImageF& grayRef, ImageF& grayAlt) {
-    static const int kFactor[3] = {2, 4, 4}, kTileL[4] = {16, 16, 16, 8}, kRadius[4] = {1, 4, 4, 4};
+namespace {
+const int kFactor[3] = {2, 4, 4}, kTileL[4] = {16, 16, 16, 8}, kRadius[4] = {1, 4, 4, 4};
+}
+
+std::vector<GImg> GpuBurst::pyramid(int k) {
     const int qn = qw_ * qh_;
-    auto pyramid = [&](int k) {
-        std::vector<GImg> p(4);
-        p[0] = g_.image(qw_, qh_);
-        g_.run("gray_from_raw", gs(qw_), gs(qh_), frames_, k * W_ * H_, W_, p[0], qw_, qh_);
-        GImg t = g_.image(qw_, qh_);
-        g_.run("box3_h", gs(qw_), gs(qh_), p[0], t, qw_, qh_);
-        g_.run("box3_v", gs(qw_), gs(qh_), t, mean3_, k * qn, qw_, qh_);
-        for (int l = 0; l < 3; l++) {
-            const GImg& in = p[l];
-            p[l + 1] = g_.image(in.w / kFactor[l], in.h / kFactor[l]);
-            g_.run("downsample", gs(p[l + 1].w), gs(p[l + 1].h), in, in.w, p[l + 1], p[l + 1].w, p[l + 1].h, kFactor[l]);
-        }
-        return p;
-    };
+    std::vector<GImg> p(4);
+    p[0] = g_.image(qw_, qh_);
+    g_.run("gray_from_raw", gs(qw_), gs(qh_), frames_, k * W_ * H_, W_, p[0], qw_, qh_);
+    GImg t = g_.image(qw_, qh_);
+    g_.run("box3_h", gs(qw_), gs(qh_), p[0], t, qw_, qh_);
+    g_.run("box3_v", gs(qw_), gs(qh_), t, mean3_, k * qn, qw_, qh_);
+    for (int l = 0; l < 3; l++) {
+        const GImg& in = p[l];
+        p[l + 1] = g_.image(in.w / kFactor[l], in.h / kFactor[l]);
+        g_.run("downsample", gs(p[l + 1].w), gs(p[l + 1].h), in, in.w, p[l + 1], p[l + 1].w, p[l + 1].h, kFactor[l]);
+    }
+    return p;
+}
+
+Offsets GpuBurst::align_pyramids(const std::vector<GImg>& refPyr, const std::vector<GImg>& altPyr) {
+    Buf pdx, pdy;
+    int pnx = 0, pny = 0, ptile = 0;
+    for (int l = 3; l >= 0; l--) {
+        const GImg& r = refPyr[l];
+        int tile = kTileL[l], stride = tile / 2;
+        int nx = (r.w + stride - 1) / stride, ny = (r.h + stride - 1) / stride;
+        const int R = kRadius[l], side = 2 * R + 1, f = l < 3 ? kFactor[l] : 0, l1 = l == 0 ? 1 : 0;
+        const size_t nt = (size_t)nx * ny;
+        Buf dx = g_.alloc(nt * 2), dy = g_.alloc(nt * 2), cc = g_.alloc(nt * 3 * 4), sc = g_.alloc(nt * side * side * 4);
+        const std::string sfx = std::to_string(tile);
+        g_.run(("align_cand" + sfx).c_str(), gs(nx * 3), gs(ny), r, altPyr[l], r.w, r.h, nx, ny, l1, pdx, pdy, pnx, pny, ptile, f, cc);
+        g_.run(("align_search" + sfx).c_str(), gs(nx * side), gs(ny), r, altPyr[l], r.w, r.h, nx, ny, R, l1, pdx, pdy, pnx, pny,
+               ptile, f, cc, sc);
+        g_.run("align_pick", gs(nx), gs(ny), tile, nx, ny, R, pdx, pdy, pnx, pny, ptile, f, cc, sc, dx, dy);
+        pdx = dx; pdy = dy; pnx = nx; pny = ny; ptile = tile;
+    }
+    Offsets o;
+    o.nx = pnx; o.ny = pny;
+    o.dx.resize((size_t)pnx * pny);
+    o.dy.resize(o.dx.size());
+    g_.read(pdx, o.dx.data(), o.dx.size() * 2);
+    g_.read(pdy, o.dy.data(), o.dy.size() * 2);
+    return o;
+}
+
+void GpuBurst::align(int ref, int alt, std::vector<Offsets>& offs, ImageF& grayRef, ImageF& grayAlt) {
     std::vector<GImg> refPyr = pyramid(ref);
     grayRef_ = refPyr[0];
     offs.assign(n_, Offsets());
@@ -124,28 +167,7 @@ void GpuBurst::align(int ref, int alt, std::vector<Offsets>& offs, ImageF& grayR
         if (k == ref) continue;
         std::vector<GImg> altPyr = pyramid(k);
         if (k == alt) grayAlt = download(altPyr[0]);
-        Buf pdx, pdy;
-        int pnx = 0, pny = 0, ptile = 0;
-        for (int l = 3; l >= 0; l--) {
-            const GImg& r = refPyr[l];
-            int tile = kTileL[l], stride = tile / 2;
-            int nx = (r.w + stride - 1) / stride, ny = (r.h + stride - 1) / stride;
-            const int R = kRadius[l], side = 2 * R + 1, f = l < 3 ? kFactor[l] : 0, l1 = l == 0 ? 1 : 0;
-            const size_t nt = (size_t)nx * ny;
-            Buf dx = g_.alloc(nt * 2), dy = g_.alloc(nt * 2), cc = g_.alloc(nt * 3 * 4), sc = g_.alloc(nt * side * side * 4);
-            const std::string sfx = std::to_string(tile);
-            g_.run(("align_cand" + sfx).c_str(), gs(nx * 3), gs(ny), r, altPyr[l], r.w, r.h, nx, ny, l1, pdx, pdy, pnx, pny, ptile, f, cc);
-            g_.run(("align_search" + sfx).c_str(), gs(nx * side), gs(ny), r, altPyr[l], r.w, r.h, nx, ny, R, l1, pdx, pdy, pnx, pny,
-                   ptile, f, cc, sc);
-            g_.run("align_pick", gs(nx), gs(ny), tile, nx, ny, R, pdx, pdy, pnx, pny, ptile, f, cc, sc, dx, dy);
-            pdx = dx; pdy = dy; pnx = nx; pny = ny; ptile = tile;
-        }
-        Offsets& o = offs[k];
-        o.nx = pnx; o.ny = pny;
-        o.dx.resize((size_t)pnx * pny);
-        o.dy.resize(o.dx.size());
-        g_.read(pdx, o.dx.data(), o.dx.size() * 2);
-        g_.read(pdy, o.dy.data(), o.dy.size() * 2);
+        offs[k] = align_pyramids(refPyr, altPyr);
     }
     Offsets z;
     z.nx = (qw_ + kStride - 1) / kStride;
@@ -210,6 +232,67 @@ double GpuBurst::merge_spatial(int ref, const std::vector<Offsets>& offs, const 
     kr_ = false;
     g_.finish();
     return n_ > 1 ? wTotal / ((double)qw_ * qh_ * (n_ - 1)) : 0;
+}
+
+void GpuBurst::stream_ref(const Raw& ref, float black, ImageF* gray) {
+    const size_t fs = (size_t)W_ * H_;
+    g_.write(frames_, ref.row(0), fs * 2, 0);
+    refPyr_ = pyramid(0);
+    if (gray) *gray = download(refPyr_[0]);
+    sOut_ = g_.image(W_, H_);
+    sWsum_ = g_.image(qw_, qh_);
+    sRob_ = g_.image(qw_, qh_);
+    sTmp_ = g_.image(qw_, qh_);
+    sRows_ = g_.alloc((size_t)qh_ * groups64(qw_) * 4);
+    g_.run("merge_init", gs(qw_), gs(qh_), frames_, 0, W_, qw_, qh_, black, sOut_, sWsum_);
+    sWeight_ = 0;
+    sAdded_ = 0;
+}
+
+Offsets GpuBurst::stream_align(const Raw& frame, ImageF* gray) {
+    const size_t fs = (size_t)W_ * H_;
+    g_.write(frames_, frame.row(0), fs * 2, fs * 2);
+    std::vector<GImg> altPyr = pyramid(1);
+    if (gray) *gray = download(altPyr[0]);
+    return align_pyramids(refPyr_, altPyr);
+}
+
+void GpuBurst::stream_merge(const Offsets& of, const NoiseModel& nm, float black, const MergeOpts& o) {
+    const int qn = qw_ * qh_, fs = W_ * H_;
+    tnx_ = of.nx;
+    tny_ = of.ny;
+    nt_ = tnx_ * tny_;
+    if (!odx_) {
+        odx_ = g_.alloc((size_t)nt_ * 2);
+        ody_ = g_.alloc((size_t)nt_ * 2);
+    }
+    g_.write(odx_, of.dx.data(), (size_t)nt_ * 2);
+    g_.write(ody_, of.dy.data(), (size_t)nt_ * 2);
+    g_.run("merge_rob", gs(qw_), gs(qh_), mean3_, 0, qn, frames_, fs, W_, qw_, qh_, odx_, ody_, 0, tnx_, tny_, win_, 1.f, 1e30f,
+           black, nm.a, nm.b, o.robustLo, o.robustHi, sRob_);
+    if (o.dilate > 0) {
+        g_.run("min_filter_h", gs(qw_), gs(qh_), sRob_, 0, sTmp_, qw_, qh_, o.dilate);
+        g_.run("min_filter_v", gs(qw_), gs(qh_), sTmp_, sRob_, 0, qw_, qh_, o.dilate);
+    }
+    const int slots = qh_ * groups64(qw_);
+    g_.run_local("row_sums", gs(qw_), gs(qh_), 64, 1, sRob_, 0, qw_, qh_, 1.f, sRows_, 0, kRed);
+    g_.run("merge_acc", gs(qw_), gs(qh_), sRob_, frames_, fs, W_, qw_, qh_, odx_, ody_, 0, tnx_, tny_, win_, black, sOut_, sWsum_);
+    std::vector<float> rs(slots);
+    g_.read(sRows_, rs.data(), rs.size() * 4);
+    for (float v : rs) sWeight_ += v;
+    sAdded_++;
+}
+
+double GpuBurst::stream_end(float black) {
+    g_.run("merge_norm", gs(qw_), gs(qh_), sOut_, sWsum_, W_, qw_, qh_, black);
+    merged_ = sOut_;
+    kr_ = false;
+    sOut_ = sWsum_ = sRob_ = sTmp_ = GImg();
+    sRows_.reset();
+    refPyr_.clear();
+    drop_frames();
+    g_.finish();
+    return sAdded_ > 0 ? sWeight_ / ((double)qw_ * qh_ * sAdded_) : 0;
 }
 
 double GpuBurst::merge_freq(int ref, const std::vector<Offsets>& offs, const Meta& m, const NoiseModel& nm, float c, float spatial) {

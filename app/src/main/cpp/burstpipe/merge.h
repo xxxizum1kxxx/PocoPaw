@@ -66,6 +66,25 @@ ImageF merge_frames(const std::vector<Raw>& frames, int ref, const std::vector<O
                     const std::vector<ImageF>& mean3, const NoiseModel& nm, float black,
                     const MergeOpts& o, MergeStats* st);
 
+// merge_frames one frame at a time, for merging while the burst is still being captured: start from the
+// reference, add() each aligned frame (it may be freed right after), then result(). Same output as
+// merge_frames given the frames in the same order.
+class SpatialMerge {
+public:
+    SpatialMerge(const Raw& ref, float black);
+    // g / clip: the frame's MergeOpts::g(k) / clipAt(k); checkClip as !o.clip.empty()
+    void add(const Raw& F, const Offsets& of, const ImageF& mean3, const ImageF& mean3Ref, const NoiseModel& nm, float g,
+             float clip, bool checkClip, const MergeOpts& o);
+    ImageF result(MergeStats* st);
+    int added() const { return added_; }
+
+private:
+    ImageF out_, wsum_, rob_;
+    float black_;
+    double wTotal_ = 0;
+    int added_ = 0;
+};
+
 // Frequency-domain alternative (HDR+ 2016 Sec. 5): 16x16 half-overlapping tiles per Bayer plane on the
 // alignment grid, pairwise Wiener merge A = |D|^2 / (|D|^2 + c * sigma_D^2) against the reference,
 // optional spatial shrinkage of the merged spectrum (`spatial` > 0). Same output as merge_frames.

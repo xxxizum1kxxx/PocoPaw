@@ -30,6 +30,7 @@ import android.util.Size
 import android.view.Surface
 import com.izum1k.pocopaw.BuildConfig
 import com.izum1k.pocopaw.data.FlashMode
+import com.izum1k.pocopaw.pipeline.BurstStream
 import com.izum1k.pocopaw.pipeline.NativeMemory
 import com.izum1k.pocopaw.pipeline.RawBurst
 import com.izum1k.pocopaw.pipeline.RawFrame
@@ -763,8 +764,11 @@ class CameraController(private val manager: CameraManager, private val motion: M
         startSceneSweep(null)
     }
 
-    /** Captures [CaptureSpec.frameCount] RAW frames, reopening the device first if the budget cannot cover them. */
-    suspend fun capture(spec: CaptureSpec): RawBurst = withContext(dispatcher) {
+    /**
+     * Captures [CaptureSpec.frameCount] RAW frames, reopening the device first if the budget cannot cover them.
+     * With [stream], each frame shot in focus goes to it as it arrives and the burst holds those frames only.
+     */
+    suspend fun capture(spec: CaptureSpec, stream: BurstStream? = null): RawBurst = withContext(dispatcher) {
         awaitSweep()
         mutex.withLock {
             var info = camera ?: throw CameraFailure(Reason.UNKNOWN)
@@ -784,12 +788,27 @@ class CameraController(private val manager: CameraManager, private val motion: M
                 startTapScan(s, TapScan(_live.value.focusDioptres, retry = false))
             }
             var unlockFocus = false
+            var gate: SteadyGate? = null
             try {
                 unlockFocus = lockFocus(s, info)
                 val fires = info.hasFlash && spec.flash != FlashMode.OFF && spec.exposure is ExposurePlan.Auto
                 if (fires) runPrecapture(s)
                 val requests = List(spec.frameCount) { stillRequest(info, spec, reader.surface, it) }
-                val collector = CaptureCollector(spec.frameCount)
+                fun metadataFor(result: CaptureResult) = RawMetadata.from(
+                    cameraId = info.id,
+                    facing = info.facing,
+                    characteristics = info.characteristics,
+                    cfa = info.cfa,
+                    result = result,
+                    orientationDegrees = orientationFor(info, spec.deviceRotation),
+                    zoomRatio = spec.zoomRatio,
+                    cropZoom = spec.cropZoom,
+                )
+                var streamMetadata: RawMetadata? = null
+                gate = stream?.let { st ->
+                    SteadyGate { f -> st.add(f, streamMetadata ?: metadataFor(f.result).also { streamMetadata = it }) }
+                }
+                val collector = CaptureCollector(spec.frameCount, gate?.let { g -> g::offer })
                 activeCapture = collector
                 generateSequence { reader.acquireNextImage() }.forEach { it.close() }
                 reader.setOnImageAvailableListener({ r -> r.acquireNextImage()?.let(collector::onImage) }, handler)
@@ -811,24 +830,23 @@ class CameraController(private val manager: CameraManager, private val motion: M
                         "%.2f%s".format(f.result.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: Float.NaN, if (moving) "m" else "")
                     } + " (AF ${afStateName(frames.first().result.get(CaptureResult.CONTROL_AF_STATE))})",
                 )
-                val metadata = RawMetadata.from(
-                    cameraId = info.id,
-                    facing = info.facing,
-                    characteristics = info.characteristics,
-                    cfa = info.cfa,
-                    result = frames.first().result,
-                    orientationDegrees = orientationFor(info, spec.deviceRotation),
-                    zoomRatio = spec.zoomRatio,
-                    cropZoom = spec.cropZoom,
-                )
+                gate?.flush()
+                val metadata = streamMetadata ?: metadataFor(frames.first().result)
                 if (BuildConfig.DEBUG) meterStats?.let { m ->
                     Log.i(TAG, "meter grid ${(frames.first().timestampNs - m.timestampNs) / 1_000_000}ms before frame 0 " + SceneMeter.gridString(m))
                     Log.i(TAG, "raw grid " + SceneMeter.rawGridString(frames.first(), metadata))
                 }
-                RawBurst(frames = steadyFrames(frames, spec), metadata = metadata)
+                val g = gate
+                if (g != null) {
+                    if (g.dropped > 0) Log.w(TAG, "left out ${g.dropped} of ${frames.size} frames shot off focus")
+                    RawBurst(frames = g.accepted, metadata = metadata, stream = stream)
+                } else {
+                    RawBurst(frames = steadyFrames(frames, spec), metadata = metadata)
+                }
             } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
                 throw CameraFailure(Reason.TIMEOUT, e)
             } finally {
+                gate?.abandon()
                 burstFocus = null
                 activeCapture?.release()
                 activeCapture = null
@@ -1465,13 +1483,80 @@ class CameraController(private val manager: CameraManager, private val motion: M
     }
 
     /**
+     * [steadyFrames] while the burst is captured: the first [STEADY_WINDOW] frames set the burst's focus
+     * distance (their median); a frame shot off it, or with the lens moving, is released instead of passed on.
+     */
+    private class SteadyGate(private val pass: (RawFrame) -> Unit) {
+        private val held = ArrayList<RawFrame>()
+        private var median: Float? = null
+        private var open = false
+        val accepted = ArrayList<RawFrame>()
+        var dropped = 0
+            private set
+
+        fun offer(frame: RawFrame) {
+            val m = median
+            when {
+                open -> accept(frame)
+                m != null -> if (steady(frame, m)) accept(frame) else drop(frame)
+                else -> {
+                    held += frame
+                    if (held.size == STEADY_WINDOW) settle()
+                }
+            }
+        }
+
+        /** After the last frame; a burst shorter than [STEADY_WINDOW] passes whole, as in [steadyFrames]. */
+        fun flush() {
+            if (median == null) open = true
+            held.forEach(::accept)
+            held.clear()
+        }
+
+        /** Frees the frames still held when the capture fails. */
+        fun abandon() {
+            held.forEach { it.release() }
+            held.clear()
+        }
+
+        private fun settle() {
+            val ds = held.map { it.result.get(CaptureResult.LENS_FOCUS_DISTANCE) }
+            if (ds.any { it == null }) {
+                open = true
+            } else {
+                val m = ds.filterNotNull().sorted()[ds.size / 2]
+                if (held.count { steady(it, m) } >= 2) median = m else open = true
+            }
+            val m = median
+            held.forEach { if (m == null || steady(it, m)) accept(it) else drop(it) }
+            held.clear()
+        }
+
+        private fun steady(f: RawFrame, median: Float): Boolean {
+            val d = f.result.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: return true
+            return f.result.get(CaptureResult.LENS_STATE) != CaptureResult.LENS_STATE_MOVING && abs(d - median) <= BURST_FOCUS_TOLERANCE
+        }
+
+        private fun accept(f: RawFrame) {
+            accepted += f
+            pass(f)
+        }
+
+        private fun drop(f: RawFrame) {
+            dropped++
+            f.release()
+        }
+    }
+
+    /**
      * Pairs RAW images with their results by sensor timestamp. Each image is copied out and closed
      * on arrival, so a burst longer than the reader's maxImages never starves the HAL. Copies live
      * in [NativeMemory]: the frames handed to [await]'s caller are theirs, [release] frees the rest.
      */
-    private class CaptureCollector(private val expected: Int) {
+    private class CaptureCollector(private val expected: Int, private val forward: ((RawFrame) -> Unit)? = null) {
         private val buffers = HashMap<Long, Triple<ByteBuffer, Int, Int>>()
         private val results = HashMap<Long, TotalCaptureResult>()
+        private val frames = HashMap<Long, RawFrame>()
         private val done = CompletableDeferred<List<RawFrame>>()
         private val handedOver = HashSet<Long>()
         private var released = false
@@ -1510,14 +1595,16 @@ class CameraController(private val manager: CameraManager, private val motion: M
 
         private fun maybeFinish() {
             if (done.isCompleted) return
-            val matched = buffers.keys.filter { it in results }
+            val matched = buffers.keys.filter { it in results }.sorted()
+            forward?.let { f -> matched.filter { it !in handedOver }.forEach { f(frame(it)) } }
             if (matched.size < expected) return
-            val frames = matched.sorted().take(expected).map { ts ->
-                val (data, w, h) = buffers.getValue(ts)
-                handedOver += ts
-                RawFrame(data, w, h, ts, results.getValue(ts))
-            }
-            done.complete(frames)
+            done.complete(matched.take(expected).map(::frame))
+        }
+
+        private fun frame(ts: Long): RawFrame = frames.getOrPut(ts) {
+            val (data, w, h) = buffers.getValue(ts)
+            handedOver += ts
+            RawFrame(data, w, h, ts, results.getValue(ts))
         }
 
         private fun copyRaw(image: Image): ByteBuffer {
@@ -1596,6 +1683,7 @@ class CameraController(private val manager: CameraManager, private val motion: M
         private const val SMALL_TURN_RAD = 0.1f
         private const val SMALL_EV_CHANGE = 1.0
         private const val BURST_FOCUS_TOLERANCE = 0.05f
+        private const val STEADY_WINDOW = 3
         private const val HOLD_SETTLE_MAX_MS = 300L
         private const val BURST_HOLD_SETTLE_MAX_MS = 1_000L
         /** Red and blue gain ratio per white balance step (about 4%, a few hundred kelvin near daylight). */

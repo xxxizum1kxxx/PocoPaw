@@ -98,6 +98,9 @@ interface ImagePipeline {
     /** The exposure to capture with, given what the user asked for and what the preview's AE measured. */
     fun exposureFor(requested: ExposurePlan, live: LiveExposure, camera: CameraInfo): ExposurePlan = requested
 
+    /** A stream to hand the frames to while they are captured, for a capture at [exposure]; null takes them all at once. */
+    fun openStream(exposure: ExposurePlan): BurstStream? = null
+
     suspend fun process(burst: RawBurst, sink: OutputSink, progress: (Float) -> Unit = {}): PipelineResult
 }
 
@@ -167,11 +170,16 @@ class DngPassthroughPipeline : StagedPipeline(ID, listOf(QuickLookStage(), DngWr
  */
 class HdrPlusPipeline(
     id: String,
-    kernelRegression: Boolean,
+    private val kernelRegression: Boolean,
     private val options: PipelineOptions,
 ) : StagedPipeline(id, stagesFor(kernelRegression, options)) {
 
     override val framesPerCapture: Int get() = options.frames
+
+    /** The classic spatial merge of one exposure runs while the burst is captured ([BurstStream]). */
+    override fun openStream(exposure: ExposurePlan): BurstStream? =
+        if (kernelRegression || options.scene != BurstScene.AUTO || options.frames < 2 || exposure is ExposurePlan.PerFrame) null
+        else BurstStream(options.gpu, options.noise, mergeOptions(kernelRegression, options))
 
     override fun exposureFor(requested: ExposurePlan, live: LiveExposure, camera: CameraInfo): ExposurePlan =
         when (requested) {
@@ -188,6 +196,9 @@ class HdrPlusPipeline(
         const val ID_KR = "hdrplus_kr"
         const val DEFAULT_FRAMES = 8
 
+        private fun mergeOptions(kernelRegression: Boolean, o: PipelineOptions) =
+            MergeOptions(kernelRegression = kernelRegression, frequencyMerge = o.scene == BurstScene.NIGHT, lca = o.lca)
+
         private fun stagesFor(kernelRegression: Boolean, o: PipelineOptions): List<PipelineStage> = buildList {
             add(ReferenceStage())
             if (o.writeDng) {
@@ -196,7 +207,7 @@ class HdrPlusPipeline(
             }
             val night = o.scene == BurstScene.NIGHT
             add(AlignStage(o.gpu, o.noise))
-            add(MergeStage(MergeOptions(kernelRegression = kernelRegression, frequencyMerge = night, lca = o.lca)))
+            add(MergeStage(mergeOptions(kernelRegression, o)))
             add(FinishStage(if (night) o.look.copy(style = "night") else o.look, o.ultraHdr))
             if (o.writeJpeg) add(JpegWriteStage())
         }

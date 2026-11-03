@@ -25,12 +25,31 @@ void guarded(JNIEnv* env, F f) {
     }
 }
 
+// options: kernelRegression, robustLo, robustHi, dilate, demosaic (0 MHC, 1 RCD, 2 AMaZE), freqMerge, freqC,
+// freqSpatial, lcaR[2], lcaB[2]
+BurstOptions burst_options(JNIEnv* env, jfloatArray jopt) {
+    BurstOptions o;
+    jfloat* v = env->GetFloatArrayElements(jopt, nullptr);
+    o.kernelRegression = v[0] != 0;
+    o.robustLo = v[1];
+    o.robustHi = v[2];
+    o.dilate = (int)v[3];
+    o.demosaic = v[4] == 0 ? Demosaic::MHC : (v[4] == 2 ? Demosaic::AMAZE : Demosaic::RCD);
+    o.freqMerge = v[5] != 0;
+    o.freqC = v[6];
+    o.freqSpatial = v[7];
+    for (int i = 0; i < 2; i++) { o.lcaR[i] = v[8 + i]; o.lcaB[i] = v[10 + i]; }
+    env->ReleaseFloatArrayElements(jopt, v, JNI_ABORT);
+    return o;
+}
+
 }  // namespace
 
 extern "C" {
 
 // meta: width, height, cfa, white, black[4] (R, G_even, G_odd, B), wb[4], ccm[9] (row-major),
-// lscRows, lscCols; lsc: rows*cols*4 gains (R, G_even, G_odd, B) or null; exposureNs / iso per frame.
+// lscRows, lscCols; lsc: rows*cols*4 gains (R, G_even, G_odd, B) or null; exposureNs / iso per frame (of the
+// first frame only for a session with no frames, which merges frames as they are added).
 JNIEXPORT jlong JNICALL
 Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeCreate(JNIEnv* env, jclass, jfloatArray jmeta, jfloatArray jlsc,
                                                          jobjectArray jframes, jint ref, jlongArray jexp, jintArray jiso) {
@@ -54,13 +73,13 @@ Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeCreate(JNIEnv* env, jclass, j
         m.lscRows = m.lscCols = 0;
     }
 
-    int n = env->GetArrayLength(jframes);
-    if (env->GetArrayLength(jexp) == n && env->GetArrayLength(jiso) == n) {
-        std::vector<jlong> e(n);
-        std::vector<jint> iso(n);
-        env->GetLongArrayRegion(jexp, 0, n, e.data());
-        env->GetIntArrayRegion(jiso, 0, n, iso.data());
-        for (int k = 0; k < n; k++) { m.exposureNs.push_back((double)e[k]); m.iso.push_back(iso[k]); }
+    int n = env->GetArrayLength(jframes), ne = env->GetArrayLength(jexp);
+    if (env->GetArrayLength(jiso) == ne) {
+        std::vector<jlong> e(ne);
+        std::vector<jint> iso(ne);
+        env->GetLongArrayRegion(jexp, 0, ne, e.data());
+        env->GetIntArrayRegion(jiso, 0, ne, iso.data());
+        for (int k = 0; k < ne; k++) { m.exposureNs.push_back((double)e[k]); m.iso.push_back(iso[k]); }
     }
     std::vector<Raw> frames(n);
     for (int k = 0; k < n; k++) {
@@ -123,23 +142,40 @@ Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeAlign(JNIEnv* env, jclass, jl
     guarded(env, [&] { session(h)->align(); });
 }
 
-// options: kernelRegression, robustLo, robustHi, dilate, demosaic (0 MHC, 1 RCD, 2 AMaZE), freqMerge, freqC,
-// freqSpatial, lcaR[2], lcaB[2]
 JNIEXPORT void JNICALL
 Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeMerge(JNIEnv* env, jclass, jlong h, jfloatArray jopt) {
-    BurstOptions o;
-    jfloat* v = env->GetFloatArrayElements(jopt, nullptr);
-    o.kernelRegression = v[0] != 0;
-    o.robustLo = v[1];
-    o.robustHi = v[2];
-    o.dilate = (int)v[3];
-    o.demosaic = v[4] == 0 ? Demosaic::MHC : (v[4] == 2 ? Demosaic::AMAZE : Demosaic::RCD);
-    o.freqMerge = v[5] != 0;
-    o.freqC = v[6];
-    o.freqSpatial = v[7];
-    for (int i = 0; i < 2; i++) { o.lcaR[i] = v[8 + i]; o.lcaB[i] = v[10 + i]; }
-    env->ReleaseFloatArrayElements(jopt, v, JNI_ABORT);
+    BurstOptions o = burst_options(env, jopt);
     guarded(env, [&] { session(h)->merge(o); });
+}
+
+JNIEXPORT void JNICALL
+Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeBeginStream(JNIEnv* env, jclass, jlong h, jfloatArray jopt) {
+    BurstOptions o = burst_options(env, jopt);
+    guarded(env, [&] { session(h)->begin_stream(o); });
+}
+
+// the reference's index once chosen, else -1
+JNIEXPORT jint JNICALL
+Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeAddFrame(JNIEnv* env, jclass, jlong h, jobject buf, jint w, jint ht) {
+    auto* p = static_cast<const uint16_t*>(env->GetDirectBufferAddress(buf));
+    if (p == nullptr || env->GetDirectBufferCapacity(buf) < (jlong)w * ht * 2) {
+        throwState(env, "RAW frame is not a direct buffer of width*height*2 bytes");
+        return -1;
+    }
+    Raw r;
+    r.w = w;
+    r.h = ht;
+    r.d = p;
+    jint ref = -1;
+    guarded(env, [&] { ref = session(h)->add_frame(r); });
+    return ref;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeEndFrames(JNIEnv* env, jclass, jlong h) {
+    jint ref = -1;
+    guarded(env, [&] { ref = session(h)->end_frames(); });
+    return ref;
 }
 
 // style: "default" uses look as given, "pixel" / "night" replace it with that preset (finish.cpp);

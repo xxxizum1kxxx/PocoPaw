@@ -37,6 +37,16 @@ public:
                   const MergeOpts& o, KrParams p, KrStats* st);
     // frees the frames after the merge
     void drop_frames();
+
+    // The spatial merge while the burst is captured (BurstSession::add_frame): only the reference and the
+    // frame being merged are on the device. stream_ref() starts the accumulators from the reference; each
+    // frame is then stream_align()ed (its gray image read back when `gray` is given) and stream_merge()d;
+    // stream_end() normalises into the merged mosaic and returns the mean robustness weight.
+    static std::unique_ptr<GpuBurst> create_stream(int width, int height, std::string& why);
+    void stream_ref(const Raw& ref, float black, ImageF* gray);
+    Offsets stream_align(const Raw& frame, ImageF* gray);
+    void stream_merge(const Offsets& of, const NoiseModel& nm, float black, const MergeOpts& o);
+    double stream_end(float black);
     // the merged mosaic (classic) or RGB (kernel regression) for a CPU finish; finish() keeps it intact
     // until it returns
     ImageF download_merged();
@@ -61,6 +71,10 @@ public:
 
 private:
     GpuBurst(Gpu& g, std::unique_lock<std::mutex> lock) : g_(g), lock_(std::move(lock)) {}
+    static std::unique_ptr<GpuBurst> open(int width, int height, int slots, std::string& why);
+    // gray pyramid of frame slot k (its 3x3 means into mean3_ on the way)
+    std::vector<GImg> pyramid(int k);
+    Offsets align_pyramids(const std::vector<GImg>& refPyr, const std::vector<GImg>& altPyr);
     GImg upload(const ImageF& im);
     ImageF download(const GImg& g);
     void upload_offsets(const std::vector<Offsets>& offs);
@@ -86,4 +100,9 @@ private:
     GImg grayRef_;
     bool aligned_ = false, kr_ = false;
     GImg merged_, rgb_;
+    std::vector<GImg> refPyr_;
+    GImg sOut_, sWsum_, sRob_, sTmp_;
+    Buf sRows_;
+    double sWeight_ = 0;
+    int sAdded_ = 0;
 };

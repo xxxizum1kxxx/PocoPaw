@@ -99,13 +99,20 @@ class RawMetadata(
     }
 }
 
-/** Frames of one shutter press. A single-frame capture is a burst of one. Closing it frees the frames. */
+/**
+ * Frames of one shutter press. A single-frame capture is a burst of one. Closing it frees the frames.
+ * With [stream] the frames were merged while captured and all but the reference are already released.
+ */
 class RawBurst(
     val frames: List<RawFrame>,
     val metadata: RawMetadata,
     referenceIndex: Int = 0,
+    val stream: BurstStream? = null,
 ) : Closeable {
-    override fun close() = frames.forEach { it.release() }
+    override fun close() {
+        stream?.close()
+        frames.forEach { it.release() }
+    }
 
     /** Set by [ReferenceStage] before the other stages read [reference]. */
     var referenceIndex: Int = referenceIndex

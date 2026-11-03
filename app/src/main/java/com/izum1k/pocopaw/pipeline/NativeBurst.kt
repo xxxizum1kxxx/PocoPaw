@@ -68,50 +68,15 @@ data class MergeOptions(
 /**
  * One burst inside `libburstpipe`: align, merge, finish and render run on the calling thread and
  * use every core. The frames' direct buffers are read in place, so [burst] must stay reachable
- * until [merge] returns.
+ * until [merge] returns. A [forStream] session takes its frames one by one instead ([addFrame]).
  */
-class NativeBurst(private val burst: RawBurst) : Closeable {
-    private var handle: Long
+class NativeBurst private constructor(private var handle: Long) : Closeable {
+    constructor(burst: RawBurst) : this(create(burst.metadata, burst.reference, burst.frames, burst.referenceIndex, burst.frames))
 
     var width = 0
         private set
     var height = 0
         private set
-
-    init {
-        val meta = burst.metadata
-        val frame = burst.reference
-        val cfa = when (meta.cfa) {
-            CfaPattern.RGGB -> 0
-            CfaPattern.GRBG -> 1
-            CfaPattern.GBRG -> 2
-            CfaPattern.BGGR, CfaPattern.UNKNOWN -> 3
-        }
-        val black = FloatArray(4)
-        for (pos in 0 until 4) black[channelAt(cfa, pos % 2, pos / 2)] = meta.blackLevel[pos]
-        val wb = meta.wbGains
-        val ccm = FloatArray(9) { i -> meta.colorTransform?.getElement(i % 3, i / 3)?.toFloat() ?: if (i % 4 == 0) 1f else 0f }
-        val lsc = meta.lensShading
-        val lscGains = lsc?.let { FloatArray(it.gainFactorCount).also { g -> it.copyGainFactors(g, 0) } }
-        val array = FloatArray(META_SIZE).apply {
-            this[0] = frame.width.toFloat()
-            this[1] = frame.height.toFloat()
-            this[2] = cfa.toFloat()
-            this[3] = meta.whiteLevel.toFloat()
-            black.copyInto(this, 4)
-            this[8] = wb?.red ?: 1f
-            this[9] = wb?.greenEven ?: 1f
-            this[10] = wb?.greenOdd ?: 1f
-            this[11] = wb?.blue ?: 1f
-            ccm.copyInto(this, 12)
-            this[21] = (lsc?.rowCount ?: 0).toFloat()
-            this[22] = (lsc?.columnCount ?: 0).toFloat()
-        }
-        val buffers = Array<ByteBuffer>(burst.size) { burst.frames[it].data }
-        val exposures = LongArray(burst.size) { burst.frames[it].exposureNs ?: 0L }
-        val isos = IntArray(burst.size) { burst.frames[it].iso ?: 100 }
-        handle = nativeCreate(array, lscGains, buffers, burst.referenceIndex, exposures, isos)
-    }
 
     /** Before [align]: run the steps on the GPU (OpenCL) where possible, each falling back to the CPU on failure. */
     fun useGpu(enabled: Boolean) = nativeUseGpu(live(), enabled)
@@ -125,6 +90,18 @@ class NativeBurst(private val burst: RawBurst) : Closeable {
     fun align() = nativeAlign(live())
 
     fun merge(options: MergeOptions) = nativeMerge(live(), options.toArray())
+
+    /** On a [forStream] session, after [useGpu], [setNoiseCurve] and [crop]: merge the frames as [addFrame] hands them in. */
+    fun beginStream(options: MergeOptions) = nativeBeginStream(live(), options.toArray())
+
+    /**
+     * Aligns and merges [frame], or holds it while the reference is still open (the first three frames). Returns the
+     * reference's index in [addFrame] order once it is chosen, else -1; from then on every other frame may be released.
+     */
+    fun addFrame(frame: RawFrame): Int = nativeAddFrame(live(), frame.data, frame.width, frame.height)
+
+    /** After the last [addFrame]: finishes the merge ([merge] then only picks the demosaic); returns the reference's index. */
+    fun endFrames(): Int = nativeEndFrames(live())
 
     /** [keepHdr] keeps the scene-linear luminance [encodeUltraHdr] needs. */
     fun finish(look: BurstLook, keepHdr: Boolean = false) {
@@ -152,6 +129,42 @@ class NativeBurst(private val burst: RawBurst) : Closeable {
 
     companion object {
         private const val META_SIZE = 23
+
+        /** A session with no frames yet, for [beginStream]; [first] gives the frame size, exposure and ISO. */
+        fun forStream(metadata: RawMetadata, first: RawFrame) = NativeBurst(create(metadata, first, emptyList(), 0, listOf(first)))
+
+        private fun create(meta: RawMetadata, frame: RawFrame, frames: List<RawFrame>, ref: Int, exposed: List<RawFrame>): Long {
+            val cfa = when (meta.cfa) {
+                CfaPattern.RGGB -> 0
+                CfaPattern.GRBG -> 1
+                CfaPattern.GBRG -> 2
+                CfaPattern.BGGR, CfaPattern.UNKNOWN -> 3
+            }
+            val black = FloatArray(4)
+            for (pos in 0 until 4) black[channelAt(cfa, pos % 2, pos / 2)] = meta.blackLevel[pos]
+            val wb = meta.wbGains
+            val ccm = FloatArray(9) { i -> meta.colorTransform?.getElement(i % 3, i / 3)?.toFloat() ?: if (i % 4 == 0) 1f else 0f }
+            val lsc = meta.lensShading
+            val lscGains = lsc?.let { FloatArray(it.gainFactorCount).also { g -> it.copyGainFactors(g, 0) } }
+            val array = FloatArray(META_SIZE).apply {
+                this[0] = frame.width.toFloat()
+                this[1] = frame.height.toFloat()
+                this[2] = cfa.toFloat()
+                this[3] = meta.whiteLevel.toFloat()
+                black.copyInto(this, 4)
+                this[8] = wb?.red ?: 1f
+                this[9] = wb?.greenEven ?: 1f
+                this[10] = wb?.greenOdd ?: 1f
+                this[11] = wb?.blue ?: 1f
+                ccm.copyInto(this, 12)
+                this[21] = (lsc?.rowCount ?: 0).toFloat()
+                this[22] = (lsc?.columnCount ?: 0).toFloat()
+            }
+            val buffers = Array<ByteBuffer>(frames.size) { frames[it].data }
+            val exposures = LongArray(exposed.size) { exposed[it].exposureNs ?: 0L }
+            val isos = IntArray(exposed.size) { exposed[it].iso ?: 100 }
+            return nativeCreate(array, lscGains, buffers, ref, exposures, isos)
+        }
 
         /**
          * Points the OpenCL program cache at [cacheDir] and creates the GPU device, compiling the kernels
@@ -200,6 +213,9 @@ class NativeBurst(private val burst: RawBurst) : Closeable {
         @JvmStatic private external fun nativeSetNoiseCurve(handle: Long, iso: FloatArray, a: FloatArray, b: FloatArray)
         @JvmStatic private external fun nativeAlign(handle: Long)
         @JvmStatic private external fun nativeMerge(handle: Long, options: FloatArray)
+        @JvmStatic private external fun nativeBeginStream(handle: Long, options: FloatArray)
+        @JvmStatic private external fun nativeAddFrame(handle: Long, frame: ByteBuffer, width: Int, height: Int): Int
+        @JvmStatic private external fun nativeEndFrames(handle: Long): Int
         @JvmStatic private external fun nativeFinish(handle: Long, style: String, look: FloatArray, keepHdr: Boolean): Long
         @JvmStatic private external fun nativeEncodeUltraHdr(handle: Long, quality: Int, headroom: Float): ByteArray?
         @JvmStatic private external fun nativeRender(handle: Long, bitmap: Bitmap)

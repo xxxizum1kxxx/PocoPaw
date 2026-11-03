@@ -37,6 +37,18 @@ public:
     void crop(float zoom);
     void align();
     void merge(const BurstOptions& o);
+
+    // Merging while the burst is captured: a session made with no frames, after use_gpu / set_noise_curve /
+    // crop, takes begin_stream() and then each frame through add_frame() as it arrives, and end_frames()
+    // after the last one; merge() then only records the options' demosaic. Classic spatial merge of one
+    // exposure only. The first kStreamCandidates frames are held to pick the reference (sharpest_frame);
+    // every later frame is aligned and merged on arrival and not kept. add_frame / end_frames return the
+    // reference's index (in arrival order) once it is chosen, else -1; from then on every frame but the
+    // reference may be freed after add_frame returns, the reference after end_frames.
+    static constexpr int kStreamCandidates = 3;
+    void begin_stream(const BurstOptions& o);
+    int add_frame(Raw frame);
+    int end_frames();
     // keepHdr: also keeps the scene-linear luminance needed by encode_ultrahdr()
     void finish(const LookParams& look, bool keepHdr);
     int width() const { return outW_; }
@@ -50,6 +62,10 @@ private:
     void gpu_failed(const char* step, const std::exception& e);
     void cpu_align_state();
     void finish_cpu(const LookParams& look, bool keepHdr);
+    Raw cropped(const Raw& r) const;
+    void stream_start();
+    void stream_frame(const Raw& f);
+    void stream_cpu_start();
 
     bool gpuWanted_ = false, gpuFinished_ = false;
     std::unique_ptr<GpuBurst> gpu_;
@@ -59,7 +75,14 @@ private:
     std::vector<Raw> frames_;
     int ref_ = 0;
     float zoom_ = 1.f;
+    int cropX0_ = 0, cropY0_ = 0;
     bool kr_ = false, bracket_ = false;
+    bool streaming_ = false, streamed_ = false, streamGpu_ = false, noiseReady_ = false;
+    int streamAdded_ = 0, streamMerged_ = 0;
+    Raw streamRef_;
+    std::unique_ptr<SpatialMerge> streamMerge_;
+    std::vector<ImageF> streamRefPyr_;
+    ImageF streamMean3Ref_, streamGrayRef_;
     BurstOptions opt_;
     MergeOpts mo_;
     std::vector<ImageF> gray_, mean3_;

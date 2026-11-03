@@ -59,31 +59,36 @@ BurstSession::BurstSession(const Meta& m, std::vector<Raw> frames, int ref)
     : m_(m), frames_(std::move(frames)), ref_(clampi(ref, 0, (int)frames_.size() - 1)) {}
 
 void BurstSession::crop(float zoom) {
-    if (zoom <= 1.f || frames_.empty()) return;
+    if (zoom <= 1.f) return;
     Timer t;
     const int W = m_.width, H = m_.height;
     const int cw = (int)std::lround(W / zoom) & ~1, ch = (int)std::lround(H / zoom) & ~1;
-    const int x0 = ((W - cw) / 2) & ~1, y0 = ((H - ch) / 2) & ~1;
-    for (Raw& r : frames_) {
-        auto own = std::make_shared<std::vector<uint16_t>>((size_t)cw * ch);
-        for (int y = 0; y < ch; y++) {
-            const uint16_t* s = r.d + (size_t)(y0 + y) * r.w + x0;
-            std::copy(s, s + cw, own->data() + (size_t)y * cw);
-        }
-        r.own = std::move(own);
-        r.d = r.own->data();
-        r.w = cw;
-        r.h = ch;
-    }
+    cropX0_ = ((W - cw) / 2) & ~1;
+    cropY0_ = ((H - ch) / 2) & ~1;
     m_.fullW = m_.full_w();
     m_.fullH = m_.full_h();
-    m_.cropX += x0;
-    m_.cropY += y0;
+    m_.cropX += cropX0_;
+    m_.cropY += cropY0_;
     m_.width = cw;
     m_.height = ch;
     m_.rowStride = cw * 2;
     zoom_ = zoom;
+    for (Raw& r : frames_) r = cropped(r);
     tCrop_ = t.ms();
+}
+
+// a private copy of the crop() window of a full-sensor frame
+Raw BurstSession::cropped(const Raw& r) const {
+    Raw c;
+    c.w = m_.width;
+    c.h = m_.height;
+    c.own = std::make_shared<std::vector<uint16_t>>((size_t)c.w * c.h);
+    for (int y = 0; y < c.h; y++) {
+        const uint16_t* s = r.d + (size_t)(cropY0_ + y) * r.w + cropX0_;
+        std::copy(s, s + c.w, c.own->data() + (size_t)y * c.w);
+    }
+    c.d = c.own->data();
+    return c;
 }
 
 void BurstSession::align() {
@@ -182,6 +187,10 @@ void BurstSession::gpu_failed(const char* step, const std::exception& e) {
 }
 
 void BurstSession::merge(const BurstOptions& o) {
+    if (streamed_) {
+        opt_.demosaic = o.demosaic;
+        return;
+    }
     Timer t;
     int n = (int)frames_.size();
     float black = (m_.black[0] + m_.black[1] + m_.black[2] + m_.black[3]) / 4;
@@ -242,6 +251,156 @@ void BurstSession::merge(const BurstOptions& o) {
     mean3_.clear();
     offs_.clear();
     tMerge_ = t.ms();
+}
+
+void BurstSession::begin_stream(const BurstOptions& o) {
+    streaming_ = true;
+    opt_ = o;
+    opt_.kernelRegression = false;
+    opt_.freqMerge = false;
+    kr_ = false;
+    ref_ = -1;
+    calibrated_ = !curve_.empty() && !m_.iso.empty();
+    if (calibrated_) {
+        nm_ = curve_.at((float)m_.iso[0]);
+        noiseReady_ = true;
+    }
+    mo_ = MergeOpts();
+    mo_.robustLo = o.robustLo > 0 ? o.robustLo : (calibrated_ ? kRobustCalibrated[0] : kRobustEstimated[0]);
+    mo_.robustHi = o.robustHi > 0 ? o.robustHi : (calibrated_ ? kRobustCalibrated[1] : kRobustEstimated[1]);
+    mo_.dilate = o.dilate;
+    if (gpuWanted_) {
+        std::string why;
+        gpu_ = GpuBurst::create_stream(m_.width, m_.height, why);
+        if (!gpu_) gpuNote_ = why;
+    }
+}
+
+int BurstSession::add_frame(Raw f) {
+    if (!streaming_ || streamed_) throw std::runtime_error("add_frame outside begin_stream / end_frames");
+    if (zoom_ > 1.f) {
+        Timer t;
+        f = cropped(f);
+        tCrop_ += t.ms();
+    }
+    streamAdded_++;
+    if (ref_ >= 0) {
+        stream_frame(f);
+        return ref_;
+    }
+    frames_.push_back(std::move(f));
+    if ((int)frames_.size() < kStreamCandidates) return -1;
+    stream_start();
+    return ref_;
+}
+
+void BurstSession::stream_start() {
+    Timer t;
+    ref_ = sharpest_frame(frames_, (int)frames_.size());
+    streamRef_ = frames_[ref_];
+    const float black = (m_.black[0] + m_.black[1] + m_.black[2] + m_.black[3]) / 4;
+    if (gpu_ && GpuBurst::enabled("align") && GpuBurst::enabled("merge")) {
+        try {
+            gpu_->stream_ref(streamRef_, black, noiseReady_ ? nullptr : &streamGrayRef_);
+            streamGpu_ = true;
+            gpuSteps_ += " align merge (streamed)";
+        } catch (const std::exception& e) {
+            gpu_failed("stream", e);
+        }
+    } else if (gpu_) {
+        gpu_->drop_frames();
+    }
+    if (!streamGpu_) stream_cpu_start();
+    tAlign_ += t.ms();
+    for (int k = 0; k < (int)frames_.size(); k++)
+        if (k != ref_) stream_frame(frames_[k]);
+    frames_.clear();
+}
+
+void BurstSession::stream_cpu_start() {
+    const float black = (m_.black[0] + m_.black[1] + m_.black[2] + m_.black[3]) / 4;
+    if (streamGrayRef_.w == 0) streamGrayRef_ = gray_from_raw(streamRef_);
+    streamRefPyr_ = build_pyramid(streamGrayRef_);
+    streamMean3Ref_ = box3(streamGrayRef_);
+    streamMerge_ = std::make_unique<SpatialMerge>(streamRef_, black);
+    streamMerged_ = 0;
+}
+
+void BurstSession::stream_frame(const Raw& f) {
+    const float black = (m_.black[0] + m_.black[1] + m_.black[2] + m_.black[3]) / 4;
+    auto note = [&](const Offsets& of) {
+        double sx = 0, sy = 0;
+        for (size_t i = 0; i < of.dx.size(); i++) { sx += of.dx[i]; sy += of.dy[i]; }
+        maxShift_ = std::max(maxShift_, std::hypot(sx / of.dx.size(), sy / of.dy.size()));
+        streamMerged_++;
+    };
+    auto fitNoise = [&](const ImageF& gray, const Offsets& of) {
+        if (noiseReady_) return;
+        Timer t;
+        nm_ = estimate_noise(streamGrayRef_, gray, of, black);
+        noiseReady_ = true;
+        tNoise_ = t.ms();
+    };
+    Timer t;
+    ImageF gray;
+    if (streamGpu_) {
+        try {
+            Offsets of = gpu_->stream_align(f, noiseReady_ ? nullptr : &gray);
+            tAlign_ += t.ms();
+            fitNoise(gray, of);
+            t = Timer();
+            gpu_->stream_merge(of, nm_, black, mo_);
+            tMerge_ += t.ms();
+            note(of);
+            return;
+        } catch (const std::exception& e) {
+            // the frames merged on the device are lost; the CPU starts again from the reference
+            gpu_failed("stream", e);
+            streamGpu_ = false;
+            stream_cpu_start();
+            t = Timer();
+        }
+    }
+    gray = gray_from_raw(f);
+    Offsets of = align_frames(streamRefPyr_, build_pyramid(gray));
+    tAlign_ += t.ms();
+    fitNoise(gray, of);
+    t = Timer();
+    streamMerge_->add(f, of, box3(gray), streamMean3Ref_, nm_, 1.f, 1e30f, false, mo_);
+    tMerge_ += t.ms();
+    note(of);
+}
+
+int BurstSession::end_frames() {
+    if (!streaming_ || streamed_) throw std::runtime_error("end_frames outside begin_stream");
+    if (ref_ < 0) {
+        if (frames_.empty()) throw std::runtime_error("no frames added");
+        stream_start();
+    }
+    Timer t;
+    const float black = (m_.black[0] + m_.black[1] + m_.black[2] + m_.black[3]) / 4;
+    if (streamGpu_) {
+        try {
+            meanWeight_ = gpu_->stream_end(black);
+        } catch (const std::exception& e) {
+            gpu_failed("stream", e);
+            streamGpu_ = false;
+            stream_cpu_start();
+        }
+    }
+    if (!streamGpu_) {
+        MergeStats ms;
+        mosaic_ = streamMerge_->result(&ms);
+        meanWeight_ = ms.meanWeight;
+    }
+    streamMerge_.reset();
+    streamRef_ = Raw();
+    streamRefPyr_.clear();
+    streamMean3Ref_ = ImageF();
+    streamGrayRef_ = ImageF();
+    streamed_ = true;
+    tMerge_ += t.ms();
+    return ref_;
 }
 
 void BurstSession::finish(const LookParams& lp, bool keepHdr) {
@@ -345,6 +504,7 @@ std::string BurstSession::summary() const {
         for (float g : mo_.gain) { char b[16]; snprintf(b, sizeof b, " %.2f", g); mode += b; }
     }
     if (kr_ && (opt_.lcaR[0] != 0 || opt_.lcaB[0] != 0)) mode += " lca";
+    if (streamed_) mode += " streamed " + std::to_string(streamMerged_ + 1) + "/" + std::to_string(streamAdded_);
     snprintf(buf, sizeof buf,
              "%s %dx%d ref=%d threads=%d | noise var=%.4f*S+%.3f %s robust %.2f-%.2f weight=%.3f shift=%.1f | sigma=%.5f visible=%.4f chroma=%.2f local=%.2f | "
              "tone key=%.4f target=%.3f short=%.2f long=%.2f core=%.4f | ms align %.0f noise %.0f merge %.0f lsc+wb %.0f demosaic %.0f ccm %.0f "
