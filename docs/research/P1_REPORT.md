@@ -27,7 +27,7 @@ P1 两份路线图里的全部条目都已在原型中实现并测量，纯 CPU 
 | 学习式 AWB（C5、FFCC） | 完成 | 不接入（约定） | 与 HAL 差距：C5 中位 2.1°（高噪声素材 10°）；FFCC 受 Cube++ 日光先验影响偏蓝 5°，去先验 2.4°；C5 手机推理 5 ms；需灰卡素材定结论 |
 | PMRID 本机微调 | 完成 | 不接入（约定） | 合成训练对微调：真实高噪声帧 53.83 → 54.50 dB（估计对干净真值 58.9 → 61.6 dB） |
 
-还缺的是**实拍验证**：运动、逆光包围、夜景、灰卡白平衡和三脚架 64 帧这几类素材都还没拍，目前的结论来自已有连拍和合成数据。拍摄清单在 [`pipeline/CAPTURE_P1.md`](../../../pipeline/CAPTURE_P1.md)，第 14 节列出每组素材要验证什么。
+**实拍验证**（第 14 节，2026-11-03）：已用 13 组 P1 素材完成噪声标定、64 帧真值评测、LCA、包围、夜景和两组灰卡 AWB。频域合并对真值比空间域高 0.7–2.6 dB；PMRID 官方权重好于两版微调；标定噪声表和主摄 LCA 暂不接入 App；P1 拍摄页修复了 64 帧分段重开后失焦的问题，并按主摄 ISO 上限 876 调整了档位。运动组和其余灰卡组还没拍，补拍清单在 [`pipeline/CAPTURE_P1.md`](../../../pipeline/CAPTURE_P1.md) 末尾。
 
 ---
 
@@ -257,18 +257,103 @@ MHC 在高频纹理上有明显拉链和伪色（`pipeline/out/p1/cmp_demosaic_k
 
 没有接入 App 的：核回归 2x 与自动 2x（内存）、AMaZE 的设置项（接口已支持）、学习式模块（C5、FFCC、PMRID，按约定只做原型）。
 
-## 14. 待实拍验证
+## 14. 实拍验证
 
-按 [`pipeline/CAPTURE_P1.md`](../../../pipeline/CAPTURE_P1.md) 拍摄后需要确认：
+2026-11-03 用 PocoPaw 的 P1 拍摄页拍了 13 组素材（`pipeline/data/p1/<名称>/`，格式与 probe 相同），逐组检查用 `tools/p1_check.py`，原始数字在 `RESULTS.md` 的 “real P1 captures” 之后几节。
 
-| 素材 | 验证内容 |
+### 14.1 素材情况与拍摄页问题
+
+- 主摄 HAL 的 ISO 上限是 876：`tp_main_iso3200` 实际是 ISO 876 / 1.25 ms，`dk_main` 的 1600–6400 三档都被钳到 876。P1 拍摄页已改成 `tp_main_iso400` 和暗场 100 / 200 / 400 / 800 / 876，另加一组明亮场景 `tp_main_bright`。
+- **64 帧三脚架组后 8 帧失焦**：一次打开相机最多 65 个 RAW 请求，拍摄页把 64 帧拆成 56 + 8 两次拍摄，中间重开相机丢了对焦锁定。第 56–63 帧的 G 平面梯度从 10.80 降到 10.37。已修复：后续分段关掉 AF，沿用第一段的对焦距离，`meta.json` 逐帧记录对焦距离。修复后在手机上补拍一组验证，64 帧对焦距离都是 1.799 D，梯度 14.81–14.84，第 55/56 帧前后没有变化。本节的真值只用前 56 帧。
+- 场景偏暗：三组三脚架素材 p99 只有 18–138 DN（满量程约 960）；夜景组单帧信号只比黑电平高 2–20 DN，预览 AE 已顶到 30 ms / ISO 876；包围组拍的是暗房里的台灯，灯泡在 −2 EV 帧里也剪切。
+
+### 14.2 噪声标定
+
+`tools/noise_calib.py` 用 `dk_main` 求暗场参数，用 56 帧对齐均值作真值、帧对差分拟合 `var = k·S + b`（DN）：
+
+| ISO | 读出噪声 DN | 热像素 | 标定 k / b | 管线自估 k / b |
+|---|---|---|---|---|
+| 100 | 0.58 | 42 | 0.120 / 0.49 | 0.114 / 0.34 |
+| 400 | 1.34 | 274 | — | — |
+| 800 | 2.17 | 1691 | 0.987 / 5.28 | 0.787 / 3.40 |
+| 876 | 2.38 | 1566 | 1.247 / 5.36 | 1.123 / 2.81 |
+
+各档黑电平比元数据的 64 高 0.20–0.26 DN（`meta.json` 把动态黑电平取整了），行噪声和列固定噪声都在 0.1 DN 以下。管线自估的 k 偏低 5–20%、b 偏低 30–50%；手持素材上 b 要么卡在下限 0.25，要么被对齐残差撑大（包围组 b = 8）。
+
+换成标定噪声的效果不一致：三脚架真值 PSNR 只高 0.0–0.26 dB；手持夜景 `nt_main_hand` 的可见噪声 0.0047 → 0.0032；但手持包围的平均权重从 0.91 掉到 0.47，噪声反而增加 60%。原因是鲁棒性阈值是按自估模型调的。所以 **App 暂不接入标定表**，等 `mo_*` 素材到了再分路径调整阈值。
+
+### 14.3 合并与 PMRID：64 帧真值
+
+`tools/p1_truth_eval.py`，RAW 域 PSNR（dB），8 帧合并对 56 帧真值（ISO 100 对 16 帧）：
+
+| 方法 | ISO 100 | ISO 800 | ISO 876（−4 EV） |
+|---|---|---|---|
+| 单帧 | 53.25 | 47.64 | 50.54 |
+| 空间域 | 56.32 | 54.07 | 59.40 |
+| 频域 s1 | 57.06 | 55.13 | 61.58 |
+| 频域 s2 | 57.09 | 55.22 | 61.98 |
+| PMRID 官方（单帧） | 56.46 | 54.77 | 62.72 |
+| PMRID 超广角微调 | 55.99 | 53.91 | 61.53 |
+| PMRID 主摄微调 | 56.00 | 53.85 | 61.56 |
+
+频域合并比空间域高 0.7–2.6 dB，确认夜景用频域是对的。PMRID 官方权重单帧就接近 8 帧空间域合并，在 ISO 876 还比频域 s2 高 0.7 dB。两版微调（Cube++ 合成噪声对，主摄版按标定 b 设了噪声范围）在主摄上都比官方低 0.5–1.2 dB：合成训练对迁移不到实拍，**保留官方权重**。等有更亮的 `tp_main_bright` 后，可以试着直接用真值做训练对。
+
+### 14.4 LCA
+
+屏幕棋盘格标定（`calib/lca_cam*_checker.json`）：主摄中径 R 约 0、B +0.19 px，但在校正后的核回归成片上复测时，结果和 RAW 拟合对不上，校正还会过冲，**主摄继续不启用**。超广角 B 与现有系数一致（0.20 对 0.19 px），R 只拟合出线性项（中径 0.55 对 0.39 px），**现有系数不变**。
+
+### 14.5 包围曝光
+
+`br_*` 手持，4.9 / 19.6 ms（超广角 12.2 / 48.8 ms），ISO 50：
+
+| | 空间域 | 核回归 | 只用长帧作参考 |
+|---|---|---|---|
+| 主摄可见噪声 / 权重 | 0.0051 / 0.91 | 0.0044 / 0.91 | 0.0048 / 0.29 |
+| 超广角 | 0.0057 / 0.92 | 0.0050 / 0.93 | 0.0050 / 0.29 |
+
+默认以短帧为参考，12 帧都参与合并，长帧在剪切处被拒绝；以长帧为参考时短帧基本被拒，只剩 4 帧长帧（权重 0.29），高光也就跟着长帧剪切。Ultra HDR 两组都达到增益上限 4.0×（普通连拍是 1.7–2.6×），22% 的块被提亮。手机端：主摄空间域 + Pixel + Ultra HDR，CPU 2.58 s、GPU 2.41 s；核回归 3.80 / 2.41 s；GPU 与 CPU 差 76–79 dB。场景是台灯而不是窗前逆光，暗部细节和窗外层次还要补拍验证。
+
+![超广角包围](images/p1/cmp_real_bracket_uw.jpg)
+
+### 14.6 夜景
+
+运动测光：手持选了 33 ms × 30 帧（陀螺仪 0.18 rad/s），靠稳选了 192 ms × 16 帧，两组都看不到运动模糊。可见噪声：
+
+| | 默认风格 | 夜景 s1 | 夜景 s2 | 夜景 s4 | 夜景 + 核回归 |
+|---|---|---|---|---|---|
+| `nt_main_hand` | 0.0266 | 0.0072 | 0.0047 | 0.0029 | 0.0090 |
+| `nt_main_brace` | 0.0152 | 0.0037 | 0.0024 | 0.0015 | 0.0053 |
+| `nt_uw_hand` | 0.0554 | 0.0168 | 0.0123 | 0.0084 | 0.0201 |
+
+s4 会把仅有的纹理抹平，**默认仍是 s2**。手机端夜景频域：主摄手持 30 帧 CPU 5.09 s、GPU 4.75 s（16 帧 3.07 / 2.91 s），靠稳 3.15 / 3.06 s，超广角 2.65 / 2.59 s；GPU 与 CPU 差 93–95 dB，远好于 50 dB 的门槛。30 帧耗时超过 5 s；只用 16 帧时噪声 0.0047 → 0.0058，耗时降到约 3 s，App 的夜景帧数上限可以在两者之间权衡。
+
+![主摄手持夜景](images/p1/cmp_real_night_main_hand.jpg)
+
+### 14.7 AWB（初步，2 组）
+
+白纸真值角误差（°）：
+
+| | HAL | 灰度世界 | Shades of Gray | C5 | FFCC | FFCC 去先验 |
+|---|---|---|---|---|---|---|
+| `awb_warm` | 2.71 | 3.65 | 3.30 | 2.89 | 2.45 | 1.92 |
+| `awb_cool` | 5.32 | 6.81 | 4.30 | 0.56 | 0.70 | 5.50 |
+
+`awb_cool` 的白纸确实偏冷，HAL 把它判暖了 5.3°；C5 和 FFCC 都在 1° 以内。两组均值：FFCC 1.57°、C5 1.73°、HAL 4.02°。样本太少，等其余 `awb_*` 到齐再决定。
+
+### 14.8 状态
+
+| 素材 | 状态 |
 |---|---|
-| `mo_main_wave`、`mo_main_walk`、`mo_uw_street` | 真实运动下阈值 2 / 4.5 + 膨胀 1 是否足够，核回归与空间域的鬼影对比 |
-| `br_main_backlit`、`br_uw_backlit` | 真逆光下高光保留与暗部噪声，Ultra HDR headroom 是否提高 |
-| `nt_main_hand`、`nt_main_brace`、`nt_uw_hand` | 手持时运动测光的快门与模糊，频域 s2 在真实夜景的细节 |
-| `awb_*` | 灰卡真值下 HAL、灰度世界、C5、FFCC 的角误差 |
-| `tp_main_iso*` | 64 帧平均真值：PMRID 原版与微调版的真实 PSNR；按 ISO 的噪声标定 |
-| `lca_main` | 主摄 LCA 是否值得校正 |
+| `tp_main_iso100/800/3200`、`dk_main` | 已完成标定与真值评测；后 8 帧失焦，需重拍（拍摄页已修复） |
+| `lca_main`、`lca_uw` | 已完成，主摄不启用，超广角不变 |
+| `br_main_backlit`、`br_uw_backlit` | 流程验证通过；需白天窗前逆光重拍 |
+| `nt_main_hand`、`nt_main_brace`、`nt_uw_hand` | 已完成；可补一组不那么极端的夜景 |
+| `awb_warm`、`awb_cool` | 已完成初评 |
+| `mo_main_wave`、`mo_main_walk`、`mo_uw_street` | 未拍：真实运动下阈值 2 / 4.5 + 膨胀 1 是否够用 |
+| `awb_day`、`awb_shade`、`awb_mixed`、`awb_night` | 未拍 |
+| `tp_main_bright`、`tp_main_iso400` | 新增项，未拍 |
+
+补拍清单在 [`pipeline/CAPTURE_P1.md`](../../../pipeline/CAPTURE_P1.md) 末尾。
 
 ## 15. 许可证
 
@@ -294,4 +379,11 @@ python3 tools/awb_eval.py data/main8 data/uw8 ...        # AWB 对比
 python3 tools/ffcc.py train-cube /path/SimpleCube++ calib/ffcc_cam0.npz --to-camera data/main8
 python3 tools/pmrid_finetune.py train /path/SimpleCube++ calib/pmrid_poco_uw.ckp --camera data/uw8
 python3 tools/pmrid_finetune.py eval-real data/uwnoisy16 /tmp/PMRID/models/torch_pretrained.ckp calib/pmrid_poco_uw.ckp --merged <dir>
+# 第 14 节实拍验证
+tools/pull_p1.sh                                         # 手机 P1 目录 -> data/p1/<名称>
+python3 tools/p1_check.py data/p1/*                      # 逐组质量表
+python3 tools/noise_calib.py dark data/p1/dk_main        # 暗场 -> calib/dark_cam0.json
+python3 tools/noise_calib.py flat data/p1/tp_main_iso{100,800,3200} --pipeline --out calib/noise_cam0.json
+python3 tools/p1_truth_eval.py data/p1/tp_main_iso800 --ckp official=/tmp/PMRID/models/torch_pretrained.ckp main=calib/pmrid_poco_main.ckp
+python3 tools/awb_eval.py data/p1/awb_warm data/p1/awb_cool
 ```
