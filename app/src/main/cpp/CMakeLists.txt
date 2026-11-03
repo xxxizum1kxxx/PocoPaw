@@ -15,6 +15,7 @@ add_library(burstpipe SHARED
     burstpipe/merge_freq.cpp
     burstpipe/demosaic.cpp
     burstpipe/ultrahdr.cpp
+    burstpipe/dng.cpp
     burstpipe/pool.cpp
     burstpipe/gpu/cl_runtime.cpp
     burstpipe/gpu/gpu_burst.cpp

@@ -20,6 +20,7 @@ import com.izum1k.pocopaw.camera.PreviewControls
 import com.izum1k.pocopaw.data.AspectRatio
 import com.izum1k.pocopaw.data.CameraSettings
 import com.izum1k.pocopaw.data.FlashMode
+import com.izum1k.pocopaw.data.DngContent
 import com.izum1k.pocopaw.data.OutputFormat
 import com.izum1k.pocopaw.data.Processing
 import com.izum1k.pocopaw.data.TimerMode
@@ -469,6 +470,7 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
                 frames = if (flash) 1 else cfg.burstFrames.count,
                 writeJpeg = true,
                 writeDng = cfg.output == OutputFormat.DNG_JPEG,
+                mergedDng = cfg.dngContent == DngContent.MERGED,
                 look = BurstLook(style = cfg.look.preset),
                 scene = if (flash) BurstScene.AUTO else when (cfg.scene) {
                     SceneMode.AUTO -> BurstScene.AUTO

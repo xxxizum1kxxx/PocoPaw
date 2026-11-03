@@ -1,5 +1,6 @@
 #pragma once
 #include "demosaic.h"
+#include "dng.h"
 #include "finish.h"
 #include "gpu/gpu_burst.h"
 #include "kr.h"
@@ -49,6 +50,9 @@ public:
     void begin_stream(const BurstOptions& o);
     int add_frame(Raw frame);
     int end_frames();
+    // After merge(), before finish(): the merged mosaic as a 16-bit DNG (dng.h); empty after kernel regression,
+    // which merges to RGB.
+    std::vector<uint8_t> encode_dng(const DngColor& c, const DngExtras& x);
     // keepHdr: also keeps the scene-linear luminance needed by encode_ultrahdr()
     void finish(const LookParams& look, bool keepHdr);
     int width() const { return outW_; }
@@ -77,6 +81,7 @@ private:
     float zoom_ = 1.f;
     int cropX0_ = 0, cropY0_ = 0;
     bool kr_ = false, bracket_ = false;
+    float refScale_ = 1.f;  // bracket factor applied to the reference's raw values above black
     bool streaming_ = false, streamed_ = false, streamGpu_ = false, noiseReady_ = false;
     int streamAdded_ = 0, streamMerged_ = 0;
     Raw streamRef_;
@@ -97,6 +102,6 @@ private:
            sharpenCore_ = 0;
     KrStats ks_;
     ToneInfo tone_{};
-    double tCrop_ = 0, tAlign_ = 0, tNoise_ = 0, tMerge_ = 0, tUpscale_ = 0, tUhdr_ = 0;
+    double tCrop_ = 0, tAlign_ = 0, tNoise_ = 0, tMerge_ = 0, tUpscale_ = 0, tUhdr_ = 0, tDng_ = 0;
     FinishTimes ft_;
 };

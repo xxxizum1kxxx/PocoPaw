@@ -94,7 +94,7 @@ Raw BurstSession::cropped(const Raw& r) const {
 void BurstSession::align() {
     Timer t;
     int n = (int)frames_.size();
-    float refScale = 1.f;  // bracket factor applied to the reference's raw values above black
+    refScale_ = 1.f;
     if (n > 1 && (int)m_.exposureNs.size() >= n) {
         auto expo = [&](int k) { return m_.exposureNs[k] * (m_.iso.size() > (size_t)k ? m_.iso[k] : 100); };
         int r = ref_;
@@ -102,7 +102,7 @@ void BurstSession::align() {
         float refWhite;
         if (scale_to_reference(frames_, r, m_, mo_, refWhite)) {
             float black = (m_.black[0] + m_.black[1] + m_.black[2] + m_.black[3]) / 4;
-            refScale = (refWhite - black) / (m_.white - black);
+            refScale_ = (refWhite - black) / (m_.white - black);
             ref_ = r;
             m_.white = refWhite;
             bracket_ = true;
@@ -164,7 +164,7 @@ void BurstSession::align() {
     t = Timer();
     float black = (m_.black[0] + m_.black[1] + m_.black[2] + m_.black[3]) / 4;
     calibrated_ = !curve_.empty() && (int)m_.iso.size() > ref_;
-    if (calibrated_) nm_ = curve_.at((float)m_.iso[ref_], refScale);
+    if (calibrated_) nm_ = curve_.at((float)m_.iso[ref_], refScale_);
     else if (n > 1) nm_ = estimate_noise(gray_[ref_], gray_[alt], offs_[alt], black);
     tNoise_ = t.ms();
 }
@@ -403,6 +403,23 @@ int BurstSession::end_frames() {
     return ref_;
 }
 
+std::vector<uint8_t> BurstSession::encode_dng(const DngColor& c, const DngExtras& x) {
+    if (kr_) return {};
+    Timer t;
+    ImageF fromGpu;
+    const ImageF* mosaic = &mosaic_;
+    if (mosaic_.w == 0) {
+        if (!gpu_ || !gpu_->merged()) return {};
+        fromGpu = gpu_->download_merged();
+        mosaic = &fromGpu;
+    }
+    DngExtras ex = x;
+    ex.baselineExposure = std::log2(refScale_);
+    std::vector<uint8_t> file = ::encode_dng(*mosaic, m_, c, ex);
+    tDng_ = t.ms();
+    return file;
+}
+
 void BurstSession::finish(const LookParams& lp, bool keepHdr) {
     if (gpu_ && GpuBurst::enabled("finish")) {
         try {
@@ -517,6 +534,10 @@ std::string BurstSession::summary() const {
     if (zoom_ > 1.f) {
         snprintf(buf, sizeof buf, " | zoom %.2fx crop at (%d, %d) %.0f ms upscale to %dx%d %.0f ms", zoom_, m_.cropX, m_.cropY, tCrop_,
                  m_.full_w(), m_.full_h(), tUpscale_);
+        s += buf;
+    }
+    if (tDng_ > 0) {
+        snprintf(buf, sizeof buf, " | dng x%d %.0f ms", dng_scale(m_.white), tDng_);
         s += buf;
     }
     if (us_.bytes) {

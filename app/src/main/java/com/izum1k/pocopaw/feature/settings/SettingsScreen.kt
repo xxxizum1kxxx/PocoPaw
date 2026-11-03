@@ -19,6 +19,7 @@ import com.izum1k.pocopaw.data.BurstFrames
 import com.izum1k.pocopaw.data.ColorStyle
 import com.izum1k.pocopaw.data.GridStyle
 import com.izum1k.pocopaw.data.LookStyle
+import com.izum1k.pocopaw.data.DngContent
 import com.izum1k.pocopaw.data.OutputFormat
 import com.izum1k.pocopaw.data.Processing
 import com.izum1k.pocopaw.data.SceneMode
@@ -56,6 +57,14 @@ fun SettingsScreen() {
                     onSelect = { scope.launch { repo.setOutput(it) } },
                     optionEnabled = { it.available },
                     icon = YoinSymbols.Image,
+                )
+                ChoiceRow(
+                    title = stringResource(R.string.settings_dng_content),
+                    options = DngContent.entries,
+                    selected = settings.dngContent,
+                    label = { stringResource(dngContentLabel(it)) },
+                    onSelect = { scope.launch { repo.setDngContent(it) } },
+                    enabled = settings.output == OutputFormat.DNG_JPEG && settings.processing == Processing.HDR_PLUS,
                 )
                 ChoiceRow(
                     title = stringResource(R.string.settings_scene),
@@ -185,6 +194,11 @@ private fun outputLabel(f: OutputFormat): Int = when (f) {
     OutputFormat.DNG -> R.string.output_dng
     OutputFormat.JPEG -> R.string.output_jpeg
     OutputFormat.DNG_JPEG -> R.string.output_dng_jpeg
+}
+
+private fun dngContentLabel(c: DngContent): Int = when (c) {
+    DngContent.MERGED -> R.string.dng_content_merged
+    DngContent.REFERENCE -> R.string.dng_content_reference
 }
 
 private fun processingLabel(p: Processing): Int = when (p) {

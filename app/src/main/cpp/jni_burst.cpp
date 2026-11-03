@@ -248,6 +248,51 @@ Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeEncodeJpeg(JNIEnv* env, jclas
     return out;
 }
 
+// The merged mosaic as a 16-bit DNG in a malloc'd direct buffer (NativeMemory.free), or null. color: per illuminant
+// colorMatrix[9], forwardMatrix[9] (row-major); illuminants: EXIF codes, 0-2 of them; neutral[3]; thumb: RGB8 or null.
+JNIEXPORT jobject JNICALL
+Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeEncodeDng(JNIEnv* env, jclass, jlong h, jfloatArray jcolor, jintArray jill,
+                                                            jfloatArray jneutral, jint orientation, jstring jmake, jstring jmodel,
+                                                            jstring jsoftware, jbyteArray jthumb, jint tw, jint th) {
+    DngColor c;
+    c.illuminants = std::min(2, (int)env->GetArrayLength(jill));
+    if (env->GetArrayLength(jcolor) < c.illuminants * 18 || env->GetArrayLength(jneutral) < 3) return nullptr;
+    std::vector<float> col(c.illuminants * 18);
+    env->GetFloatArrayRegion(jcolor, 0, (jsize)col.size(), col.data());
+    std::vector<jint> ill(c.illuminants);
+    env->GetIntArrayRegion(jill, 0, c.illuminants, ill.data());
+    for (int i = 0; i < c.illuminants; i++) {
+        c.illuminant[i] = ill[i];
+        std::copy(col.begin() + i * 18, col.begin() + i * 18 + 9, c.colorMatrix[i]);
+        std::copy(col.begin() + i * 18 + 9, col.begin() + i * 18 + 18, c.forwardMatrix[i]);
+    }
+    env->GetFloatArrayRegion(jneutral, 0, 3, c.neutral);
+    DngExtras x;
+    x.orientation = orientation;
+    auto str = [&](jstring js) {
+        const char* p = env->GetStringUTFChars(js, nullptr);
+        std::string v = p;
+        env->ReleaseStringUTFChars(js, p);
+        return v;
+    };
+    x.make = str(jmake);
+    x.model = str(jmodel);
+    x.software = str(jsoftware);
+    if (jthumb != nullptr && env->GetArrayLength(jthumb) >= tw * th * 3) {
+        x.thumb.resize((size_t)tw * th * 3);
+        env->GetByteArrayRegion(jthumb, 0, (jsize)x.thumb.size(), reinterpret_cast<jbyte*>(x.thumb.data()));
+        x.thumbW = tw;
+        x.thumbH = th;
+    }
+    std::vector<uint8_t> file;
+    guarded(env, [&] { file = session(h)->encode_dng(c, x); });
+    if (file.empty()) return nullptr;
+    void* p = malloc(file.size());
+    if (p == nullptr) return nullptr;
+    memcpy(p, file.data(), file.size());
+    return env->NewDirectByteBuffer(p, (jlong)file.size());
+}
+
 // The finished image as an Ultra HDR JPEG (gain map at 1/4 resolution), or null when finish() did not keep
 // the HDR luminance or the encoder failed.
 JNIEXPORT jbyteArray JNICALL

@@ -25,6 +25,9 @@ enum class GridStyle { THIRDS, GOLDEN, SQUARE }
 
 enum class OutputFormat(val available: Boolean) { DNG(true), JPEG(true), DNG_JPEG(true) }
 
+/** What the DNG of a DNG + JPEG burst holds: the merged frames, or the reference frame as captured. */
+enum class DngContent { MERGED, REFERENCE }
+
 /** Which multi-frame merge renders JPEG output. */
 enum class Processing { HDR_PLUS, HDR_PLUS_KR }
 
@@ -47,6 +50,7 @@ data class CameraSettings(
     val haptics: Boolean = true,
     val developerInfo: Boolean = true,
     val output: OutputFormat = OutputFormat.DNG_JPEG,
+    val dngContent: DngContent = DngContent.MERGED,
     val processing: Processing = Processing.HDR_PLUS,
     val burstFrames: BurstFrames = BurstFrames.EIGHT,
     val look: LookStyle = LookStyle.STANDARD,
@@ -73,6 +77,7 @@ class SettingsRepository(context: Context, scope: CoroutineScope) {
         val haptics = booleanPreferencesKey("haptics")
         val developerInfo = booleanPreferencesKey("developer_info")
         val output = stringPreferencesKey("output")
+        val dngContent = stringPreferencesKey("dng_content")
         val processing = stringPreferencesKey("processing")
         val burstFrames = stringPreferencesKey("burst_frames")
         val look = stringPreferencesKey("look")
@@ -95,6 +100,7 @@ class SettingsRepository(context: Context, scope: CoroutineScope) {
             haptics = p[Keys.haptics] ?: d.haptics,
             developerInfo = p[Keys.developerInfo] ?: d.developerInfo,
             output = p[Keys.output].toEnum(d.output).takeIf { it.available } ?: d.output,
+            dngContent = p[Keys.dngContent].toEnum(d.dngContent),
             processing = p[Keys.processing].toEnum(d.processing),
             burstFrames = p[Keys.burstFrames].toEnum(d.burstFrames),
             look = p[Keys.look].toEnum(d.look),
@@ -115,6 +121,7 @@ class SettingsRepository(context: Context, scope: CoroutineScope) {
     suspend fun setHaptics(v: Boolean) = put(Keys.haptics, v)
     suspend fun setDeveloperInfo(v: Boolean) = put(Keys.developerInfo, v)
     suspend fun setOutput(v: OutputFormat) = put(Keys.output, v.name)
+    suspend fun setDngContent(v: DngContent) = put(Keys.dngContent, v.name)
     suspend fun setProcessing(v: Processing) = put(Keys.processing, v.name)
     suspend fun setBurstFrames(v: BurstFrames) = put(Keys.burstFrames, v.name)
     suspend fun setLook(v: LookStyle) = put(Keys.look, v.name)

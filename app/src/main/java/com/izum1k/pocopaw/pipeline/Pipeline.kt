@@ -140,6 +140,8 @@ data class PipelineOptions(
     val frames: Int = HdrPlusPipeline.DEFAULT_FRAMES,
     val writeJpeg: Boolean = true,
     val writeDng: Boolean = false,
+    /** The DNG holds the merged burst rather than the reference frame (multi-frame classic merge only). */
+    val mergedDng: Boolean = true,
     val look: BurstLook = BurstLook(),
     val scene: BurstScene = BurstScene.AUTO,
     val ultraHdr: Boolean = false,
@@ -163,7 +165,8 @@ class DngPassthroughPipeline : StagedPipeline(ID, listOf(QuickLookStage(), DngWr
  * either the spatial robust merge plus Malvar-He-Cutler demosaic ([kernelRegression] false) or the
  * handheld super-resolution kernel-regression merge at 1x (true), then LSC / WB, CCM, chroma
  * denoise, synthetic-exposure fusion, tone curve, sharpening and JPEG. With [PipelineOptions.writeDng]
- * the reference frame ([ReferenceStage]) is also saved as DNG, before the merge so the RAW is safe early.
+ * the merged mosaic is also saved as DNG ([MergedDngStage]); with [PipelineOptions.mergedDng] off, or after the
+ * kernel-regression merge (RGB, no mosaic), the reference frame is, before the merge so the RAW is safe early.
  * [BurstScene.BRACKET] captures two short frames per long one (merged on the short frame's scale);
  * [BurstScene.NIGHT] meters a motion-limited shutter, merges in the frequency domain (classic path)
  * and finishes with the night look.
@@ -201,13 +204,15 @@ class HdrPlusPipeline(
 
         private fun stagesFor(kernelRegression: Boolean, o: PipelineOptions): List<PipelineStage> = buildList {
             add(ReferenceStage())
+            val mergedDng = o.writeDng && o.mergedDng && !kernelRegression
             if (o.writeDng) {
                 add(QuickLookStage())
-                add(DngWriteStage())
+                if (!mergedDng) add(DngWriteStage())
             }
             val night = o.scene == BurstScene.NIGHT
             add(AlignStage(o.gpu, o.noise))
             add(MergeStage(mergeOptions(kernelRegression, o)))
+            if (mergedDng) add(MergedDngStage())
             add(FinishStage(if (night) o.look.copy(style = "night") else o.look, o.ultraHdr))
             if (o.writeJpeg) add(JpegWriteStage())
         }

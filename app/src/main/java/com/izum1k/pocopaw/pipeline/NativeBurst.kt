@@ -103,6 +103,24 @@ class NativeBurst private constructor(private var handle: Long) : Closeable {
     /** After the last [addFrame]: finishes the merge ([merge] then only picks the demosaic); returns the reference's index. */
     fun endFrames(): Int = nativeEndFrames(live())
 
+    /**
+     * After [merge], before [finish]: the merged mosaic as a 16-bit DNG in [NativeMemory] (the caller frees it), or null
+     * after the kernel-regression merge. [color] holds per illuminant the colour then forward matrix, row-major;
+     * [thumbnail] is RGB8 in the sensor's orientation.
+     */
+    fun encodeDng(
+        color: FloatArray,
+        illuminants: IntArray,
+        neutral: FloatArray,
+        orientation: Int,
+        make: String,
+        model: String,
+        software: String,
+        thumbnail: ByteArray?,
+        thumbnailWidth: Int,
+        thumbnailHeight: Int,
+    ): ByteBuffer? = nativeEncodeDng(live(), color, illuminants, neutral, orientation, make, model, software, thumbnail, thumbnailWidth, thumbnailHeight)
+
     /** [keepHdr] keeps the scene-linear luminance [encodeUltraHdr] needs. */
     fun finish(look: BurstLook, keepHdr: Boolean = false) {
         val size = nativeFinish(live(), look.style, look.toArray(), keepHdr)
@@ -217,6 +235,10 @@ class NativeBurst private constructor(private var handle: Long) : Closeable {
         @JvmStatic private external fun nativeAddFrame(handle: Long, frame: ByteBuffer, width: Int, height: Int): Int
         @JvmStatic private external fun nativeEndFrames(handle: Long): Int
         @JvmStatic private external fun nativeFinish(handle: Long, style: String, look: FloatArray, keepHdr: Boolean): Long
+        @JvmStatic private external fun nativeEncodeDng(
+            handle: Long, color: FloatArray, illuminants: IntArray, neutral: FloatArray, orientation: Int,
+            make: String, model: String, software: String, thumbnail: ByteArray?, thumbnailWidth: Int, thumbnailHeight: Int,
+        ): ByteBuffer?
         @JvmStatic private external fun nativeEncodeUltraHdr(handle: Long, quality: Int, headroom: Float): ByteArray?
         @JvmStatic private external fun nativeRender(handle: Long, bitmap: Bitmap)
         @JvmStatic private external fun nativeSummary(handle: Long): String

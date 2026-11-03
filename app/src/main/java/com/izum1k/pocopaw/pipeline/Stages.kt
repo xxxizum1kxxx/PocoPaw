@@ -7,6 +7,7 @@ import android.media.ExifInterface
 import android.util.Size
 import com.izum1k.pocopaw.camera.CfaPattern
 import java.nio.ByteOrder
+import java.nio.channels.Channels
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.pow
@@ -126,5 +127,25 @@ class DngWriteStage : PipelineStage {
 
     private companion object {
         const val DNG_THUMB_MAX = 256
+    }
+}
+
+/** After the merge: the merged mosaic as DNG ([MergedDngWriter]), or the reference frame when there is no mosaic to write. */
+class MergedDngStage : PipelineStage {
+    override val name = "merged_dng"
+
+    override suspend fun run(ctx: PipelineContext) {
+        val meta = ctx.burst.metadata
+        val file = MergedDngWriter(meta, ctx.burst.reference.result)
+            .encode(ctx.require(PipelineKeys.Native), ctx[PipelineKeys.QuickLook])
+            ?: return DngWriteStage().run(ctx)
+        try {
+            val saved = ctx.sink.write(OutputKind.DNG, MediaStoreWriter.baseName(meta.captureTimeMillis), meta.captureTimeMillis) { out ->
+                Channels.newChannel(out).let { channel -> while (file.hasRemaining()) channel.write(file) }
+            }
+            ctx.addOutput(saved)
+        } finally {
+            NativeMemory.free(file)
+        }
     }
 }
