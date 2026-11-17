@@ -285,6 +285,47 @@ void upscale_lanczos(ImageF& rgb, int W, int H) {
     rgb = std::move(out);
 }
 
+void aspect_crop_box(int inW, int inH, float aspect, int& x0, int& y0, int& cw, int& ch) {
+    if (aspect <= 0.f || inW <= 0 || inH <= 0) {
+        x0 = 0; y0 = 0; cw = inW; ch = inH;
+        return;
+    }
+    const float r = aspect >= 1.f ? aspect : 1.f / aspect;
+    if (inW >= inH) {
+        if ((double)inW / inH > r) {
+            ch = inH & ~1;
+            cw = std::min(inW, (int)std::lround(ch * r)) & ~1;
+        } else {
+            cw = inW & ~1;
+            ch = std::min(inH, (int)std::lround(cw / r)) & ~1;
+        }
+    } else {
+        if ((double)inH / inW > r) {
+            cw = inW & ~1;
+            ch = std::min(inH, (int)std::lround(cw * r)) & ~1;
+        } else {
+            ch = inH & ~1;
+            cw = std::min(inW, (int)std::lround(ch / r)) & ~1;
+        }
+    }
+    cw = std::max(2, cw);
+    ch = std::max(2, ch);
+    x0 = ((inW - cw) / 2) & ~1;
+    y0 = ((inH - ch) / 2) & ~1;
+}
+
+void crop_aspect(ImageF& rgb, float aspect) {
+    int x0, y0, cw, ch;
+    aspect_crop_box(rgb.w, rgb.h, aspect, x0, y0, cw, ch);
+    if (cw == rgb.w && ch == rgb.h) return;
+    ImageF out(cw, ch, 3);
+    parallel_for(ch, [&](int y) {
+        const float* s = rgb.row(y0 + y) + (size_t)x0 * 3;
+        std::copy(s, s + (size_t)cw * 3, out.row(y));
+    });
+    rgb = std::move(out);
+}
+
 void chroma_denoise(ImageF& rgb, float strength) {
     if (strength <= 0) return;
     const int f = 4;

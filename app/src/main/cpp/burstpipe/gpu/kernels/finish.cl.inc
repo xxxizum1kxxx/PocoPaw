@@ -227,6 +227,14 @@ __kernel void lanczos_v(__global const float* mid, int W, int h, __global float*
     out[(size_t)Y * W * 3 + x] = max(0.f, v);
 }
 
+__kernel void crop_rgb(__global const float* in, int inW, int x0, int y0, __global float* out, int W, int H) {
+    int x = get_global_id(0), y = get_global_id(1);
+    if (x >= W || y >= H) return;
+    __global const float* s = in + ((size_t)(y0 + y) * inW + (x0 + x)) * 3;
+    __global float* d = out + ((size_t)y * W + x) * 3;
+    d[0] = s[0]; d[1] = s[1]; d[2] = s[2];
+}
+
 __kernel void hdr_luma_blocks(__global const float* rgb, int W, int H, int B, __global float* out, int bw, int bh) {
     int bx = get_global_id(0), by = get_global_id(1);
     if (bx >= bw || by >= bh) return;

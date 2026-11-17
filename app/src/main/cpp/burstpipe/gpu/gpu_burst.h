@@ -60,7 +60,7 @@ public:
         FinishTimes ft;
         HdrLuma hdr;
     };
-    void finish(const Meta& m, const LookParams& lp, Demosaic dm, float zoom, bool keepHdr, FinishOut& out);
+    void finish(const Meta& m, const LookParams& lp, Demosaic dm, float zoom, bool keepHdr, FinishOut& out, float aspect = 0.f);
     int width() const { return rgb_.w; }
     int height() const { return rgb_.h; }
     void render(uint8_t* rgba, size_t stride);
@@ -86,6 +86,7 @@ private:
     GImg demosaic_rcd(const GImg& cfa, int cfaType);
     void chroma_denoise(float strength);
     void upscale(int W, int H);
+    void crop_aspect(float aspect);
     ToneInfo local_tonemap(const LookParams& p);
     GImg fuse_exposures(const GImg& Y, float gS, float gL);
     void local_contrast(float amount, float radiusFrac);

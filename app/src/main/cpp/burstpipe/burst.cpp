@@ -425,7 +425,7 @@ void BurstSession::finish(const LookParams& lp, bool keepHdr) {
         try {
             if (!gpu_->merged()) gpu_->set_merged(kr_ ? rgb_ : mosaic_, kr_);
             GpuBurst::FinishOut o;
-            gpu_->finish(m_, lp, opt_.demosaic, zoom_, keepHdr, o);
+            gpu_->finish(m_, lp, opt_.demosaic, zoom_, keepHdr, o, aspect_);
             sigma_ = o.sigma;
             visibleSigma_ = o.visibleSigma;
             chroma_ = o.chroma;
@@ -491,6 +491,7 @@ void BurstSession::finish_cpu(const LookParams& look, bool keepHdr) {
     chroma_ = chroma;
     t = Timer(); chroma_denoise(rgb_, chroma); ft_.chroma = t.ms();
     if (zoom_ > 1.f) { t = Timer(); upscale_lanczos(rgb_, m_.full_w(), m_.full_h()); tUpscale_ = t.ms(); }
+    if (aspect_ > 0.f) crop_aspect(rgb_, aspect_);
     hdr_ = keepHdr ? hdr_luma(rgb_, 1) : HdrLuma();
     t = Timer(); tone_ = local_tonemap(rgb_, lp); ft_.tonemap = t.ms();
     localContrast_ = noise_scaled_local_contrast(lp.localContrast, (float)visibleSigma_);
@@ -534,6 +535,10 @@ std::string BurstSession::summary() const {
     if (zoom_ > 1.f) {
         snprintf(buf, sizeof buf, " | zoom %.2fx crop at (%d, %d) %.0f ms upscale to %dx%d %.0f ms", zoom_, m_.cropX, m_.cropY, tCrop_,
                  m_.full_w(), m_.full_h(), tUpscale_);
+        s += buf;
+    }
+    if (aspect_ > 0.f && outW_ > 0 && outH_ > 0) {
+        snprintf(buf, sizeof buf, " | aspect %dx%d", outW_, outH_);
         s += buf;
     }
     if (tDng_ > 0) {

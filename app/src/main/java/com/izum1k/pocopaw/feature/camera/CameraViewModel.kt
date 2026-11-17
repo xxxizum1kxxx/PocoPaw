@@ -481,6 +481,7 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
                 lca = LensCalibration.lca(cam.id),
                 noise = LensCalibration.noise(cam.id),
                 gpu = cfg.gpuAcceleration,
+                aspectRatio = if (cfg.aspect == AspectRatio.SIXTEEN_NINE) 16f / 9f else 0f,
             ),
         )
     }

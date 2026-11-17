@@ -87,6 +87,9 @@ class NativeBurst private constructor(private var handle: Long) : Closeable {
     /** Before [align]: process only the centre 1/[zoom]; [finish] scales the result back to the sensor size. */
     fun crop(zoom: Float) = nativeCrop(live(), zoom)
 
+    /** Before [finish]: crop the finished RGB to [aspect] (e.g. 16f/9f); <= 0 keeps full sensor. */
+    fun setAspect(aspect: Float) = nativeSetAspect(live(), aspect)
+
     fun align() = nativeAlign(live())
 
     fun merge(options: MergeOptions) = nativeMerge(live(), options.toArray())
@@ -209,6 +212,7 @@ class NativeBurst private constructor(private var handle: Long) : Closeable {
             meta: FloatArray, lsc: FloatArray?, frames: Array<ByteBuffer>, ref: Int, exposureNs: LongArray, iso: IntArray,
         ): Long
         @JvmStatic private external fun nativeCrop(handle: Long, zoom: Float)
+        @JvmStatic private external fun nativeSetAspect(handle: Long, aspect: Float)
         @JvmStatic private external fun nativeUseGpu(handle: Long, enabled: Boolean)
         /**
          * The frame to merge onto: a bracket's shortest exposure (it keeps the highlights), otherwise the sharpest

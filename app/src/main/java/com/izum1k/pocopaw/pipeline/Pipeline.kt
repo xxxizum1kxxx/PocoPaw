@@ -152,6 +152,8 @@ data class PipelineOptions(
     val noise: NoiseCurve? = null,
     /** Run the native steps on the GPU where possible ([NativeBurst.useGpu]). */
     val gpu: Boolean = false,
+    /** Output aspect ratio for JPEG / Ultra HDR (e.g. 16f/9f); 0 keeps full-sensor 4:3. */
+    val aspectRatio: Float = 0f,
 )
 
 /** The single-frame pipeline: quick look, then the reference frame written as DNG unchanged. */
@@ -214,7 +216,7 @@ class HdrPlusPipeline(
             add(AlignStage(o.gpu, o.noise))
             add(MergeStage(mergeOptions(kernelRegression, o)))
             if (mergedDng) add(MergedDngStage())
-            add(FinishStage(if (night) o.look.copy(style = "night") else o.look, o.ultraHdr))
+            add(FinishStage(if (night) o.look.copy(style = "night") else o.look, o.ultraHdr, o.aspectRatio))
             if (o.writeJpeg) add(JpegWriteStage())
         }
     }

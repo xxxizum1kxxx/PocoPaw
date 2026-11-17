@@ -102,6 +102,9 @@ JNIEXPORT void JNICALL
 Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeCrop(JNIEnv*, jclass, jlong h, jfloat zoom) { session(h)->crop(zoom); }
 
 JNIEXPORT void JNICALL
+Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeSetAspect(JNIEnv*, jclass, jlong h, jfloat aspect) { session(h)->set_aspect(aspect); }
+
+JNIEXPORT void JNICALL
 Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeUseGpu(JNIEnv*, jclass, jlong h, jboolean on) { session(h)->use_gpu(on); }
 
 JNIEXPORT jint JNICALL

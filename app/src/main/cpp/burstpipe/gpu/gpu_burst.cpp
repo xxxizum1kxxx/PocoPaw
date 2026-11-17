@@ -547,6 +547,15 @@ void GpuBurst::upscale(int W, int H) {
     rgb_ = out;
 }
 
+void GpuBurst::crop_aspect(float aspect) {
+    int x0, y0, cw, ch;
+    aspect_crop_box(rgb_.w, rgb_.h, aspect, x0, y0, cw, ch);
+    if (cw == rgb_.w && ch == rgb_.h) return;
+    GImg out = g_.image(cw, ch, 3);
+    g_.run("crop_rgb", gs(cw), gs(ch), rgb_, rgb_.w, x0, y0, out, cw, ch);
+    rgb_ = out;
+}
+
 GImg GpuBurst::fuse_exposures(const GImg& Y, float gS, float gL) {
     const int W = Y.w, H = Y.h, n = W * H;
     GImg eS = g_.image(W, H), eL = g_.image(W, H), wS = g_.image(W, H);
@@ -633,7 +642,7 @@ void GpuBurst::sharpen(float amount, float radius, float core) {
     g_.run("sharpen_apply", gs(n), 1, rgb_, n, L, B, amount, core);
 }
 
-void GpuBurst::finish(const Meta& m, const LookParams& look, Demosaic dm, float zoom, bool keepHdr, FinishOut& out) {
+void GpuBurst::finish(const Meta& m, const LookParams& look, Demosaic dm, float zoom, bool keepHdr, FinishOut& out, float aspect) {
     LookParams lp = look;
     Timer t;
     auto lap = [&](double& field) { g_.finish(); field = t.ms(); t = Timer(); };
@@ -712,6 +721,10 @@ void GpuBurst::finish(const Meta& m, const LookParams& look, Demosaic dm, float 
     if (zoom > 1.f) {
         upscale(m.full_w(), m.full_h());
         lap(out.tUpscale);
+    }
+    if (aspect > 0.f) {
+        crop_aspect(aspect);
+        g_.finish();
     }
     if (keepHdr) {
         HdrLuma o;

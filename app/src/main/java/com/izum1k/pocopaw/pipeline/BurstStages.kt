@@ -64,11 +64,16 @@ class MergeStage(private val options: MergeOptions) : PipelineStage {
  * LSC / WB, demosaic (classic merge only), CCM, chroma denoise, local tone mapping, look and
  * sharpening; then the bitmap, and with [ultraHdr] the Ultra HDR JPEG as well.
  */
-class FinishStage(private val look: BurstLook, private val ultraHdr: Boolean = false) : PipelineStage {
+class FinishStage(
+    private val look: BurstLook,
+    private val ultraHdr: Boolean = false,
+    private val aspectRatio: Float = 0f,
+) : PipelineStage {
     override val name = "finish"
 
     override suspend fun run(ctx: PipelineContext) {
         val native = ctx.require(PipelineKeys.Native)
+        if (aspectRatio > 0f) native.setAspect(aspectRatio)
         native.finish(look, keepHdr = ultraHdr)
         if (ultraHdr) native.encodeUltraHdr()?.let { ctx[PipelineKeys.UltraHdrJpeg] = it }
         val rendered = native.render()

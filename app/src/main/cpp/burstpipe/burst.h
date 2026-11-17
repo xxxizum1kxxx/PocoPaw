@@ -36,6 +36,9 @@ public:
     // Digital zoom: before align(), cuts every frame to its centre 1/zoom (CFA phase kept) into
     // private copies; finish() scales the result back to the sensor size.
     void crop(float zoom);
+    // Output aspect ratio (e.g. 16.f/9.f); <= 0 keeps full sensor aspect. Crops after upscale,
+    // before HDR luminance and local tone mapping, leaving DNG full-sensor.
+    void set_aspect(float aspect) { aspect_ = aspect; }
     void align();
     void merge(const BurstOptions& o);
 
@@ -78,7 +81,7 @@ private:
     Meta m_;
     std::vector<Raw> frames_;
     int ref_ = 0;
-    float zoom_ = 1.f;
+    float zoom_ = 1.f, aspect_ = 0.f;
     int cropX0_ = 0, cropY0_ = 0;
     bool kr_ = false, bracket_ = false;
     float refScale_ = 1.f;  // bracket factor applied to the reference's raw values above black
