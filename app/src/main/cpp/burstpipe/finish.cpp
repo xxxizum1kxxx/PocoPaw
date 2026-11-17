@@ -383,6 +383,7 @@ void chroma_denoise(ImageF& rgb, float strength) {
         });
         return;
     }
+    constexpr float kChromaFloor = 4e-3f;
     const int f = 4;
     int w = (rgb.w + f - 1) / f, h = (rgb.h + f - 1) / f;
     ImageF cr(w, h), cb(w, h);
@@ -395,7 +396,8 @@ void chroma_denoise(ImageF& rgb, float strength) {
                     if (X >= rgb.w || Y >= rgb.h) continue;
                     const float* p = &rgb.at(X, Y);
                     float L = luma709(p[0], p[1], p[2]);
-                    sr += p[0] - L; sb += p[2] - L; n++;
+                    float inv = 1.f / (std::max(L, 0.f) + kChromaFloor);
+                    sr += (p[0] - L) * inv; sb += (p[2] - L) * inv; n++;
                 }
             cr.at(x, y) = sr / n; cb.at(x, y) = sb / n;
         }
@@ -415,7 +417,8 @@ void chroma_denoise(ImageF& rgb, float strength) {
             };
             float* p = &rgb.at(x, y);
             float L = luma709(p[0], p[1], p[2]);
-            float r = L + bil(cr), b = L + bil(cb);
+            float d = std::max(L, 0.f) + kChromaFloor;
+            float r = L + d * bil(cr), b = L + d * bil(cb);
             float g = (L - 0.2126f * r - 0.0722f * b) / 0.7152f;
             p[0] = std::max(0.f, r); p[1] = std::max(0.f, g); p[2] = std::max(0.f, b);
         }
@@ -429,13 +432,15 @@ static ImageF fuse_exposures(const ImageF& Y, float gS, float gL) {
     parallel_for(Y.h, [&](int y) {
         for (int x = 0; x < Y.w; x++) {
             float s = srgb_oetf(Y.at(x, y) * gS), l = srgb_oetf(Y.at(x, y) * gL);
+            float clipFade = clampf((1.f - l) / 0.15f, 0.f, 1.f);
             float ws = std::exp(-(s - 0.5f) * (s - 0.5f) / (2 * 0.2f * 0.2f)) + 1e-4f;
-            float wl = std::exp(-(l - 0.5f) * (l - 0.5f) / (2 * 0.2f * 0.2f)) + 1e-4f;
+            float wl = std::exp(-(l - 0.5f) * (l - 0.5f) / (2 * 0.2f * 0.2f)) * clipFade + 1e-4f;
             eS.at(x, y) = s; eL.at(x, y) = l; wS.at(x, y) = ws / (ws + wl);
         }
     });
     int levels = 1;
-    for (int m = std::min(Y.w, Y.h); m > 24; m /= 2) levels++;
+    int minTop = Y.w > 2000 ? 24 * kToneSub : 24;
+    for (int m = std::min(Y.w, Y.h); m > minTop; m /= 2) levels++;
     std::vector<ImageF> gs, gl, gw;
     gs.push_back(std::move(eS)); gl.push_back(std::move(eL)); gw.push_back(std::move(wS));
     for (int l = 1; l < levels; l++) { gs.push_back(pyr_down(gs.back())); gl.push_back(pyr_down(gl.back())); gw.push_back(pyr_down(gw.back())); }
@@ -494,6 +499,31 @@ ToneInfo local_tonemap(ImageF& rgb, const LookParams& p) {
     float maxRatio = p.compression > 0 ? p.compression : 8.f;
     float gS = clampf(1.f / p995, gL / maxRatio, gL);
 
+    auto apply_whitepoint = [&]() {
+        // Low-contrast scenes whose brightest areas stay well below white get them lifted above targetKey so whites are not left grey.
+        std::vector<float> s2;
+        s2.reserve((size_t)((rgb.h + 7) / 8) * ((rgb.w + 7) / 8));
+        for (int y = 0; y < rgb.h; y += 8)
+            for (int x = 0; x < rgb.w; x += 8) s2.push_back(Yat(x, y));
+        size_t idx = (size_t)(s2.size() * 0.995);
+        std::nth_element(s2.begin(), s2.begin() + idx, s2.end());
+        float hi = s2[idx];
+        constexpr float kWhite = 0.72f, kMaxLift = 1.35f;
+        float lift = clampf(kWhite / std::max(hi, 1e-6f), 1.f, kMaxLift);
+        float lo = p.targetKey;
+        if (lift > 1.001f && hi > lo * 1.5f) {
+            parallel_for(rgb.h, [&](int y) {
+                float* q = rgb.row(y);
+                for (int x = 0; x < rgb.w; x++, q += 3) {
+                    float L = luma709(q[0], q[1], q[2]);
+                    float t = clampf((L - lo) / (hi - lo), 0.f, 1.f);
+                    float f = 1.f + (lift - 1.f) * t * t * (3 - 2 * t);
+                    q[0] *= f; q[1] *= f; q[2] *= f;
+                }
+            });
+        }
+    };
+
     if (p.toneFull) {
         ImageF Y(rgb.w, rgb.h);
         parallel_for(rgb.h, [&](int y) { for (int x = 0; x < rgb.w; x++) Y.at(x, y) = Yat(x, y); });
@@ -505,6 +535,7 @@ ToneInfo local_tonemap(ImageF& rgb, const LookParams& p) {
                 q[0] *= ratio; q[1] *= ratio; q[2] *= ratio;
             }
         });
+        apply_whitepoint();
         return {gS, gL, key};
     }
     // fusion on the binned luma; its gain (log2 fused / input) is brought back to full size by a fast guided filter
@@ -568,38 +599,51 @@ ToneInfo local_tonemap(ImageF& rgb, const LookParams& p) {
             q[0] *= ratio; q[1] *= ratio; q[2] *= ratio;
         }
     });
+    apply_whitepoint();
     return {gS, gL, key};
 }
 
 void pixel_look(ImageF& rgb, const LookParams& p) {
+    auto smooth01 = [](float t) { t = clampf(t, 0.f, 1.f); return t * t * (3.f - 2.f * t); };
     parallel_for(rgb.h, [&](int y) {
         float* q = rgb.row(y);
         for (int x = 0; x < rgb.w; x++, q += 3) {
-            float mx = std::max(q[0], std::max(q[1], q[2]));
-            // coloured highlights (lamp-lit wood, skin) roll off on the max channel with hue and saturation kept,
-            // instead of the leading channel clipping first; neutrals are left for the gamut fit below
+            float mx0 = std::max(q[0], std::max(q[1], q[2]));
+            // coloured highlights (lamp-lit wood, skin) roll off on the max channel with hue kept, while bright
+            // speculars and light sources (monitors, LEDs) bleach smoothly toward neutral white
             constexpr float kKnee = 0.7f;
-            if (mx > kKnee) {
+            if (mx0 > kKnee) {
                 float mn = std::min(q[0], std::min(q[1], q[2]));
-                float t = (mx - kKnee) / (1 - kKnee);
+                float t = (mx0 - kKnee) / (1 - kKnee);
                 float shoulder = kKnee + (1 - kKnee) * t / (1 + t);
-                float chroma = clampf(2 * (mx - std::max(0.f, mn)) / mx, 0.f, 1.f);
-                float g = (mx + (shoulder - mx) * chroma) / mx;
-                for (int c = 0; c < 3; c++) q[c] *= g;
-                mx *= g;
+                float chroma = clampf(2 * (mx0 - std::max(0.f, mn)) / mx0, 0.f, 1.f);
+                float g = (mx0 + (shoulder - mx0) * chroma) / mx0;
+                float bleach = smooth01((mx0 - 0.90f) / (3.2f - 0.90f));
+                float mx = mx0 * g;
+                for (int c = 0; c < 3; c++) {
+                    float v = q[c] * g;
+                    q[c] = v + bleach * (mx - v);
+                }
             }
             // fit out-of-gamut highlights by desaturating toward luminance instead of hard per-channel clipping
+            float mx = std::max(q[0], std::max(q[1], q[2]));
             float L = std::min(1.f, std::max(0.f, luma709(q[0], q[1], q[2])));
             if (mx > 1.f) { float k = (1.f - L) / std::max(1e-6f, mx - L); for (int c = 0; c < 3; c++) q[c] = L + (q[c] - L) * k; }
-            for (int c = 0; c < 3; c++) {
-                float v = srgb_oetf(q[c]);
-                float s = v * v * (3 - 2 * v);
-                q[c] = v + p.contrast * (s - v);
-            }
-            float Ld = luma709(q[0], q[1], q[2]);
+            for (int c = 0; c < 3; c++) q[c] = srgb_oetf(q[c]);
+            // luminance S-curve avoids warping R/G/B at different slopes near white (which twists cool tints cyan)
+            float Ld = clampf(luma709(q[0], q[1], q[2]), 0.f, 1.f);
+            float s = Ld * Ld * (3 - 2 * Ld);
+            float Lv = Ld + p.contrast * (s - Ld);
+            float cg = Ld > 1e-6f ? Lv / Ld : 1.f;
+            for (int c = 0; c < 3; c++) q[c] *= cg;
             float sat = std::max(q[0], std::max(q[1], q[2])) - std::min(q[0], std::min(q[1], q[2]));
-            float k = 1 + (p.saturation - 1) * (1 - clampf(sat, 0, 1));
-            for (int c = 0; c < 3; c++) q[c] = clampf(Ld + (q[c] - Ld) * k, 0.f, 1.f);
+            float vibW = 1.f - smooth01((Lv - 0.55f) / (0.80f - 0.55f));
+            float hiRoll = 1.f - 0.55f * smooth01((Lv - 0.72f) / (1.0f - 0.72f));
+            float k = (1.f + (p.saturation - 1.f) * (1.f - clampf(sat, 0.f, 1.f)) * vibW) * hiRoll;
+            float mxd = 0.f;
+            for (int c = 0; c < 3; c++) mxd = std::max(mxd, Lv + (q[c] - Lv) * k);
+            if (mxd > 1.f && Lv < 1.f) k *= (1.f - Lv) / std::max(1e-6f, mxd - Lv);
+            for (int c = 0; c < 3; c++) q[c] = clampf(Lv + (q[c] - Lv) * k, 0.f, 1.f);
         }
     });
 }

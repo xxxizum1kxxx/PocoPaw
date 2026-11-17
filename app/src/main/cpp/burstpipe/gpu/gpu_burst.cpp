@@ -575,7 +575,8 @@ GImg GpuBurst::fuse_exposures(const GImg& Y, float gS, float gL) {
     GImg eS = g_.image(W, H), eL = g_.image(W, H), wS = g_.image(W, H);
     g_.run("tm_exposures", gs(n), 1, Y, n, oetf_, gS, gL, eS, eL, wS);
     int levels = 1;
-    for (int m = std::min(W, H); m > 24; m /= 2) levels++;
+    int minTop = W > 2000 ? 24 * kToneSub : 24;
+    for (int m = std::min(W, H); m > minTop; m /= 2) levels++;
     std::vector<GImg> gsP, glP, gwP;
     gsP.push_back(eS); glP.push_back(eL); gwP.push_back(wS);
     eS = eL = wS = GImg();
@@ -610,10 +611,25 @@ ToneInfo GpuBurst::local_tonemap(const LookParams& p) {
     float maxRatio = p.compression > 0 ? p.compression : 8.f;
     float gS = clampf(1.f / p995, gL / maxRatio, gL);
 
+    auto apply_whitepoint = [&]() {
+        g_.run("tm_key_samples", gs(s8w), gs(s8h), rgb_, W, H, sub, s8w, s8h);
+        g_.read(sub.b, samp.data(), samp.size() * 4);
+        size_t idx = (size_t)(samp.size() * 0.995);
+        std::nth_element(samp.begin(), samp.begin() + idx, samp.end());
+        float hi = samp[idx];
+        constexpr float kWhite = 0.72f, kMaxLift = 1.35f;
+        float lift = clampf(kWhite / std::max(hi, 1e-6f), 1.f, kMaxLift);
+        float lo = p.targetKey;
+        if (lift > 1.001f && hi > lo * 1.5f) {
+            g_.run("tm_whitepoint", gs(n), 1, rgb_, n, lo, 1.f / (hi - lo), lift - 1.f);
+        }
+    };
+
     if (p.toneFull) {
         GImg Y = luma(rgb_, 1e-6f);
         GImg acc = fuse_exposures(Y, gS, gL);
         g_.run("tm_apply", gs(n), 1, rgb_, n, acc, Y, eotf_);
+        apply_whitepoint();
         return {gS, gL, key};
     }
     const int sw = (W + kToneSub - 1) / kToneSub, sh = (H + kToneSub - 1) / kToneSub, sn = sw * sh;
@@ -628,6 +644,7 @@ ToneInfo GpuBurst::local_tonemap(const LookParams& p) {
     g_.run("tm_coef", gs(sn), 1, mG, mL, mGG, mGL, A, B, sn, kToneGuideEps);
     GImg mA = box(A, r), mB = box(B, r);
     g_.run("tm_apply_guided", gs(W), gs(H), rgb_, W, H, mA, mB, sw, sh);
+    apply_whitepoint();
     return {gS, gL, key};
 }
 

@@ -2,6 +2,7 @@ R"CL(
 // finish.cpp and hdr_luma() on the device. RGB images are interleaved float3 rows.
 
 #define NEG_FLOOR 0.0625f
+#define CHROMA_FLOOR 4e-3f
 
 inline float lsc_gain(__global const float* L, int cols, int x0, int y0, float fx, float fy, int c) {
     __global const float* a = L + ((size_t)y0 * cols + x0) * 4 + c;
@@ -204,7 +205,8 @@ __kernel void chroma_down(__global const float* rgb, int W, int H, __global floa
             if (X >= W || Y >= H) continue;
             __global const float* p = rgb + ((size_t)Y * W + X) * 3;
             float L = luma709(p[0], p[1], p[2]);
-            sr += p[0] - L; sb += p[2] - L; n++;
+            float inv = 1.f / (max(L, 0.f) + CHROMA_FLOOR);
+            sr += (p[0] - L) * inv; sb += (p[2] - L) * inv; n++;
         }
     cr[y * w + x] = sr / n;
     cb[y * w + x] = sb / n;
@@ -239,7 +241,8 @@ __kernel void chroma_apply(__global float* rgb, int W, int H, __global const flo
 #define BIL(im) ((1 - fy) * ((1 - fx) * im[y0 * w + x0] + fx * im[y0 * w + x1]) + fy * ((1 - fx) * im[y1 * w + x0] + fx * im[y1 * w + x1]))
     __global float* p = rgb + ((size_t)y * W + x) * 3;
     float L = luma709(p[0], p[1], p[2]);
-    float r = L + BIL(cr), b = L + BIL(cb);
+    float d = max(L, 0.f) + CHROMA_FLOOR;
+    float r = L + d * BIL(cr), b = L + d * BIL(cb);
 #undef BIL
     float g = (L - 0.2126f * r - 0.0722f * b) / 0.7152f;
     p[0] = max(0.f, r); p[1] = max(0.f, g); p[2] = max(0.f, b);
@@ -309,8 +312,9 @@ __kernel void tm_exposures(__global const float* Y, int n, __global const float*
     int i = get_global_id(0);
     if (i >= n) return;
     float s = srgb_oetf(oetf, Y[i] * gS), l = srgb_oetf(oetf, Y[i] * gL);
+    float clipFade = clamp((1.f - l) / 0.15f, 0.f, 1.f);
     float ws = exp(-(s - 0.5f) * (s - 0.5f) / (2 * 0.2f * 0.2f)) + 1e-4f;
-    float wl = exp(-(l - 0.5f) * (l - 0.5f) / (2 * 0.2f * 0.2f)) + 1e-4f;
+    float wl = exp(-(l - 0.5f) * (l - 0.5f) / (2 * 0.2f * 0.2f)) * clipFade + 1e-4f;
     eS[i] = s; eL[i] = l; wS[i] = ws / (ws + wl);
 }
 
@@ -427,37 +431,60 @@ __kernel void tm_apply(__global float* rgb, int n, __global const float* acc, __
     q[0] *= ratio; q[1] *= ratio; q[2] *= ratio;
 }
 
+__kernel void tm_whitepoint(__global float* rgb, int n, float lo, float invSpan, float lift1) {
+    int i = get_global_id(0);
+    if (i >= n) return;
+    __global float* q = rgb + (size_t)i * 3;
+    float L = luma709(q[0], q[1], q[2]);
+    float t = clamp((L - lo) * invSpan, 0.f, 1.f);
+    float f = 1.f + lift1 * t * t * (3.f - 2.f * t);
+    q[0] *= f; q[1] *= f; q[2] *= f;
+}
+
+inline float smooth01_cl(float t) { t = clamp(t, 0.f, 1.f); return t * t * (3.f - 2.f * t); }
+
 __kernel void pixel_look(__global float* rgb, int n, __global const float* oetf, float contrast, float saturation) {
     int i = get_global_id(0);
     if (i >= n) return;
     __global float* q = rgb + (size_t)i * 3;
     float v0 = q[0], v1 = q[1], v2 = q[2];
-    float mx = max(v0, max(v1, v2));
+    float mx0 = max(v0, max(v1, v2));
     const float kKnee = 0.7f;
-    if (mx > kKnee) {
+    if (mx0 > kKnee) {
         float mn = min(v0, min(v1, v2));
-        float t = (mx - kKnee) / (1 - kKnee);
-        float shoulder = kKnee + (1 - kKnee) * t / (1 + t);
-        float chroma = clamp(2 * (mx - max(0.f, mn)) / mx, 0.f, 1.f);
-        float g = (mx + (shoulder - mx) * chroma) / mx;
-        v0 *= g; v1 *= g; v2 *= g;
-        mx *= g;
+        float t = (mx0 - kKnee) / (1.f - kKnee);
+        float shoulder = kKnee + (1.f - kKnee) * t / (1.f + t);
+        float chroma = clamp(2.f * (mx0 - max(0.f, mn)) / mx0, 0.f, 1.f);
+        float g = (mx0 + (shoulder - mx0) * chroma) / mx0;
+        float bleach = smooth01_cl((mx0 - 0.90f) / (3.2f - 0.90f));
+        float mx = mx0 * g;
+        v0 = v0 * g + bleach * (mx - v0 * g);
+        v1 = v1 * g + bleach * (mx - v1 * g);
+        v2 = v2 * g + bleach * (mx - v2 * g);
     }
+    float mx = max(v0, max(v1, v2));
     float L = min(1.f, max(0.f, luma709(v0, v1, v2)));
     if (mx > 1.f) {
         float k = (1.f - L) / max(1e-6f, mx - L);
         v0 = L + (v0 - L) * k; v1 = L + (v1 - L) * k; v2 = L + (v2 - L) * k;
     }
-    float c3[3] = {v0, v1, v2};
-    for (int c = 0; c < 3; c++) {
-        float v = srgb_oetf(oetf, c3[c]);
-        float s = v * v * (3 - 2 * v);
-        c3[c] = v + contrast * (s - v);
-    }
-    float Ld = luma709(c3[0], c3[1], c3[2]);
-    float sat = max(c3[0], max(c3[1], c3[2])) - min(c3[0], min(c3[1], c3[2]));
-    float k = 1 + (saturation - 1) * (1 - clamp(sat, 0.f, 1.f));
-    for (int c = 0; c < 3; c++) q[c] = clamp(Ld + (c3[c] - Ld) * k, 0.f, 1.f);
+    v0 = srgb_oetf(oetf, v0);
+    v1 = srgb_oetf(oetf, v1);
+    v2 = srgb_oetf(oetf, v2);
+    float Ld = clamp(luma709(v0, v1, v2), 0.f, 1.f);
+    float s = Ld * Ld * (3.f - 2.f * Ld);
+    float Lv = Ld + contrast * (s - Ld);
+    float cg = Ld > 1e-6f ? Lv / Ld : 1.f;
+    v0 *= cg; v1 *= cg; v2 *= cg;
+    float sat = max(v0, max(v1, v2)) - min(v0, min(v1, v2));
+    float vibW = 1.f - smooth01_cl((Lv - 0.55f) / (0.80f - 0.55f));
+    float hiRoll = 1.f - 0.55f * smooth01_cl((Lv - 0.72f) / (1.0f - 0.72f));
+    float k = (1.f + (saturation - 1.f) * (1.f - clamp(sat, 0.f, 1.f)) * vibW) * hiRoll;
+    float mxd = max(Lv + (v0 - Lv) * k, max(Lv + (v1 - Lv) * k, Lv + (v2 - Lv) * k));
+    if (mxd > 1.f && Lv < 1.f) k *= (1.f - Lv) / max(1e-6f, mxd - Lv);
+    q[0] = clamp(Lv + (v0 - Lv) * k, 0.f, 1.f);
+    q[1] = clamp(Lv + (v1 - Lv) * k, 0.f, 1.f);
+    q[2] = clamp(Lv + (v2 - Lv) * k, 0.f, 1.f);
 }
 
 // ---- local contrast (fast guided filter on display luma)
