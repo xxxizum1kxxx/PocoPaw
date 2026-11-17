@@ -26,11 +26,8 @@ object PipelineKeys {
     /** The native burst session shared by align, merge and finish. */
     val Native = PipelineKey<NativeBurst>("native")
 
-    /** The finished full-resolution image in the sensor's orientation. */
-    val Rendered = PipelineKey<Bitmap>("rendered")
-
-    /** The same image as an Ultra HDR JPEG file (SDR base + gain map), when the run asked for it. */
-    val UltraHdrJpeg = PipelineKey<ByteArray>("ultraHdrJpeg")
+    /** The finished image encoded as JPEG or Ultra HDR JPEG in native memory. */
+    val EncodedJpeg = PipelineKey<EncodedPhoto>("encodedJpeg")
 }
 
 /** Working state of one pipeline run: the burst, intermediate results, and what was written. */
@@ -216,7 +213,7 @@ class HdrPlusPipeline(
             add(AlignStage(o.gpu, o.noise))
             add(MergeStage(mergeOptions(kernelRegression, o)))
             if (mergedDng) add(MergedDngStage())
-            add(FinishStage(if (night) o.look.copy(style = "night") else o.look, o.ultraHdr, o.aspectRatio))
+            add(FinishStage(if (night) o.look.copy(style = "night") else o.look, o.ultraHdr, o.aspectRatio, o.writeJpeg))
             if (o.writeJpeg) add(JpegWriteStage())
         }
     }

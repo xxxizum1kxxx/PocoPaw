@@ -61,6 +61,8 @@ public:
     int width() const { return outW_; }
     int height() const { return outH_; }
     void render(uint8_t* rgba, size_t stride) const;
+    void render_thumb(uint8_t* rgba, size_t stride, int outW, int outH) const;
+    std::vector<uint8_t> encode_photo(int quality, bool wantUltraHdr, float headroom, bool* isUltraHdr);
     std::vector<uint8_t> encode_ultrahdr(int quality, float headroom);
     // One line of measurements for the log: noise model, merge weight, tone gains, timings.
     std::string summary() const;

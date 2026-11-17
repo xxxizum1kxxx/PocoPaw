@@ -34,18 +34,22 @@ class MergedDngWriter(private val metadata: RawMetadata, private val reference: 
         }
         if (illuminants.isEmpty()) return null
         val thumb = thumbnail?.let { fitWithin(it, THUMB_MAX) }
-        return native.encodeDng(
-            color.toFloatArray(),
-            illuminants.toIntArray(),
-            neutral(),
-            orientation(metadata.orientationDegrees),
-            Build.MANUFACTURER,
-            Build.MODEL,
-            "PocoPaw",
-            thumb?.let(::rgb),
-            thumb?.width ?: 0,
-            thumb?.height ?: 0,
-        )
+        try {
+            return native.encodeDng(
+                color.toFloatArray(),
+                illuminants.toIntArray(),
+                neutral(),
+                orientation(metadata.orientationDegrees),
+                Build.MANUFACTURER,
+                Build.MODEL,
+                "PocoPaw",
+                thumb?.let(::rgb),
+                thumb?.width ?: 0,
+                thumb?.height ?: 0,
+            )
+        } finally {
+            if (thumb != null && thumb !== thumbnail) thumb.recycle()
+        }
     }
 
     private fun neutral(): FloatArray {

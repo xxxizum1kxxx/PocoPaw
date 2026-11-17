@@ -64,6 +64,8 @@ public:
     int width() const { return rgb_.w; }
     int height() const { return rgb_.h; }
     void render(uint8_t* rgba, size_t stride);
+    std::vector<uint8_t> render_rgb8();
+    void render_thumb(uint8_t* rgba, size_t stride, int outW, int outH);
     ImageF download_rgb();
 
     // per-kernel device times since the last call, when profiling is on

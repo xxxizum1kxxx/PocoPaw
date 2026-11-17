@@ -863,3 +863,24 @@ void to_rgba8888(const ImageF& rgb, uint8_t* out, size_t stride) {
         }
     });
 }
+
+void to_rgba8888_thumb(const ImageF& rgb, uint8_t* out, size_t stride, int outW, int outH) {
+    if (rgb.w <= 0 || rgb.h <= 0 || outW <= 0 || outH <= 0) return;
+    parallel_for(outH, [&](int y) {
+        int y0 = (int)((long)y * rgb.h / outH), y1 = std::max(y0 + 1, (int)((long)(y + 1) * rgb.h / outH));
+        uint8_t* o = out + (size_t)y * stride;
+        for (int x = 0; x < outW; x++, o += 4) {
+            int x0 = (int)((long)x * rgb.w / outW), x1 = std::max(x0 + 1, (int)((long)(x + 1) * rgb.w / outW));
+            float sr = 0, sg = 0, sb = 0;
+            for (int sy = y0; sy < y1; sy++) {
+                const float* row = rgb.row(sy) + (size_t)x0 * 3;
+                for (int sx = x0; sx < x1; sx++, row += 3) { sr += row[0]; sg += row[1]; sb += row[2]; }
+            }
+            float inv = 1.f / ((y1 - y0) * (x1 - x0));
+            o[0] = (uint8_t)clampi((int)std::lround(sr * inv * 255.f), 0, 255);
+            o[1] = (uint8_t)clampi((int)std::lround(sg * inv * 255.f), 0, 255);
+            o[2] = (uint8_t)clampi((int)std::lround(sb * inv * 255.f), 0, 255);
+            o[3] = 255;
+        }
+    });
+}

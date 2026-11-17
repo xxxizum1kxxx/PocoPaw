@@ -761,4 +761,18 @@ void GpuBurst::render(uint8_t* rgba, size_t stride) {
     g_.read_rows(o, rgba, (size_t)rgb_.w * 4, rgb_.h, stride);
 }
 
+std::vector<uint8_t> GpuBurst::render_rgb8() {
+    Buf o = g_.alloc((size_t)rgb_.w * rgb_.h * 3);
+    g_.run("to_rgb8", gs(rgb_.w), gs(rgb_.h), rgb_, rgb_.w, rgb_.h, o);
+    std::vector<uint8_t> out((size_t)rgb_.w * rgb_.h * 3);
+    g_.read(o, out.data(), out.size());
+    return out;
+}
+
+void GpuBurst::render_thumb(uint8_t* rgba, size_t stride, int outW, int outH) {
+    Buf o = g_.alloc((size_t)outW * outH * 4);
+    g_.run("render_thumb", gs(outW), gs(outH), rgb_, rgb_.w, rgb_.h, o, outW, outH);
+    g_.read_rows(o, rgba, (size_t)outW * 4, outH, stride);
+}
+
 ImageF GpuBurst::download_rgb() { return download(rgb_); }

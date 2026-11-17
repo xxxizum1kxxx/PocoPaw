@@ -14,6 +14,9 @@ struct HdrLuma {
 HdrLuma hdr_luma(const ImageF& linearRgb, int downscale);
 
 struct UltraHdrStats { float maxBoost = 1, meanBoost = 1, boostedFrac = 0; size_t bytes = 0, gainMapBytes = 0; };
+// the whole Ultra HDR JPEG file from an existing 4:2:0 base JPEG and its RGB8 source; empty on failure or when peak boost < kMinBoost
+std::vector<uint8_t> encode_ultrahdr_rgb8(const uint8_t* px, int w, int h, const std::vector<uint8_t>& baseJpeg,
+                                          const HdrLuma& hdr, float exposure, float headroom, UltraHdrStats* st = nullptr);
 // the whole Ultra HDR JPEG file; empty on failure or when the peak gain is below kMinBoost
 std::vector<uint8_t> encode_ultrahdr(const ImageF& sdr, int downscale, const HdrLuma& hdr, float exposure, float headroom,
                                      int quality, UltraHdrStats* st = nullptr);

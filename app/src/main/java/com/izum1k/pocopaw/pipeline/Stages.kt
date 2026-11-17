@@ -67,12 +67,15 @@ class QuickLookStage(private val longSide: Int = 512) : PipelineStage {
             }
         }
         val bitmap = Bitmap.createBitmap(pixels, outW, outH, Bitmap.Config.ARGB_8888)
-        ctx[PipelineKeys.QuickLook] = bitmap
-        ctx[PipelineKeys.QuickLookUpright] = if (meta.orientationDegrees == 0) {
+        val upright = if (meta.orientationDegrees == 0) {
             bitmap
         } else {
             Bitmap.createBitmap(bitmap, 0, 0, outW, outH, Matrix().apply { postRotate(meta.orientationDegrees.toFloat()) }, true)
         }
+        ctx[PipelineKeys.QuickLook] = bitmap
+        ctx[PipelineKeys.QuickLookUpright] = upright
+        ctx.own(AutoCloseable { if (ctx[PipelineKeys.QuickLookUpright] !== bitmap) bitmap.recycle() })
+        if (upright !== bitmap) ctx.own(AutoCloseable { if (ctx[PipelineKeys.QuickLookUpright] !== upright) upright.recycle() })
     }
 
     private fun encode(linear: Float): Int {
@@ -97,10 +100,12 @@ class DngWriteStage : PipelineStage {
         val frame = ctx.burst.reference
         val meta = ctx.burst.metadata
         val dng = DngCreator(meta.characteristics, frame.result)
+        val quick = ctx[PipelineKeys.QuickLook]
+        val thumb = quick?.let { fitWithin(it, DNG_THUMB_MAX) }
         try {
             dng.setOrientation(exifOrientation(meta.orientationDegrees))
             dng.setDescription("PocoPaw")
-            ctx[PipelineKeys.QuickLook]?.let { dng.setThumbnail(fitWithin(it, DNG_THUMB_MAX)) }
+            thumb?.let { dng.setThumbnail(it) }
             val buffer = frame.data.duplicate().order(ByteOrder.nativeOrder())
             buffer.rewind()
             val saved = ctx.sink.write(OutputKind.DNG, MediaStoreWriter.baseName(meta.captureTimeMillis), meta.captureTimeMillis) { out ->
@@ -108,6 +113,7 @@ class DngWriteStage : PipelineStage {
             }
             ctx.addOutput(saved)
         } finally {
+            if (thumb != null && thumb !== quick) thumb.recycle()
             dng.close()
         }
     }

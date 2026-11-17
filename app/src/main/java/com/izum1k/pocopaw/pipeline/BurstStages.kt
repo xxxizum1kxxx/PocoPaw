@@ -10,7 +10,6 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.math.max
 import kotlin.math.roundToInt
 
 private const val TAG = "PocoPawPipeline"
@@ -62,31 +61,31 @@ class MergeStage(private val options: MergeOptions) : PipelineStage {
 
 /**
  * LSC / WB, demosaic (classic merge only), CCM, chroma denoise, local tone mapping, look and
- * sharpening; then the bitmap, and with [ultraHdr] the Ultra HDR JPEG as well.
+ * sharpening; renders the small viewfinder thumbnail and encodes the JPEG / Ultra HDR directly in
+ * native memory without allocating a full-resolution Java Bitmap.
  */
 class FinishStage(
     private val look: BurstLook,
     private val ultraHdr: Boolean = false,
     private val aspectRatio: Float = 0f,
+    private val writeJpeg: Boolean = true,
+    private val quality: Int = 95,
 ) : PipelineStage {
     override val name = "finish"
 
     override suspend fun run(ctx: PipelineContext) {
         val native = ctx.require(PipelineKeys.Native)
         if (aspectRatio > 0f) native.setAspect(aspectRatio)
-        native.finish(look, keepHdr = ultraHdr)
-        if (ultraHdr) native.encodeUltraHdr()?.let { ctx[PipelineKeys.UltraHdrJpeg] = it }
-        val rendered = native.render()
+        native.finish(look, keepHdr = ultraHdr && writeJpeg)
+        val thumb = native.renderThumbnail(THUMB_LONG_SIDE)
+        val uprightThumb = upright(thumb, ctx.burst.metadata.orientationDegrees)
+        if (uprightThumb !== thumb) thumb.recycle()
+        ctx[PipelineKeys.QuickLookUpright] = uprightThumb
+        if (writeJpeg) {
+            native.encodePhoto(quality = quality, wantUltraHdr = ultraHdr)?.let { ctx[PipelineKeys.EncodedJpeg] = it }
+        }
         Log.i(TAG, native.summary())
         native.close()
-        ctx[PipelineKeys.Rendered] = rendered
-        ctx[PipelineKeys.QuickLookUpright] = upright(fitWithin(rendered, THUMB_LONG_SIDE), ctx.burst.metadata.orientationDegrees)
-    }
-
-    private fun fitWithin(src: Bitmap, maxSide: Int): Bitmap {
-        val scale = maxSide / max(src.width, src.height).toFloat()
-        if (scale >= 1f) return src
-        return Bitmap.createScaledBitmap(src, (src.width * scale).roundToInt().coerceAtLeast(1), (src.height * scale).roundToInt().coerceAtLeast(1), true)
     }
 
     private fun upright(src: Bitmap, degrees: Int): Bitmap =
@@ -98,32 +97,27 @@ class FinishStage(
 }
 
 /**
- * Encodes the rendered image with the platform's JPEG encoder (libjpeg-turbo), or takes the Ultra
- * HDR file the finish stage made, and tags it with orientation and exposure. ExifInterface can only
- * rewrite a seekable file, so the JPEG goes through a temporary file before the sink; it rewrites
- * only the primary image's EXIF segment, the gain map after it is copied unchanged.
+ * Tags the natively encoded JPEG (or Ultra HDR JPEG) with orientation and exposure EXIF and writes
+ * it to the sink. ExifInterface only rewrites a seekable file, so the encoded bytes pass through a
+ * temporary file; it rewrites only the primary image's EXIF segment and keeps any gain map intact.
  */
-class JpegWriteStage(private val quality: Int = 95) : PipelineStage {
+class JpegWriteStage : PipelineStage {
     override val name = "jpeg"
 
     override suspend fun run(ctx: PipelineContext) {
-        val rendered = ctx.require(PipelineKeys.Rendered)
+        val encoded = ctx.require(PipelineKeys.EncodedJpeg)
         val meta = ctx.burst.metadata
         val tmp = File.createTempFile("pocopaw", ".jpg")
         try {
-            val ultraHdr = ctx[PipelineKeys.UltraHdrJpeg]
-            val jpeg = ultraHdr ?: NativeBurst.encodeJpeg(rendered, quality)
-            if (jpeg != null) tmp.writeBytes(jpeg)
-            else tmp.outputStream().buffered().use { rendered.compress(Bitmap.CompressFormat.JPEG, quality, it) }
+            tmp.writeBytes(encoded.bytes)
             writeExif(tmp, ctx)
-            val kind = if (ultraHdr != null) OutputKind.ULTRA_HDR else OutputKind.JPEG
+            val kind = if (encoded.ultraHdr) OutputKind.ULTRA_HDR else OutputKind.JPEG
             val saved = ctx.sink.write(kind, MediaStoreWriter.baseName(meta.captureTimeMillis), meta.captureTimeMillis) { out ->
                 tmp.inputStream().use { it.copyTo(out, BUFFER) }
             }
             ctx.addOutput(saved)
         } finally {
             tmp.delete()
-            rendered.recycle()
         }
     }
 

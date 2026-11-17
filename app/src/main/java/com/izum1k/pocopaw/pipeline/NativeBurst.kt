@@ -4,7 +4,9 @@ import android.graphics.Bitmap
 import com.izum1k.pocopaw.camera.CfaPattern
 import java.io.Closeable
 import java.nio.ByteBuffer
+import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 /**
  * Finishing parameters of the native pipeline (`LookParams` in `cpp/burstpipe/finish.h`).
@@ -65,6 +67,8 @@ data class MergeOptions(
     )
 }
 
+data class EncodedPhoto(val bytes: ByteArray, val ultraHdr: Boolean)
+
 /**
  * One burst inside `libburstpipe`: align, merge, finish and render run on the calling thread and
  * use every core. The frames' direct buffers are read in place, so [burst] must stay reachable
@@ -124,18 +128,27 @@ class NativeBurst private constructor(private var handle: Long) : Closeable {
         thumbnailHeight: Int,
     ): ByteBuffer? = nativeEncodeDng(live(), color, illuminants, neutral, orientation, make, model, software, thumbnail, thumbnailWidth, thumbnailHeight)
 
-    /** [keepHdr] keeps the scene-linear luminance [encodeUltraHdr] needs. */
+    /** [keepHdr] keeps the scene-linear luminance [encodePhoto] needs for Ultra HDR. */
     fun finish(look: BurstLook, keepHdr: Boolean = false) {
         val size = nativeFinish(live(), look.style, look.toArray(), keepHdr)
         width = (size ushr 32).toInt()
         height = (size and 0xFFFFFFFFL).toInt()
     }
 
-    /** The finished image in the sensor's orientation. */
-    fun render(): Bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also { nativeRender(live(), it) }
+    /** A box-downsampled preview of the finished image, in the sensor's orientation, within [maxSide]. */
+    fun renderThumbnail(maxSide: Int = 512): Bitmap {
+        val scale = min(1f, maxSide / max(width, height).toFloat())
+        val tw = (width * scale).roundToInt().coerceAtLeast(1)
+        val th = (height * scale).roundToInt().coerceAtLeast(1)
+        return Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888).also { nativeRenderThumb(live(), it) }
+    }
 
-    /** The finished image as an Ultra HDR JPEG (SDR base + gain map up to [headroom]× SDR white), or null. */
-    fun encodeUltraHdr(quality: Int = 95, headroom: Float = 4f): ByteArray? = nativeEncodeUltraHdr(live(), quality, headroom)
+    /** The finished image encoded straight to JPEG (with Ultra HDR gain map when [wantUltraHdr] and boost >= 1.05). */
+    fun encodePhoto(quality: Int = 95, wantUltraHdr: Boolean = false, headroom: Float = 4f): EncodedPhoto? {
+        val isUhdr = BooleanArray(1)
+        val bytes = nativeEncodePhoto(live(), quality, wantUltraHdr, headroom, isUhdr) ?: return null
+        return EncodedPhoto(bytes, isUhdr[0])
+    }
 
     fun summary(): String = nativeSummary(live())
 
@@ -227,10 +240,6 @@ class NativeBurst private constructor(private var handle: Long) : Closeable {
             return nativeSharpestFrame(Array(min(3, burst.size)) { burst.frames[it].data }, f.width, f.height)
         }
 
-        /** [bitmap] (ARGB_8888) as a 4:2:0 JPEG through libjpeg-turbo, or null; several times faster than Bitmap.compress. */
-        fun encodeJpeg(bitmap: Bitmap, quality: Int): ByteArray? = nativeEncodeJpeg(bitmap, quality)
-
-        @JvmStatic private external fun nativeEncodeJpeg(bitmap: Bitmap, quality: Int): ByteArray?
         @JvmStatic private external fun nativeSharpestFrame(frames: Array<ByteBuffer>, width: Int, height: Int): Int
         @JvmStatic private external fun nativeSetNoiseCurve(handle: Long, iso: FloatArray, a: FloatArray, b: FloatArray)
         @JvmStatic private external fun nativeAlign(handle: Long)
@@ -243,8 +252,10 @@ class NativeBurst private constructor(private var handle: Long) : Closeable {
             handle: Long, color: FloatArray, illuminants: IntArray, neutral: FloatArray, orientation: Int,
             make: String, model: String, software: String, thumbnail: ByteArray?, thumbnailWidth: Int, thumbnailHeight: Int,
         ): ByteBuffer?
-        @JvmStatic private external fun nativeEncodeUltraHdr(handle: Long, quality: Int, headroom: Float): ByteArray?
-        @JvmStatic private external fun nativeRender(handle: Long, bitmap: Bitmap)
+        @JvmStatic private external fun nativeRenderThumb(handle: Long, bitmap: Bitmap)
+        @JvmStatic private external fun nativeEncodePhoto(
+            handle: Long, quality: Int, wantUltraHdr: Boolean, headroom: Float, isUltraHdr: BooleanArray,
+        ): ByteArray?
         @JvmStatic private external fun nativeSummary(handle: Long): String
         @JvmStatic private external fun nativeRelease(handle: Long)
         @JvmStatic private external fun nativeGpuInit(cacheDir: String): String

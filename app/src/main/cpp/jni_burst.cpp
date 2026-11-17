@@ -207,45 +207,35 @@ Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeFinish(JNIEnv* env, jclass, j
 }
 
 JNIEXPORT void JNICALL
-Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeRender(JNIEnv* env, jclass, jlong h, jobject bitmap) {
+Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeRenderThumb(JNIEnv* env, jclass, jlong h, jobject bitmap) {
     BurstSession* s = session(h);
     AndroidBitmapInfo info;
     void* pixels = nullptr;
     if (AndroidBitmap_getInfo(env, bitmap, &info) != ANDROID_BITMAP_RESULT_SUCCESS ||
-        info.format != ANDROID_BITMAP_FORMAT_RGBA_8888 || (int)info.width != s->width() || (int)info.height != s->height()) {
-        throwState(env, "bitmap must be ARGB_8888 of the rendered size");
+        info.format != ANDROID_BITMAP_FORMAT_RGBA_8888 || info.width == 0 || info.height == 0) {
+        throwState(env, "thumbnail bitmap must be non-empty ARGB_8888");
         return;
     }
     if (AndroidBitmap_lockPixels(env, bitmap, &pixels) != ANDROID_BITMAP_RESULT_SUCCESS) {
-        throwState(env, "cannot lock bitmap");
+        throwState(env, "cannot lock thumbnail bitmap");
         return;
     }
-    guarded(env, [&] { s->render(static_cast<uint8_t*>(pixels), info.stride); });
+    guarded(env, [&] { s->render_thumb(static_cast<uint8_t*>(pixels), info.stride, (int)info.width, (int)info.height); });
     AndroidBitmap_unlockPixels(env, bitmap);
 }
 
-// An ARGB_8888 bitmap as a 4:2:0 JPEG (libjpeg-turbo, strip-parallel), or null.
 JNIEXPORT jbyteArray JNICALL
-Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeEncodeJpeg(JNIEnv* env, jclass, jobject bitmap, jint quality) {
-    AndroidBitmapInfo info;
-    void* pixels = nullptr;
-    if (AndroidBitmap_getInfo(env, bitmap, &info) != ANDROID_BITMAP_RESULT_SUCCESS || info.format != ANDROID_BITMAP_FORMAT_RGBA_8888 ||
-        AndroidBitmap_lockPixels(env, bitmap, &pixels) != ANDROID_BITMAP_RESULT_SUCCESS)
-        return nullptr;
-    const int w = (int)info.width, h = (int)info.height;
+Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeEncodePhoto(JNIEnv* env, jclass, jlong h, jint quality,
+                                                               jboolean wantUltraHdr, jfloat headroom,
+                                                               jbooleanArray jisUltraHdr) {
     std::vector<uint8_t> file;
-    guarded(env, [&] {
-        const uint8_t* px = static_cast<const uint8_t*>(pixels);
-        std::vector<uint8_t> packed;
-        if (info.stride != (uint32_t)w * 4) {
-            packed.resize((size_t)w * h * 4);
-            for (int y = 0; y < h; y++) memcpy(&packed[(size_t)y * w * 4], px + (size_t)y * info.stride, (size_t)w * 4);
-            px = packed.data();
-        }
-        file = encode_jpeg(px, w, h, 4, quality, true);
-    });
-    AndroidBitmap_unlockPixels(env, bitmap);
+    bool uhdr = false;
+    guarded(env, [&] { file = session(h)->encode_photo(quality, wantUltraHdr, headroom, &uhdr); });
     if (file.empty()) return nullptr;
+    if (jisUltraHdr != nullptr && env->GetArrayLength(jisUltraHdr) >= 1) {
+        jboolean flag = uhdr ? JNI_TRUE : JNI_FALSE;
+        env->SetBooleanArrayRegion(jisUltraHdr, 0, 1, &flag);
+    }
     jbyteArray out = env->NewByteArray((jsize)file.size());
     if (out != nullptr) env->SetByteArrayRegion(out, 0, (jsize)file.size(), reinterpret_cast<const jbyte*>(file.data()));
     return out;
@@ -294,18 +284,6 @@ Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeEncodeDng(JNIEnv* env, jclass
     if (p == nullptr) return nullptr;
     memcpy(p, file.data(), file.size());
     return env->NewDirectByteBuffer(p, (jlong)file.size());
-}
-
-// The finished image as an Ultra HDR JPEG (gain map at 1/4 resolution), or null when finish() did not keep
-// the HDR luminance or the encoder failed.
-JNIEXPORT jbyteArray JNICALL
-Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeEncodeUltraHdr(JNIEnv* env, jclass, jlong h, jint quality, jfloat headroom) {
-    std::vector<uint8_t> file;
-    guarded(env, [&] { file = session(h)->encode_ultrahdr(quality, headroom); });
-    if (file.empty()) return nullptr;
-    jbyteArray out = env->NewByteArray((jsize)file.size());
-    if (out != nullptr) env->SetByteArrayRegion(out, 0, (jsize)file.size(), reinterpret_cast<const jbyte*>(file.data()));
-    return out;
 }
 
 JNIEXPORT jstring JNICALL

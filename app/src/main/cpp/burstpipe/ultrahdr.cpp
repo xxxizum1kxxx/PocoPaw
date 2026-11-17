@@ -42,12 +42,9 @@ float smoothstep(float a, float b, float x) {
 }
 }  // namespace
 
-std::vector<uint8_t> encode_ultrahdr(const ImageF& sdr, int ds, const HdrLuma& hdr, float exposure, float headroom,
-                                     int quality, UltraHdrStats* st) {
-    int w, h;
-    std::vector<uint8_t> px = to_rgb8(sdr, ds, w, h);
-    // 4:2:0 like the SDR-only JPEG; 4:4:4 made the file 0.3-1 MB larger for no visible gain
-    std::vector<uint8_t> base = encode_jpeg(px.data(), w, h, 3, quality, true);
+std::vector<uint8_t> encode_ultrahdr_rgb8(const uint8_t* px, int w, int h, const std::vector<uint8_t>& base,
+                                          const HdrLuma& hdr, float exposure, float headroom, UltraHdrStats* st) {
+    if (base.empty() || !px || hdr.y.w == 0) return {};
 
     float lut[256];
     for (int i = 0; i < 256; i++) lut[i] = srgb_to_linear(i / 255.f);
@@ -99,7 +96,7 @@ std::vector<uint8_t> encode_ultrahdr(const ImageF& sdr, int ds, const HdrLuma& h
     std::vector<uint8_t> gmJpeg = encode_jpeg(gm.data(), gw, gh, 1, 90);
 
     uhdr_codec_private_t* enc = uhdr_create_encoder();
-    uhdr_compressed_image_t bi{base.data(), base.size(), base.size(), UHDR_CG_BT_709, UHDR_CT_SRGB, UHDR_CR_FULL_RANGE};
+    uhdr_compressed_image_t bi{const_cast<uint8_t*>(base.data()), base.size(), base.size(), UHDR_CG_BT_709, UHDR_CT_SRGB, UHDR_CR_FULL_RANGE};
     uhdr_compressed_image_t gi{gmJpeg.data(), gmJpeg.size(), gmJpeg.size(), UHDR_CG_UNSPECIFIED, UHDR_CT_UNSPECIFIED,
                                UHDR_CR_FULL_RANGE};
     uhdr_gainmap_metadata_t md{};
@@ -127,6 +124,15 @@ std::vector<uint8_t> encode_ultrahdr(const ImageF& sdr, int ds, const HdrLuma& h
     uhdr_release_encoder(enc);
     if (st) st->gainMapBytes = gmJpeg.size();
     return file;
+}
+
+std::vector<uint8_t> encode_ultrahdr(const ImageF& sdr, int ds, const HdrLuma& hdr, float exposure, float headroom,
+                                     int quality, UltraHdrStats* st) {
+    int w, h;
+    std::vector<uint8_t> px = to_rgb8(sdr, ds, w, h);
+    // 4:2:0 like the SDR-only JPEG; 4:4:4 made the file 0.3-1 MB larger for no visible gain
+    std::vector<uint8_t> base = encode_jpeg(px.data(), w, h, 3, quality, true);
+    return encode_ultrahdr_rgb8(px.data(), w, h, base, hdr, exposure, headroom, st);
 }
 
 bool write_ultrahdr(const std::string& path, const ImageF& sdr, int ds, const HdrLuma& hdr, float exposure,

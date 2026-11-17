@@ -517,17 +517,48 @@ inline uint lcg_jump(uint seed, uint k) {
     return A * seed + C;
 }
 
-__kernel void to_rgba(__global const float* rgb, int W, int H, __global uchar* out) {
-    int x = get_global_id(0), y = get_global_id(1);
-    if (x >= W || y >= H) return;
+inline void write_dithered(__global const float* p, __global uchar* o, int x, int y) {
     uint seed = lcg_jump(0x9E3779B9u * (uint)(y + 1), (uint)(3 * x));
-    __global const float* p = rgb + ((size_t)y * W + x) * 3;
-    __global uchar* o = out + ((size_t)y * W + x) * 4;
     for (int c = 0; c < 3; c++) {
         seed = seed * 1664525u + 1013904223u;
         float dither = ((seed >> 8) & 0xFFFF) / 65535.f - 0.5f;
         o[c] = (uchar)clamp((int)round(p[c] * 255.f + dither), 0, 255);
     }
+}
+
+__kernel void to_rgba(__global const float* rgb, int W, int H, __global uchar* out) {
+    int x = get_global_id(0), y = get_global_id(1);
+    if (x >= W || y >= H) return;
+    __global const float* p = rgb + ((size_t)y * W + x) * 3;
+    __global uchar* o = out + ((size_t)y * W + x) * 4;
+    write_dithered(p, o, x, y);
+    o[3] = 255;
+}
+
+__kernel void to_rgb8(__global const float* rgb, int W, int H, __global uchar* out) {
+    int x = get_global_id(0), y = get_global_id(1);
+    if (x >= W || y >= H) return;
+    __global const float* p = rgb + ((size_t)y * W + x) * 3;
+    __global uchar* o = out + ((size_t)y * W + x) * 3;
+    write_dithered(p, o, x, y);
+}
+
+__kernel void render_thumb(__global const float* rgb, int inW, int inH, __global uchar* out, int outW, int outH) {
+    int x = get_global_id(0), y = get_global_id(1);
+    if (x >= outW || y >= outH) return;
+    int x0 = (int)((long)x * inW / outW), x1 = max(x0 + 1, (int)((long)(x + 1) * inW / outW));
+    int y0 = (int)((long)y * inH / outH), y1 = max(y0 + 1, (int)((long)(y + 1) * inH / outH));
+    float sr = 0, sg = 0, sb = 0;
+    for (int sy = y0; sy < y1; sy++)
+        for (int sx = x0; sx < x1; sx++) {
+            __global const float* p = rgb + ((size_t)sy * inW + sx) * 3;
+            sr += p[0]; sg += p[1]; sb += p[2];
+        }
+    float inv = 1.f / ((y1 - y0) * (x1 - x0));
+    __global uchar* o = out + ((size_t)y * outW + x) * 4;
+    o[0] = (uchar)clamp((int)round(sr * inv * 255.f), 0, 255);
+    o[1] = (uchar)clamp((int)round(sg * inv * 255.f), 0, 255);
+    o[2] = (uchar)clamp((int)round(sb * inv * 255.f), 0, 255);
     o[3] = 255;
 }
 )CL"

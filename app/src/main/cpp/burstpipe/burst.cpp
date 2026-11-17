@@ -505,6 +505,29 @@ void BurstSession::render(uint8_t* rgba, size_t stride) const {
     else to_rgba8888(rgb_, rgba, stride);
 }
 
+void BurstSession::render_thumb(uint8_t* rgba, size_t stride, int outW, int outH) const {
+    if (gpuFinished_ && gpu_) gpu_->render_thumb(rgba, stride, outW, outH);
+    else to_rgba8888_thumb(rgb_, rgba, stride, outW, outH);
+}
+
+std::vector<uint8_t> BurstSession::encode_photo(int quality, bool wantUltraHdr, float headroom, bool* isUltraHdr) {
+    if (isUltraHdr) *isUltraHdr = false;
+    int w = outW_, h = outH_;
+    std::vector<uint8_t> px = (gpuFinished_ && gpu_) ? gpu_->render_rgb8() : to_rgb8(rgb_, 1, w, h);
+    if (px.empty() || w <= 0 || h <= 0) return {};
+    std::vector<uint8_t> base = ::encode_jpeg(px.data(), w, h, 3, quality, true);
+    if (wantUltraHdr && hdr_.y.w > 0 && !base.empty()) {
+        Timer t;
+        std::vector<uint8_t> uhdr = encode_ultrahdr_rgb8(px.data(), w, h, base, hdr_, tone_.gainLong, headroom, &us_);
+        tUhdr_ = t.ms();
+        if (!uhdr.empty()) {
+            if (isUltraHdr) *isUltraHdr = true;
+            return uhdr;
+        }
+    }
+    return base;
+}
+
 std::vector<uint8_t> BurstSession::encode_ultrahdr(int quality, float headroom) {
     if (hdr_.y.w == 0) return {};
     Timer t;
