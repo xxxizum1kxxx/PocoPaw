@@ -365,7 +365,7 @@ private fun CameraContent(vm: CameraViewModel) {
                     countdown = ui.countdown,
                     canFlip = ui.canFlip,
                     rotation = rotation,
-                    onThumbnail = { ui.last?.uri?.let { openCapture(context, it) } },
+                    onThumbnail = { ui.last?.let { openCapture(context, it.uri, it.mimeType) } },
                     onShutter = { vm.shutter(deviceRotation) },
                     onFlip = vm::flip,
                 )
@@ -447,10 +447,10 @@ private fun CameraController.State.showing(): String? = when (this) {
 private fun hasCameraPermission(context: Context): Boolean =
     ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
 
-private fun openCapture(context: Context, uri: Uri) {
-    val dng = Intent(Intent.ACTION_VIEW).setDataAndType(uri, "image/x-adobe-dng").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+private fun openCapture(context: Context, uri: Uri, mimeType: String) {
+    val view = Intent(Intent.ACTION_VIEW).setDataAndType(uri, mimeType).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     try {
-        context.startActivity(dng)
+        context.startActivity(view)
     } catch (_: ActivityNotFoundException) {
         runCatching {
             context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "image/*").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))

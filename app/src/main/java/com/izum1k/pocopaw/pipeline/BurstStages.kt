@@ -111,7 +111,8 @@ class JpegWriteStage(private val quality: Int = 95) : PipelineStage {
             if (jpeg != null) tmp.writeBytes(jpeg)
             else tmp.outputStream().buffered().use { rendered.compress(Bitmap.CompressFormat.JPEG, quality, it) }
             writeExif(tmp, ctx)
-            val saved = ctx.sink.write(OutputKind.JPEG, MediaStoreWriter.baseName(meta.captureTimeMillis), meta.captureTimeMillis) { out ->
+            val kind = if (ultraHdr != null) OutputKind.ULTRA_HDR else OutputKind.JPEG
+            val saved = ctx.sink.write(kind, MediaStoreWriter.baseName(meta.captureTimeMillis), meta.captureTimeMillis) { out ->
                 tmp.inputStream().use { it.copyTo(out, BUFFER) }
             }
             ctx.addOutput(saved)

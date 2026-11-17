@@ -84,7 +84,8 @@ data class PipelineResult(
     val timings: List<StageTiming>,
 ) {
     /** What the thumbnail button opens: the rendered photo when there is one, else the DNG. */
-    val primaryUri: Uri? get() = (outputs.firstOrNull { it.kind != OutputKind.DNG } ?: outputs.firstOrNull())?.uri
+    val primaryOutput: SavedOutput? get() = outputs.firstOrNull { it.kind != OutputKind.DNG } ?: outputs.firstOrNull()
+    val primaryUri: Uri? get() = primaryOutput?.uri
 
     val totalMillis: Long get() = timings.sumOf { it.millis }
 }

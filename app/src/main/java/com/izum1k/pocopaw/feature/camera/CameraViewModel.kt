@@ -61,7 +61,7 @@ enum class CaptureMessage { CAPTURE_FAILED, SAVE_FAILED }
 /** A focus tap in normalised viewfinder (texture) coordinates; [id] restarts the ring's animation. */
 data class FocusPoint(val x: Float, val y: Float, val id: Long)
 
-data class LastCapture(val uri: Uri, val thumbnail: Bitmap?)
+data class LastCapture(val uri: Uri, val mimeType: String, val thumbnail: Bitmap?)
 
 /** The last pipeline run, for the developer chip. */
 data class PipelineRun(val pipelineId: String, val frames: Int, val millis: Long)
@@ -183,8 +183,8 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
             val initial = catalog.byId(settings.value.lastCameraId) ?: catalog.default()
             _ui.update { it.copy(cameras = cameras, current = initial) }
             maybeOpen()
-            container.output.latest()?.let { uri ->
-                if (_ui.value.last == null) _ui.update { it.copy(last = LastCapture(uri, container.output.thumbnail(uri))) }
+            container.output.latest()?.let { latest ->
+                if (_ui.value.last == null) _ui.update { it.copy(last = LastCapture(latest.uri, latest.mimeType, container.output.thumbnail(latest.uri))) }
             }
         }
     }
@@ -433,11 +433,11 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
         if (!controller.budget.canAfford(nextFrames())) viewModelScope.launch { controller.reopen() }
         try {
             val result = pipeline.process(burst, container.output) { p -> _ui.update { it.copy(progress = p) } }
-            val uri = result.primaryUri
+            val primary = result.primaryOutput
             _ui.update {
                 it.copy(
                     busy = Busy.IDLE,
-                    last = if (uri != null) LastCapture(uri, result.thumbnail) else it.last,
+                    last = if (primary != null) LastCapture(primary.uri, primary.kind.mimeType, result.thumbnail) else it.last,
                     lastRun = PipelineRun(pipeline.id, burst.size, result.totalMillis),
                 )
             }

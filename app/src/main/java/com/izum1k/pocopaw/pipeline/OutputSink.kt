@@ -22,6 +22,8 @@ enum class OutputKind(val mimeType: String, val extension: String) {
 
 data class SavedOutput(val kind: OutputKind, val uri: Uri, val displayName: String)
 
+data class LatestOutput(val uri: Uri, val mimeType: String)
+
 /** Where a pipeline's files go. Stages only see this, so tests or other targets can replace MediaStore. */
 interface OutputSink {
     suspend fun write(kind: OutputKind, baseName: String, takenAtMillis: Long, writer: (OutputStream) -> Unit): SavedOutput
@@ -54,15 +56,21 @@ class MediaStoreWriter(context: Context) : OutputSink {
         }
 
     /** The newest file this app saved, for the thumbnail button after a restart. */
-    suspend fun latest(): Uri? = withContext(Dispatchers.IO) {
+    suspend fun latest(): LatestOutput? = withContext(Dispatchers.IO) {
         runCatching {
             resolver.query(
                 collection,
-                arrayOf(MediaStore.MediaColumns._ID),
+                arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.MIME_TYPE),
                 "${MediaStore.MediaColumns.RELATIVE_PATH} = ?",
                 arrayOf(RELATIVE_PATH),
-                "${MediaStore.MediaColumns.DATE_ADDED} DESC",
-            )?.use { c -> if (c.moveToFirst()) android.content.ContentUris.withAppendedId(collection, c.getLong(0)) else null }
+                "${MediaStore.MediaColumns.DATE_TAKEN} DESC, ${MediaStore.MediaColumns.MIME_TYPE} ASC, ${MediaStore.MediaColumns._ID} DESC",
+            )?.use { c ->
+                if (!c.moveToFirst()) null
+                else LatestOutput(
+                    uri = android.content.ContentUris.withAppendedId(collection, c.getLong(0)),
+                    mimeType = c.getString(1) ?: "image/*",
+                )
+            }
         }.getOrNull()
     }
 
