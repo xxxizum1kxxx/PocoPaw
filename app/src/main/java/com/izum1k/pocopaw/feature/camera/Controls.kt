@@ -65,6 +65,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material3.Text
@@ -264,16 +265,12 @@ private fun QuickMoreToggle(open: Boolean, onClick: () -> Unit) {
         modifier = Modifier.size(width = 40.dp, height = 48.dp).semantics { contentDescription = label },
     ) {
         val tint = if (open) MaterialTheme.colorScheme.onSecondary else MaterialTheme.colorScheme.onSurface
-        Canvas(Modifier.size(18.dp).graphicsLayer { rotationZ = turn }) {
-            val w = size.width
-            val h = size.height
-            val path = Path().apply {
-                moveTo(w * 0.2f, h * 0.38f)
-                lineTo(w * 0.5f, h * 0.66f)
-                lineTo(w * 0.8f, h * 0.38f)
-            }
-            drawPath(path, tint, style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
-        }
+        Icon(
+            YoinSymbols.ChevronDown,
+            contentDescription = null,
+            tint = tint,
+            modifier = Modifier.size(18.dp).graphicsLayer { rotationZ = turn },
+        )
     }
 }
 
@@ -1042,6 +1039,8 @@ fun ShutterRow(
     last: Bitmap?,
     hasLast: Boolean,
     busy: Busy,
+    processing: Boolean,
+    progress: Float,
     countdown: Int?,
     canFlip: Boolean,
     rotation: Float,
@@ -1056,7 +1055,7 @@ fun ShutterRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Thumbnail(last, hasLast, rotation, onThumbnail)
-        ShutterButton(busy, countdown, onShutter)
+        ShutterButton(busy, processing, progress, countdown, rotation, onShutter)
         FlipButton(canFlip && busy == Busy.IDLE, rotation, onFlip)
     }
 }
@@ -1098,7 +1097,14 @@ private fun Thumbnail(bitmap: Bitmap?, hasLast: Boolean, rotation: Float, onClic
 }
 
 @Composable
-internal fun ShutterButton(busy: Busy, countdown: Int?, onClick: () -> Unit) {
+internal fun ShutterButton(
+    busy: Busy,
+    processing: Boolean = false,
+    progress: Float = 0f,
+    countdown: Int? = null,
+    rotation: Float = 0f,
+    onClick: () -> Unit,
+) {
     val haptics = LocalHapticFeedback.current
     val description = stringResource(R.string.action_shutter)
     val interaction = remember { MutableInteractionSource() }
@@ -1116,6 +1122,12 @@ internal fun ShutterButton(busy: Busy, countdown: Int?, onClick: () -> Unit) {
         YoinMotion.defaultEffectsSpec(),
         label = "shutterFill",
     )
+    val ringProgress by animateFloatAsState(
+        if (busy == Busy.IDLE && processing) progress.coerceIn(0f, 1f) else 0f,
+        YoinMotion.defaultSpatialSpec(),
+        label = "shutterProgress",
+    )
+    val arcColor = MaterialTheme.colorScheme.primary
     Box(
         Modifier
             .size(76.dp)
@@ -1128,6 +1140,20 @@ internal fun ShutterButton(busy: Busy, countdown: Int?, onClick: () -> Unit) {
             .semantics { contentDescription = description },
         contentAlignment = Alignment.Center,
     ) {
+        if (busy == Busy.IDLE && processing) {
+            Canvas(Modifier.fillMaxSize()) {
+                val stroke = 3.dp.toPx()
+                drawArc(
+                    color = arcColor,
+                    startAngle = -90f,
+                    sweepAngle = 360f * ringProgress,
+                    useCenter = false,
+                    topLeft = Offset(stroke / 2f, stroke / 2f),
+                    size = Size(size.width - stroke, size.height - stroke),
+                    style = Stroke(width = stroke, cap = StrokeCap.Round),
+                )
+            }
+        }
         Box(
             Modifier
                 .size(62.dp)
@@ -1145,6 +1171,7 @@ internal fun ShutterButton(busy: Busy, countdown: Int?, onClick: () -> Unit) {
                     countdown.toString(),
                     style = MaterialTheme.typography.titleLarge.withTabularFigures(),
                     color = MaterialTheme.colorScheme.onTertiary,
+                    modifier = Modifier.graphicsLayer { rotationZ = rotation },
                 )
             }
         }

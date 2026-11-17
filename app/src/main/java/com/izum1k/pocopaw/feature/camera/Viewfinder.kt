@@ -27,8 +27,10 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
@@ -108,6 +110,7 @@ fun Viewfinder(
     cameraState: CameraController.State,
     live: Boolean,
     processing: Boolean,
+    processingBlocked: Boolean,
     processingProgress: () -> Float,
     /** Null where that side's swipe does nothing. */
     ev: SwipeDial?,
@@ -187,9 +190,9 @@ fun Viewfinder(
             exit = fadeOut(YoinMotion.fastEffectsSpec()),
         ) { LoadingIndicator() }
 
-        ProcessingVeil(processing, processingProgress)
+        ProcessingVeil(processing, processingBlocked, processingProgress)
 
-        if (cameraState is CameraController.State.Error) ErrorPanel(cameraState.reason, onRetry)
+        if (cameraState is CameraController.State.Error) ErrorPanel(cameraState.reason, controlRotation, onRetry)
 
         val spatial = YoinMotion.defaultSpatialSpec<Float>()
         val fastSpatial = YoinMotion.fastSpatialSpec<Float>()
@@ -416,12 +419,20 @@ private fun BoxScope.FocusRing(focus: FocusPoint?, locked: Boolean, held: Boolea
     val density = LocalDensity.current
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val half = with(density) { (ringSize / 2).roundToPx() }
+        val ringPx = half * 2
+        val gapPx = with(density) { 8.dp.roundToPx() }
         val x = with(density) { (maxWidth * focus.x).roundToPx() } - half
         val y = with(density) { (maxHeight * focus.y).roundToPx() } - half
-        Row(Modifier.offset { IntOffset(x, y) }, verticalAlignment = Alignment.CenterVertically) {
+        val labelAlpha by animateFloatAsState(if (held) 1f else 0f, YoinMotion.defaultEffectsSpec(), label = "holdLabel")
+        Box(
+            Modifier
+                .offset { IntOffset(x, y) }
+                .size(ringSize)
+                .graphicsLayer { rotationZ = controlRotation },
+        ) {
             Box(
                 Modifier
-                    .size(ringSize)
+                    .fillMaxSize()
                     .graphicsLayer {
                         scaleX = scale.value
                         scaleY = scale.value
@@ -429,38 +440,35 @@ private fun BoxScope.FocusRing(focus: FocusPoint?, locked: Boolean, held: Boolea
                     .border(2.dp, color, MorphShape(morph, progress)),
             )
             if (evLabel != null) {
-                Spacer(Modifier.width(8.dp))
                 Text(
                     evLabel,
                     style = MaterialTheme.typography.labelLarge.withTabularFigures(),
                     color = color,
-                    modifier = Modifier.graphicsLayer { rotationZ = controlRotation },
+                    softWrap = false,
+                    modifier = Modifier.layout { measurable, _ ->
+                        val p = measurable.measure(Constraints())
+                        layout(ringPx, ringPx) { p.place(ringPx + gapPx, (ringPx - p.height) / 2) }
+                    },
                 )
             }
-        }
-        val labelAlpha by animateFloatAsState(if (held) 1f else 0f, YoinMotion.defaultEffectsSpec(), label = "holdLabel")
-        val ringBottom = y + 2 * half + with(density) { 8.dp.roundToPx() }
-        Box(
-            Modifier
-                .offset { IntOffset(x + half, ringBottom) }
-                .layout { measurable, constraints ->
-                    val p = measurable.measure(constraints.copy(minWidth = 0))
-                    layout(p.width, p.height) { p.place(-p.width / 2, 0) }
-                }
-                .graphicsLayer {
-                    alpha = labelAlpha
-                    rotationZ = controlRotation
-                }
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primary)
-                .padding(horizontal = 8.dp, vertical = 2.dp),
-        ) {
-            Text(
-                stringResource(R.string.focus_held),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onPrimary,
-                softWrap = false,
-            )
+            Box(
+                Modifier
+                    .layout { measurable, _ ->
+                        val p = measurable.measure(Constraints())
+                        layout(ringPx, ringPx) { p.place((ringPx - p.width) / 2, ringPx + gapPx) }
+                    }
+                    .graphicsLayer { alpha = labelAlpha }
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary)
+                    .padding(horizontal = 8.dp, vertical = 2.dp),
+            ) {
+                Text(
+                    stringResource(R.string.focus_held),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    softWrap = false,
+                )
+            }
         }
     }
 }
@@ -507,13 +515,35 @@ private fun GridOverlay(style: GridStyle, modifier: Modifier) {
 }
 
 /**
- * Over the viewfinder while the pipeline merges the shot. A plain dimming for now: the look is
- * still to be chosen, and [progress] (0..1 from the pipeline) is here for it.
+ * Over the viewfinder while the pipeline merges the shot. Shows an animated progress bar along the
+ * top edge whenever background work runs, and dims only when the processing queue is full.
  */
 @Composable
-private fun ProcessingVeil(visible: Boolean, @Suppress("UNUSED_PARAMETER") progress: () -> Float) {
-    val alpha by animateFloatAsState(if (visible) 0.45f else 0f, YoinMotion.defaultEffectsSpec(), label = "processingVeil")
-    Box(Modifier.fillMaxSize().graphicsLayer { this.alpha = alpha }.background(Color.Black))
+private fun ProcessingVeil(visible: Boolean, dimmed: Boolean, progress: () -> Float) {
+    val veilAlpha by animateFloatAsState(if (dimmed) 0.45f else 0f, YoinMotion.defaultEffectsSpec(), label = "processingVeil")
+    val barAlpha by animateFloatAsState(if (visible) 1f else 0f, YoinMotion.defaultEffectsSpec(), label = "processingBar")
+    val animatedProgress by animateFloatAsState(
+        if (visible) progress().coerceIn(0f, 1f) else 0f,
+        YoinMotion.defaultSpatialSpec(),
+        label = "processingProgress",
+    )
+    Box(Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxSize().graphicsLayer { alpha = veilAlpha }.background(Color.Black))
+        BoxWithConstraints(
+            Modifier
+                .fillMaxWidth()
+                .height(3.dp)
+                .align(Alignment.TopStart)
+                .graphicsLayer { alpha = barAlpha },
+        ) {
+            Box(
+                Modifier
+                    .fillMaxHeight()
+                    .width(maxWidth * animatedProgress)
+                    .background(MaterialTheme.colorScheme.primary),
+            )
+        }
+    }
 }
 
 @Composable
@@ -529,9 +559,10 @@ private fun ShutterFlash(tick: Int) {
 }
 
 @Composable
-private fun ErrorPanel(reason: CameraController.Reason, onRetry: () -> Unit) {
+private fun ErrorPanel(reason: CameraController.Reason, rotation: Float, onRetry: () -> Unit) {
     Column(
         Modifier
+            .graphicsLayer { rotationZ = rotation }
             .padding(32.dp)
             .clip(YoinContainerShapes.Card)
             .background(MaterialTheme.colorScheme.surfaceContainerHigh)

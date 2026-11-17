@@ -10,6 +10,7 @@ import com.izum1k.pocopaw.camera.MotionMeter
 import com.izum1k.pocopaw.data.SettingsRepository
 import com.izum1k.pocopaw.pipeline.MediaStoreWriter
 import com.izum1k.pocopaw.pipeline.NativeBurst
+import com.izum1k.pocopaw.pipeline.ProcessingQueue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -36,6 +37,7 @@ class AppContainer(context: Context) {
         File(context.filesDir, "meter_every").takeIf { it.isFile }?.readText()?.trim()?.toIntOrNull()?.let { meterEvery = it }
     }
     val output = MediaStoreWriter(context)
+    val processing = ProcessingQueue(scope, output)
     private val cacheDir = context.cacheDir.absolutePath
 
     /** The OpenCL device's properties (or why there is none); creating it compiles the kernels once. */

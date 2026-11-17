@@ -119,6 +119,7 @@ data class CameraUiState(
     val focusHeld: Boolean = false,
     val countdown: Int? = null,
     val busy: Busy = Busy.IDLE,
+    val backgroundProcessing: Boolean = false,
     val progress: Float = 0f,
     val shutterTick: Int = 0,
     val last: LastCapture? = null,
@@ -185,6 +186,24 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
             maybeOpen()
             container.output.latest()?.let { latest ->
                 if (_ui.value.last == null) _ui.update { it.copy(last = LastCapture(latest.uri, latest.mimeType, container.output.thumbnail(latest.uri))) }
+            }
+        }
+        viewModelScope.launch {
+            var seenErrors = container.processing.state.value.errorSeq
+            container.processing.state.collect { st ->
+                if (st.errorSeq > seenErrors) {
+                    seenErrors = st.errorSeq
+                    _ui.update { it.copy(message = CaptureMessage.SAVE_FAILED, messageId = it.messageId + 1) }
+                }
+                _ui.update { ui ->
+                    ui.copy(
+                        backgroundProcessing = st.active,
+                        progress = st.progress,
+                        busy = if (ui.busy == Busy.PROCESSING && !st.isFull) Busy.IDLE else ui.busy,
+                        last = st.last?.let { LastCapture(it.uri, it.mimeType, it.thumbnail) } ?: ui.last,
+                        lastRun = st.lastRun?.let { PipelineRun(it.pipelineId, it.frames, it.millis) } ?: ui.lastRun,
+                    )
+                }
             }
         }
     }
@@ -428,24 +447,16 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
             return
         }
         releaseFocus()
-        _ui.update { it.copy(busy = Busy.PROCESSING) }
+        container.processing.enqueue(pipeline, burst)
         // The burst is in memory now; reopening while it merges keeps the next press from waiting.
         if (!controller.budget.canAfford(nextFrames())) viewModelScope.launch { controller.reopen() }
-        try {
-            val result = pipeline.process(burst, container.output) { p -> _ui.update { it.copy(progress = p) } }
-            val primary = result.primaryOutput
-            _ui.update {
-                it.copy(
-                    busy = Busy.IDLE,
-                    last = if (primary != null) LastCapture(primary.uri, primary.kind.mimeType, result.thumbnail) else it.last,
-                    lastRun = PipelineRun(pipeline.id, burst.size, result.totalMillis),
-                )
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "pipeline failed", e)
-            fail(CaptureMessage.SAVE_FAILED)
-        } finally {
-            burst.close()
+        _ui.update {
+            val q = container.processing.state.value
+            it.copy(
+                busy = if (q.isFull) Busy.PROCESSING else Busy.IDLE,
+                backgroundProcessing = q.active,
+                progress = q.progress,
+            )
         }
     }
 

@@ -61,11 +61,19 @@ fun SettingsScreen() {
                 ChoiceRow(
                     title = stringResource(R.string.settings_dng_content),
                     options = DngContent.entries,
-                    selected = settings.dngContent,
+                    selected = if (settings.processing == Processing.HDR_PLUS_KR) DngContent.REFERENCE else settings.dngContent,
                     label = { stringResource(dngContentLabel(it)) },
                     onSelect = { scope.launch { repo.setDngContent(it) } },
                     enabled = settings.output == OutputFormat.DNG_JPEG && settings.processing == Processing.HDR_PLUS,
                 )
+                if (settings.output == OutputFormat.DNG_JPEG && settings.processing == Processing.HDR_PLUS_KR) {
+                    Text(
+                        stringResource(R.string.settings_dng_kr_note),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    )
+                }
                 ChoiceRow(
                     title = stringResource(R.string.settings_scene),
                     options = SceneMode.entries,

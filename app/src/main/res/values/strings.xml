@@ -62,6 +62,7 @@
     <string name="settings_dng_content">DNG content</string>
     <string name="dng_content_merged">Merged</string>
     <string name="dng_content_reference">Reference frame</string>
+    <string name="settings_dng_kr_note">Kernel regression outputs the reference frame as the DNG; choose HDR+ merge for a merged 16-bit DNG</string>
 
     <string name="pipeline_hdrplus">HDR+ merge</string>
     <string name="pipeline_hdrplus_kr">Kernel regression merge (finer, slower)</string>
