@@ -26,13 +26,15 @@ ImageF demosaic(const ImageF& cfa, int cfaType, Demosaic method) {
     for (int y = 0; y < 2; y++)
         for (int x = 0; x < 2; x++) pattern[y][x] = (unsigned)cfa_color(cfaType, x, y);
 
-    // RCD clamps its input to [0, 65536]; AMaZE takes explicit input/output scales
+    // RCD clamps its input to [0, 65536]; AMaZE takes explicit input/output scales.
+    // A small normalized pedestal keeps zero-mean shadow noise positive through demosaicing.
+    constexpr float kPed = 1.f / 16.f;
     const float scale = method == Demosaic::RCD ? 65536.f : 1.f;
     ImageF in(W, H);
     parallel_for(H, [&](int y) {
         const float* s = cfa.row(y);
         float* d = in.row(y);
-        for (int x = 0; x < W; x++) d[x] = std::max(0.f, s[x]) * scale;
+        for (int x = 0; x < W; x++) d[x] = clampf((s[x] + kPed) / (1.f + kPed), 0.f, 1.f) * scale;
     });
     ImageF planes[3] = {ImageF(W, H), ImageF(W, H), ImageF(W, H)};
 
@@ -65,14 +67,14 @@ ImageF demosaic(const ImageF& cfa, int cfaType, Demosaic method) {
     });
 
     ImageF rgb(W, H, 3);
-    const float inv = 1.f / scale;
+    const float unscale = (1.f + kPed) / scale;
     parallel_for(H, [&](int y) {
         float* o = rgb.row(y);
         const float *r = planes[0].row(y), *g = planes[1].row(y), *bl = planes[2].row(y);
         for (int x = 0; x < W; x++, o += 3) {
-            o[0] = std::max(0.f, r[x] * inv);
-            o[1] = std::max(0.f, g[x] * inv);
-            o[2] = std::max(0.f, bl[x] * inv);
+            o[0] = r[x] * unscale - kPed;
+            o[1] = g[x] * unscale - kPed;
+            o[2] = bl[x] * unscale - kPed;
         }
     });
     return rgb;

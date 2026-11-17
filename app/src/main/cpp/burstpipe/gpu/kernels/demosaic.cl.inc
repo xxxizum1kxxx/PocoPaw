@@ -5,9 +5,10 @@ R"CL(
 
 #define RCD_EPS 1e-5f
 #define RCD_EPSSQ 1e-10f
+#define RCD_PED 0.0625f
 
 inline float rc(__global const float* cfa, int W, int H, int x, int y) {
-    return clamp(cfa[(size_t)clamp(y, 0, H - 1) * W + clamp(x, 0, W - 1)], 0.f, 1.f);
+    return clamp((cfa[(size_t)clamp(y, 0, H - 1) * W + clamp(x, 0, W - 1)] + RCD_PED) / (1.f + RCD_PED), 0.f, 1.f);
 }
 inline float sq(float x) { return x * x; }
 inline float intp(float a, float b, float c) { return a * (b - c) + c; }
@@ -145,15 +146,16 @@ __kernel void rcd_rb_at_g(int W, int H, int cfaType, __global const float* G, __
     }
 }
 
-// interleave; the 9-pixel frame is bayerborder_demosaic on the unclamped mosaic
+// interleave; the 9-pixel frame is bayerborder_demosaic on the shifted [0, 1] mosaic, then unshifted without clamping negative noise
 __kernel void rcd_compose(__global const float* cfa, int W, int H, int cfaType, __global const float* R,
                           __global const float* G, __global const float* B, __global float* rgb) {
     int x = get_global_id(0), y = get_global_id(1);
     if (x >= W || y >= H) return;
     size_t i = (size_t)y * W + x;
     __global float* o = rgb + i * 3;
+    const float span = 1.f + RCD_PED;
     if (x >= 9 && y >= 9 && x < W - 9 && y < H - 9) {
-        o[0] = max(0.f, R[i]); o[1] = max(0.f, G[i]); o[2] = max(0.f, B[i]);
+        o[0] = R[i] * span - RCD_PED; o[1] = G[i] * span - RCD_PED; o[2] = B[i] * span - RCD_PED;
         return;
     }
     float sum[3] = {0, 0, 0}, cnt[3] = {0, 0, 0};
@@ -161,14 +163,14 @@ __kernel void rcd_compose(__global const float* cfa, int W, int H, int cfaType, 
         for (int j1 = x - 1; j1 < x + 2; j1++) {
             if (i1 < 0 || i1 >= H || j1 < 0 || j1 >= W) continue;
             int c = cfa_color(cfaType, j1, i1);
-            sum[c] += max(0.f, cfa[(size_t)i1 * W + j1]);
+            sum[c] += rc(cfa, W, H, j1, i1);
             cnt[c] += 1;
         }
     int c = cfa_color(cfaType, x, y);
-    float v = max(0.f, cfa[i]);
+    float v = rc(cfa, W, H, x, y);
     float r = c == 0 ? v : sum[0] / cnt[0];
     float g = c == 1 ? v : sum[1] / cnt[1];
     float b = c == 2 ? v : sum[2] / cnt[2];
-    o[0] = max(0.f, r); o[1] = max(0.f, g); o[2] = max(0.f, b);
+    o[0] = r * span - RCD_PED; o[1] = g * span - RCD_PED; o[2] = b * span - RCD_PED;
 }
 )CL"

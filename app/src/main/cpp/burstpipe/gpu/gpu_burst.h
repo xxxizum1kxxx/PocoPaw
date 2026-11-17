@@ -60,7 +60,8 @@ public:
         FinishTimes ft;
         HdrLuma hdr;
     };
-    void finish(const Meta& m, const LookParams& lp, Demosaic dm, float zoom, bool keepHdr, FinishOut& out, float aspect = 0.f);
+    void finish(const Meta& m, const LookParams& lp, Demosaic dm, float zoom, bool keepHdr, FinishOut& out, float aspect = 0.f,
+                const float lcaR[2] = nullptr, const float lcaB[2] = nullptr);
     int width() const { return rgb_.w; }
     int height() const { return rgb_.h; }
     void render(uint8_t* rgba, size_t stride);
@@ -86,6 +87,7 @@ private:
     GImg pyr_down(const GImg& in);
     void pyr_up_sub(const GImg& coarse, GImg& fine, float s);
     GImg demosaic_rcd(const GImg& cfa, int cfaType);
+    void correct_lca(const Meta& m, const float lcaR[2], const float lcaB[2]);
     void chroma_denoise(float strength);
     void upscale(int W, int H);
     void crop_aspect(float aspect);

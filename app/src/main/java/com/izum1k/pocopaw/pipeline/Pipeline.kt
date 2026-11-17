@@ -143,7 +143,7 @@ data class PipelineOptions(
     val look: BurstLook = BurstLook(),
     val scene: BurstScene = BurstScene.AUTO,
     val ultraHdr: Boolean = false,
-    /** Lateral CA of the capturing lens, applied by the kernel-regression merge. */
+    /** Lateral CA of the capturing lens, applied during merge (KR) or after demosaic (classic). */
     val lca: LensLca? = null,
     /** Calibrated noise of the capturing camera; null estimates it from each burst. */
     val noise: NoiseCurve? = null,

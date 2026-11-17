@@ -122,6 +122,10 @@ ImageF box_mean(const ImageF& in, int r) {
 
 }  // namespace
 
+// Small negative excursion allowed through WB + demosaic + CCM so zero-mean shadow noise stays
+// unbiased before chroma_denoise averages it away, preventing shadow noise rectification into pink.
+constexpr float kNegFloor = 1.f / 16.f;
+
 ImageF normalize_mosaic(const ImageF& mosaic, const Meta& m, const LookParams& p) {
     ImageF out(mosaic.w, mosaic.h);
     bool lsc = m.lscRows > 1 && m.lscCols > 1;
@@ -132,7 +136,17 @@ ImageF normalize_mosaic(const ImageF& mosaic, const Meta& m, const LookParams& p
         float fy = gy - y0;
         for (int x = 0; x < mosaic.w; x++) {
             int ch = cfa_channel(m.cfa, x, y);
-            float v = (mosaic.at(x, y) - m.black[ch]) / (m.white - m.black[ch]);
+            float raw = mosaic.at(x, y);
+            if (x >= 2 && x < mosaic.w - 2 && y >= 2 && y < mosaic.h - 2) {
+                float n0 = mosaic.at(x - 2, y - 2), n1 = mosaic.at(x, y - 2), n2 = mosaic.at(x + 2, y - 2);
+                float n3 = mosaic.at(x - 2, y),                             n4 = mosaic.at(x + 2, y);
+                float n5 = mosaic.at(x - 2, y + 2), n6 = mosaic.at(x, y + 2), n7 = mosaic.at(x + 2, y + 2);
+                float hi = std::max(std::max(std::max(n0, n1), std::max(n2, n3)), std::max(std::max(n4, n5), std::max(n6, n7)));
+                float avg = (n0 + n1 + n2 + n3 + n4 + n5 + n6 + n7) * 0.125f;
+                float thr = hi + std::max(0.02f * (m.white - m.black[ch]), 2.f * (hi - avg));
+                if (raw > thr) raw = hi;
+            }
+            float v = (raw - m.black[ch]) / (m.white - m.black[ch]);
             float gain = 1.f, clip = 1.f;
             if (lsc) {
                 float gx = (x + m.cropX) / sw * (m.lscCols - 1);
@@ -148,7 +162,7 @@ ImageF normalize_mosaic(const ImageF& mosaic, const Meta& m, const LookParams& p
                 gain = G(ch) / gG * lumaGain;
                 clip = lumaGain;
             }
-            out.at(x, y) = std::min(std::max(0.f, v) * gain * m.wb[ch], clip);
+            out.at(x, y) = clampf(v * gain * m.wb[ch], -kNegFloor, clip);
         }
     });
     return out;
@@ -183,7 +197,7 @@ void normalize_rgb(ImageF& rgb, const Meta& m, const LookParams& p, float scale)
                 clip = lumaGain;
             }
             float wb[3] = {m.wb[0], wbG, m.wb[3]};
-            for (int c = 0; c < 3; c++) px[c] = std::min(std::max(0.f, px[c] * inv[c]) * gain[c] * wb[c], clip);
+            for (int c = 0; c < 3; c++) px[c] = clampf(px[c] * inv[c] * gain[c] * wb[c], -kNegFloor, clip);
         }
     });
 }
@@ -212,10 +226,45 @@ ImageF demosaic_mhc(const ImageF& cfa, int cfaType) {
                               - 1.5f * (P(x - 2, y) + P(x + 2, y) + P(x, y - 2) + P(x, y + 2))) * 0.125f;
             }
             float* o = &rgb.at(x, y);
-            for (int k = 0; k < 3; k++) o[k] = std::max(0.f, out[k]);
+            for (int k = 0; k < 3; k++) o[k] = out[k];
         }
     });
     return rgb;
+}
+
+void correct_lca(ImageF& rgb, const Meta& m, const float lcaR[2], const float lcaB[2]) {
+    if (rgb.w < 2 || rgb.h < 2) return;
+    if (lcaR[0] == 0 && lcaR[1] == 0 && lcaB[0] == 0 && lcaB[1] == 0) return;
+    const int W = rgb.w, H = rgb.h;
+    const float fcx = (m.full_w() - 1) * 0.5f, fcy = (m.full_h() - 1) * 0.5f;
+    const float invR2 = 1.f / (fcx * fcx + fcy * fcy);
+    const float lcx = fcx - m.cropX, lcy = fcy - m.cropY;
+    auto sample = [&](const ImageF& im, float fx, float fy, int c) {
+        fx = clampf(fx, 0.f, (float)(W - 1));
+        fy = clampf(fy, 0.f, (float)(H - 1));
+        int x0 = std::min((int)fx, W - 2), y0 = std::min((int)fy, H - 2);
+        float ax = fx - x0, ay = fy - y0;
+        const float* r0 = im.row(y0) + (size_t)x0 * 3 + c;
+        const float* r1 = im.row(y0 + 1) + (size_t)x0 * 3 + c;
+        float a = r0[0] * (1.f - ax) + r0[3] * ax;
+        float b = r1[0] * (1.f - ax) + r1[3] * ax;
+        return a * (1.f - ay) + b * ay;
+    };
+    ImageF out(W, H, 3);
+    parallel_for(H, [&](int y) {
+        const float* src = rgb.row(y);
+        float* dst = out.row(y);
+        float py = (y + 0.5f) - lcy;
+        for (int x = 0; x < W; x++, src += 3, dst += 3) {
+            float px = (x + 0.5f) - lcx;
+            float rr = (px * px + py * py) * invR2;
+            float kr = lcaR[0] + lcaR[1] * rr, kb = lcaB[0] + lcaB[1] * rr;
+            dst[0] = sample(rgb, x + px * kr, y + py * kr, 0);
+            dst[1] = src[1];
+            dst[2] = sample(rgb, x + px * kb, y + py * kb, 2);
+        }
+    });
+    rgb = std::move(out);
 }
 
 void apply_ccm(ImageF& rgb, const float M[9]) {
@@ -327,7 +376,13 @@ void crop_aspect(ImageF& rgb, float aspect) {
 }
 
 void chroma_denoise(ImageF& rgb, float strength) {
-    if (strength <= 0) return;
+    if (strength <= 0) {
+        parallel_for(rgb.h, [&](int y) {
+            float* p = rgb.row(y);
+            for (int x = 0; x < rgb.w * 3; x++) p[x] = std::max(0.f, p[x]);
+        });
+        return;
+    }
     const int f = 4;
     int w = (rgb.w + f - 1) / f, h = (rgb.h + f - 1) / f;
     ImageF cr(w, h), cb(w, h);
@@ -362,7 +417,7 @@ void chroma_denoise(ImageF& rgb, float strength) {
             float L = luma709(p[0], p[1], p[2]);
             float r = L + bil(cr), b = L + bil(cb);
             float g = (L - 0.2126f * r - 0.0722f * b) / 0.7152f;
-            p[0] = r; p[1] = g; p[2] = b;
+            p[0] = std::max(0.f, r); p[1] = std::max(0.f, g); p[2] = std::max(0.f, b);
         }
     });
 }
@@ -659,7 +714,8 @@ std::vector<uint8_t> encode_jpeg(const uint8_t* px, int w, int h, int channels, 
     // interval would write
     const int mcu = channels > 1 && chroma420 ? 16 : 8;
     const int mcuRows = (h + mcu - 1) / mcu, mcuCols = (w + mcu - 1) / mcu;
-    int rowsPer = std::max(4, (mcuRows + g_threads - 1) / g_threads);
+    // finer strips let ThreadPool rebalance away from slower little cores on big.LITTLE SoCs
+    int rowsPer = std::max(2, (mcuRows + 4 * g_threads - 1) / (4 * g_threads));
     rowsPer = std::min(rowsPer, 65535 / mcuCols);
     const int strips = rowsPer > 0 ? (mcuRows + rowsPer - 1) / rowsPer : 1;
     if (strips <= 1 || rowsPer <= 0) return jpeg_one(px, w, h, channels, quality, chroma420);

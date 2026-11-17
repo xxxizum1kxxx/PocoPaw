@@ -32,6 +32,7 @@ ImageF normalize_mosaic(const ImageF& mosaic, const Meta& m, const LookParams& p
 // Linear camera RGB in raw DN above black (e.g. from kr_merge, at `scale` x sensor size) -> same normalisation
 void normalize_rgb(ImageF& rgb, const Meta& m, const LookParams& p, float scale);
 ImageF demosaic_mhc(const ImageF& cfa, int cfaType);
+void correct_lca(ImageF& rgb, const Meta& m, const float lcaR[2], const float lcaB[2]);
 void apply_ccm(ImageF& rgb, const float ccm[9]);
 void chroma_denoise(ImageF& rgb, float strength);
 // separable Lanczos-3 resize of a linear RGB image to W x H (for the zoom crop back to sensor size)

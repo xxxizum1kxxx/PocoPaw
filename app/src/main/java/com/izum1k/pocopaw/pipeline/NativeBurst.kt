@@ -34,7 +34,7 @@ enum class DemosaicMethod { MHC, RCD, AMAZE }
 
 /**
  * Lateral chromatic aberration of one lens (tools/lca_calib.py): red / blue are sampled at
- * p + (p − c)(k1 + k2 (r / rmax)²). Only the kernel-regression merge applies it.
+ * p + (p − c)(k1 + k2 (r / rmax)²). Applied by both the kernel-regression and classic pipelines.
  */
 data class LensLca(val kr1: Float, val kr2: Float, val kb1: Float, val kb2: Float)
 

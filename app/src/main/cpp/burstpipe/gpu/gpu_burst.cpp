@@ -497,8 +497,22 @@ GImg GpuBurst::demosaic_rcd(const GImg& cfa, int cfaType) {
     return rgb;
 }
 
+void GpuBurst::correct_lca(const Meta& m, const float lcaR[2], const float lcaB[2]) {
+    if (!lcaR || !lcaB || rgb_.w < 2 || rgb_.h < 2) return;
+    if (lcaR[0] == 0 && lcaR[1] == 0 && lcaB[0] == 0 && lcaB[1] == 0) return;
+    const float fcx = (m.full_w() - 1) * 0.5f, fcy = (m.full_h() - 1) * 0.5f;
+    const float invR2 = 1.f / (fcx * fcx + fcy * fcy);
+    const float lcx = fcx - m.cropX, lcy = fcy - m.cropY;
+    GImg out = g_.image(rgb_.w, rgb_.h, 3);
+    g_.run("lca_rgb", gs(rgb_.w), gs(rgb_.h), rgb_, rgb_.w, rgb_.h, f4(lcaR[0], lcaR[1], lcaB[0], lcaB[1]), lcx, lcy, invR2, out);
+    rgb_ = out;
+}
+
 void GpuBurst::chroma_denoise(float strength) {
-    if (strength <= 0) return;
+    if (strength <= 0) {
+        g_.run("clamp_nonneg", gs(rgb_.w * rgb_.h * 3), 1, rgb_, rgb_.w * rgb_.h * 3);
+        return;
+    }
     const int W = rgb_.w, H = rgb_.h, w = (W + 3) / 4, h = (H + 3) / 4;
     GImg cr = g_.image(w, h), cb = g_.image(w, h);
     g_.run("chroma_down", gs(w), gs(h), rgb_, W, H, cr, cb, w, h);
@@ -642,7 +656,8 @@ void GpuBurst::sharpen(float amount, float radius, float core) {
     g_.run("sharpen_apply", gs(n), 1, rgb_, n, L, B, amount, core);
 }
 
-void GpuBurst::finish(const Meta& m, const LookParams& look, Demosaic dm, float zoom, bool keepHdr, FinishOut& out, float aspect) {
+void GpuBurst::finish(const Meta& m, const LookParams& look, Demosaic dm, float zoom, bool keepHdr, FinishOut& out, float aspect,
+                      const float lcaR[2], const float lcaB[2]) {
     LookParams lp = look;
     Timer t;
     auto lap = [&](double& field) { g_.finish(); field = t.ms(); t = Timer(); };
@@ -689,6 +704,7 @@ void GpuBurst::finish(const Meta& m, const LookParams& look, Demosaic dm, float 
         } else {
             rgb_ = upload(demosaic(download(cfa), m.cfa, dm));
         }
+        correct_lca(m, lcaR, lcaB);
         lap(out.ft.demosaic);
     }
 

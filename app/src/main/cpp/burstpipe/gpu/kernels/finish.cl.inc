@@ -1,6 +1,8 @@
 R"CL(
 // finish.cpp and hdr_luma() on the device. RGB images are interleaved float3 rows.
 
+#define NEG_FLOOR 0.0625f
+
 inline float lsc_gain(__global const float* L, int cols, int x0, int y0, float fx, float fy, int c) {
     __global const float* a = L + ((size_t)y0 * cols + x0) * 4 + c;
     __global const float* b = a + (size_t)cols * 4;
@@ -15,7 +17,19 @@ __kernel void normalize_mosaic(__global const float* mosaic, __global float* out
     int ch = cfa_channel(cfa, x, y);
     float black = ch == 0 ? black4.x : ch == 1 ? black4.y : ch == 2 ? black4.z : black4.w;
     float wb = ch == 0 ? wb4.x : ch == 1 ? wb4.y : ch == 2 ? wb4.z : wb4.w;
-    float v = (mosaic[(size_t)y * W + x] - black) / (white - black);
+    float raw = mosaic[(size_t)y * W + x];
+    if (x >= 2 && x < W - 2 && y >= 2 && y < H - 2) {
+#define M(dx, dy) mosaic[(size_t)(y + (dy)) * W + (x + (dx))]
+        float n0 = M(-2, -2), n1 = M(0, -2), n2 = M(2, -2);
+        float n3 = M(-2, 0),               n4 = M(2, 0);
+        float n5 = M(-2, 2),  n6 = M(0, 2),  n7 = M(2, 2);
+#undef M
+        float hi = max(max(max(n0, n1), max(n2, n3)), max(max(n4, n5), max(n6, n7)));
+        float avg = (n0 + n1 + n2 + n3 + n4 + n5 + n6 + n7) * 0.125f;
+        float thr = hi + max(0.02f * (white - black), 2.f * (hi - avg));
+        if (raw > thr) raw = hi;
+    }
+    float v = (raw - black) / (white - black);
     float gain = 1.f, clipv = 1.f;
     if (rows > 1 && cols > 1) {
         float gy = (y + cropY) / sh * (rows - 1);
@@ -29,7 +43,7 @@ __kernel void normalize_mosaic(__global const float* mosaic, __global float* out
         gain = lsc_gain(lsc, cols, x0, y0, fx, fy, ch) / gG * lumaGain;
         clipv = lumaGain;
     }
-    out[(size_t)y * W + x] = min(max(0.f, v) * gain * wb, clipv);
+    out[(size_t)y * W + x] = clamp(v * gain * wb, -NEG_FLOOR, clipv);
 }
 
 __kernel void normalize_rgb(__global const float* in, __global float* rgb, int W, int H, float scale, float3 inv, float3 wb,
@@ -56,9 +70,9 @@ __kernel void normalize_rgb(__global const float* in, __global float* rgb, int W
     }
     __global const float* s = in + ((size_t)y * W + x) * 3;
     __global float* p = rgb + ((size_t)y * W + x) * 3;
-    p[0] = min(max(0.f, s[0] * inv.x) * g0 * wb.x, clipv);
-    p[1] = min(max(0.f, s[1] * inv.y) * g1 * wb.y, clipv);
-    p[2] = min(max(0.f, s[2] * inv.z) * g2 * wb.z, clipv);
+    p[0] = clamp(s[0] * inv.x * g0 * wb.x, -NEG_FLOOR, clipv);
+    p[1] = clamp(s[1] * inv.y * g1 * wb.y, -NEG_FLOOR, clipv);
+    p[2] = clamp(s[2] * inv.z * g2 * wb.z, -NEG_FLOOR, clipv);
 }
 
 // Immerkaer noise estimate on the G_even sub-plane: partial (sum |laplacian|, count) per (row, group)
@@ -123,7 +137,35 @@ __kernel void demosaic_mhc(__global const float* cfa, int W, int H, int cfaType,
     }
 #undef P
     __global float* o = rgb + ((size_t)y * W + x) * 3;
-    o[0] = max(0.f, o0); o[1] = max(0.f, o1); o[2] = max(0.f, o2);
+    o[0] = o0; o[1] = o1; o[2] = o2;
+}
+
+inline float sample_ch(__global const float* im, int W, int H, float fx, float fy, int c) {
+    fx = clamp(fx, 0.f, (float)(W - 1));
+    fy = clamp(fy, 0.f, (float)(H - 1));
+    int x0 = min((int)fx, max(0, W - 2)), y0 = min((int)fy, max(0, H - 2));
+    int x1 = min(x0 + 1, W - 1), y1 = min(y0 + 1, H - 1);
+    float ax = fx - x0, ay = fy - y0;
+    __global const float* r0 = im + ((size_t)y0 * W + x0) * 3 + c;
+    __global const float* r1 = im + ((size_t)y1 * W + x0) * 3 + c;
+    int dx = (x1 - x0) * 3;
+    float a = r0[0] * (1.f - ax) + r0[dx] * ax;
+    float b = r1[0] * (1.f - ax) + r1[dx] * ax;
+    return a * (1.f - ay) + b * ay;
+}
+
+__kernel void lca_rgb(__global const float* in, int W, int H, float4 lcaK, float lcx, float lcy, float invR2,
+                      __global float* out) {
+    int x = get_global_id(0), y = get_global_id(1);
+    if (x >= W || y >= H) return;
+    float px = (x + 0.5f) - lcx, py = (y + 0.5f) - lcy;
+    float rr = (px * px + py * py) * invR2;
+    float kr = lcaK.x + lcaK.y * rr, kb = lcaK.z + lcaK.w * rr;
+    __global const float* s = in + ((size_t)y * W + x) * 3;
+    __global float* d = out + ((size_t)y * W + x) * 3;
+    d[0] = sample_ch(in, W, H, x + px * kr, y + py * kr, 0);
+    d[1] = s[1];
+    d[2] = sample_ch(in, W, H, x + px * kb, y + py * kb, 2);
 }
 
 // apply_ccm, then wb_shift's per-channel gains (all 1 when the shift is off)
@@ -145,7 +187,7 @@ __kernel void log_luma_rows(__global const float* rgb, int W, int H, __global fl
     float v = 0;
     if (c * 8 < W) {
         __global const float* p = rgb + ((size_t)(r * 8) * W + c * 8) * 3;
-        v = log(1e-4f + 0.2126f * p[0] + 0.7152f * p[1] + 0.0722f * p[2]);
+        v = log(1e-4f + max(0.f, 0.2126f * p[0] + 0.7152f * p[1] + 0.0722f * p[2]));
     }
     float s = group_sum2(red, (float2)(v, 0)).x;
     if (get_local_id(0) == 0) out[r * get_num_groups(0) + get_group_id(0)] = s;
@@ -200,7 +242,12 @@ __kernel void chroma_apply(__global float* rgb, int W, int H, __global const flo
     float r = L + BIL(cr), b = L + BIL(cb);
 #undef BIL
     float g = (L - 0.2126f * r - 0.0722f * b) / 0.7152f;
-    p[0] = r; p[1] = g; p[2] = b;
+    p[0] = max(0.f, r); p[1] = max(0.f, g); p[2] = max(0.f, b);
+}
+
+__kernel void clamp_nonneg(__global float* rgb, int count) {
+    int i = get_global_id(0);
+    if (i < count) rgb[i] = max(0.f, rgb[i]);
 }
 
 // separable Lanczos-3: 6 taps per output column / row, weights precomputed by the host

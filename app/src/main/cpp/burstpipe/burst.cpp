@@ -47,7 +47,7 @@ float display_gain(const ImageF& rgb, float targetKey) {
     for (int y = 0; y < rgb.h; y += 8)
         for (int x = 0; x < rgb.w; x += 8) {
             const float* p = rgb.row(y) + (size_t)x * 3;
-            s += std::log(1e-4 + 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2]);
+            s += std::log(1e-4 + std::max(0.0, 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2]));
             n++;
         }
     return clampf(targetKey / (float)std::exp(s / std::max(1L, n)), 1.f, 64.f);
@@ -189,6 +189,7 @@ void BurstSession::gpu_failed(const char* step, const std::exception& e) {
 void BurstSession::merge(const BurstOptions& o) {
     if (streamed_) {
         opt_.demosaic = o.demosaic;
+        for (int i = 0; i < 2; i++) { opt_.lcaR[i] = o.lcaR[i]; opt_.lcaB[i] = o.lcaB[i]; }
         return;
     }
     Timer t;
@@ -425,7 +426,7 @@ void BurstSession::finish(const LookParams& lp, bool keepHdr) {
         try {
             if (!gpu_->merged()) gpu_->set_merged(kr_ ? rgb_ : mosaic_, kr_);
             GpuBurst::FinishOut o;
-            gpu_->finish(m_, lp, opt_.demosaic, zoom_, keepHdr, o, aspect_);
+            gpu_->finish(m_, lp, opt_.demosaic, zoom_, keepHdr, o, aspect_, opt_.lcaR, opt_.lcaB);
             sigma_ = o.sigma;
             visibleSigma_ = o.visibleSigma;
             chroma_ = o.chroma;
@@ -479,6 +480,7 @@ void BurstSession::finish_cpu(const LookParams& look, bool keepHdr) {
         mosaic_ = ImageF();
         t = Timer();
         rgb_ = demosaic(cfa, m_.cfa, opt_.demosaic);
+        correct_lca(rgb_, m_, opt_.lcaR, opt_.lcaB);
         ft_.demosaic = t.ms();
     }
     t = Timer(); apply_ccm(rgb_, m_.ccm); wb_shift(rgb_, lp.wbCool); ft_.color = t.ms();
@@ -544,7 +546,7 @@ std::string BurstSession::summary() const {
         mode += " bracket gains";
         for (float g : mo_.gain) { char b[16]; snprintf(b, sizeof b, " %.2f", g); mode += b; }
     }
-    if (kr_ && (opt_.lcaR[0] != 0 || opt_.lcaB[0] != 0)) mode += " lca";
+    if (opt_.lcaR[0] != 0 || opt_.lcaR[1] != 0 || opt_.lcaB[0] != 0 || opt_.lcaB[1] != 0) mode += " lca";
     if (streamed_) mode += " streamed " + std::to_string(streamMerged_ + 1) + "/" + std::to_string(streamAdded_);
     snprintf(buf, sizeof buf,
              "%s %dx%d ref=%d threads=%d | noise var=%.4f*S+%.3f %s robust %.2f-%.2f weight=%.3f shift=%.1f | sigma=%.5f visible=%.4f chroma=%.2f local=%.2f | "
