@@ -161,15 +161,16 @@ class DngPassthroughPipeline : StagedPipeline(ID, listOf(QuickLookStage(), DngWr
 }
 
 /**
- * The multi-frame CPU pipeline of `docs/research/PIPELINE.md`: HDR+ tile alignment, then
- * either the spatial robust merge plus Malvar-He-Cutler demosaic ([kernelRegression] false) or the
- * handheld super-resolution kernel-regression merge at 1x (true), then LSC / WB, CCM, chroma
- * denoise, synthetic-exposure fusion, tone curve, sharpening and JPEG. With [PipelineOptions.writeDng]
- * the merged mosaic is also saved as DNG ([MergedDngStage]); with [PipelineOptions.mergedDng] off, or after the
- * kernel-regression merge (RGB, no mosaic), the reference frame is, before the merge so the RAW is safe early.
- * [BurstScene.BRACKET] captures two short frames per long one (merged on the short frame's scale);
- * [BurstScene.NIGHT] meters a motion-limited shutter, merges in the frequency domain (classic path)
- * and finishes with the night look.
+ * The multi-frame native pipeline of `docs/research/PIPELINE.md` (CPU with OpenCL GPU
+ * acceleration and per-step CPU fallback): HDR+ tile alignment, then either the spatial robust merge
+ * plus RCD demosaic ([kernelRegression] false) or the handheld super-resolution kernel-regression
+ * merge at 1x (true), then LSC / WB, optional classic-path LCA, CCM, chroma denoise,
+ * synthetic-exposure fusion, tone curve, sharpening and direct native JPEG / Ultra HDR encoding.
+ * With [PipelineOptions.writeDng] and [PipelineOptions.mergedDng] on the classic path, the merged
+ * mosaic is also saved as DNG ([MergedDngStage]); otherwise the reference frame is, before the merge
+ * so the RAW is safe early. [BurstScene.BRACKET] captures two short frames per long one (merged on
+ * the short frame's scale); [BurstScene.NIGHT] meters a motion-limited shutter, merges in the
+ * frequency domain (classic path) and finishes with the night look.
  */
 class HdrPlusPipeline(
     id: String,

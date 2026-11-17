@@ -346,7 +346,7 @@ private fun CameraContent(vm: CameraViewModel) {
                     mode = ui.mode,
                     onMode = vm::setMode,
                     start = {
-                        PillReveal(settings.developerInfo && current != null) {
+                        PillReveal(settings.developerInfo && current != null && vm.rawLimit != Int.MAX_VALUE) {
                             BudgetPill(
                                 remaining = remaining,
                                 limit = vm.rawLimit,

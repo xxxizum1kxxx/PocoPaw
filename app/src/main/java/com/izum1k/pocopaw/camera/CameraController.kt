@@ -91,7 +91,7 @@ class CameraController(private val manager: CameraManager, private val motion: M
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
     private val mutex = Mutex()
 
-    val budget = RawRequestBudget()
+    val budget = if (CameraCatalog.IS_MARBLE) RawRequestBudget() else RawRequestBudget(limit = Int.MAX_VALUE, margin = 0)
 
     private val _state = MutableStateFlow<State>(State.Closed)
     val state: StateFlow<State> = _state.asStateFlow()

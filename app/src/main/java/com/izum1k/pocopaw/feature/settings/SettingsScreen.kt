@@ -177,12 +177,14 @@ fun SettingsScreen() {
                     icon = YoinSymbols.Info,
                     onClick = { nav.push(Route.Capabilities) },
                 )
-                SettingRow(
-                    title = stringResource(R.string.p1_title),
-                    value = stringResource(R.string.p1_entry_value),
-                    icon = YoinSymbols.Camera,
-                    onClick = { nav.push(Route.P1Captures) },
-                )
+                if (BuildConfig.DEBUG) {
+                    SettingRow(
+                        title = stringResource(R.string.p1_title),
+                        value = stringResource(R.string.p1_entry_value),
+                        icon = YoinSymbols.Camera,
+                        onClick = { nav.push(Route.P1Captures) },
+                    )
+                }
             }
         }
         item {

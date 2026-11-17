@@ -7,6 +7,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureResult
+import android.os.Build
 import android.util.Range
 import android.util.Rational
 import android.util.Size
@@ -65,7 +66,7 @@ class CameraCatalog(private val manager: CameraManager) {
 
     private fun load(): List<CameraInfo> {
         val listed = runCatching { manager.cameraIdList.toList() }.getOrDefault(emptyList())
-        val ids = (listed + PROBED_IDS).distinct().filterNot { it in DENYLIST }
+        val ids = if (IS_MARBLE) (listed + PROBED_IDS).distinct().filterNot { it in DENYLIST } else listed
         val raw = ids.mapNotNull { id ->
             val c = runCatching { manager.getCameraCharacteristics(id) }.getOrNull() ?: return@mapNotNull null
             describe(id, c)
@@ -156,6 +157,9 @@ class CameraCatalog(private val manager: CameraManager) {
     private fun roundZoom(z: Float): Float = if (abs(z - 1f) < 0.08f) 1f else (z * 10f).roundToInt() / 10f
 
     companion object {
+        /** Poco F5 / Redmi Note 12 Turbo device codename: device-specific HAL workarounds and calibrations apply here only. */
+        val IS_MARBLE: Boolean = Build.DEVICE == "marble"
+
         /** 4–6 are logical/auxiliary cameras that hang or crash marble's HAL; 3 is the 2 MP macro. */
         val DENYLIST = setOf("3", "4", "5", "6")
 

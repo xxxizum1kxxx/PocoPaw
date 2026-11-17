@@ -34,7 +34,9 @@ class AppContainer(context: Context) {
     val motion = MotionMeter(context.getSystemService(SensorManager::class.java))
     val controller = CameraController(cameraManager, motion).apply {
         // for measuring the analysis stream's cost: `run-as` writes N (0 = off) to files/meter_every
-        File(context.filesDir, "meter_every").takeIf { it.isFile }?.readText()?.trim()?.toIntOrNull()?.let { meterEvery = it }
+        if (BuildConfig.DEBUG) {
+            File(context.filesDir, "meter_every").takeIf { it.isFile }?.readText()?.trim()?.toIntOrNull()?.let { meterEvery = it }
+        }
     }
     val output = MediaStoreWriter(context)
     val processing = ProcessingQueue(scope, output)

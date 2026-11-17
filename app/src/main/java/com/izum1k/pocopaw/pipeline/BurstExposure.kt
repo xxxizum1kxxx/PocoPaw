@@ -66,19 +66,38 @@ object BurstExposure {
     private fun meter(live: LiveExposure, camera: CameraInfo, stops: Double, limit: Long): ManualExposure? {
         val iso0 = live.iso ?: return null
         val exp0 = live.exposureNs ?: return null
-        if (iso0 <= 0 || exp0 <= 0) return null
+        return meterExposure(
+            iso0 = iso0,
+            exp0 = exp0,
+            stops = stops,
+            limit = limit,
+            minIso = camera.isoRange?.lower ?: iso0,
+            maxIso = camera.isoRange?.upper ?: iso0,
+            minExp = camera.exposureRangeNs?.lower,
+        )
+    }
+
+    internal fun meterExposure(
+        iso0: Int,
+        exp0: Long,
+        stops: Double,
+        limit: Long,
+        minIso: Int = iso0,
+        maxIso: Int = iso0,
+        minExp: Long? = null,
+    ): ManualExposure? {
+        if (iso0 <= 0 || exp0 <= 0 || limit <= 0) return null
+        val loIso = minIso.coerceAtLeast(1)
+        val hiIso = maxIso.coerceAtLeast(loIso)
         val total = exp0.toDouble() * iso0 * 2.0.pow(stops)
-        val isoRange = camera.isoRange
-        val expRange = camera.exposureRangeNs
-        val minIso = isoRange?.lower ?: iso0
-        val maxIso = isoRange?.upper ?: iso0
-        var iso = minIso
+        var iso = loIso
         var exp = (total / iso).roundToLong()
         if (exp > limit) {
             exp = limit
-            iso = ceil(total / exp).toInt().coerceIn(minIso, maxIso)
+            iso = ceil(total / exp).toInt().coerceIn(loIso, hiIso)
         }
-        exp = exp.coerceIn(expRange?.lower ?: exp, limit)
+        val lowerExp = minExp?.coerceAtMost(limit) ?: exp
+        exp = exp.coerceIn(lowerExp, limit)
         return ManualExposure(iso, exp)
     }
 }

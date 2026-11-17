@@ -1,5 +1,7 @@
 package com.izum1k.pocopaw.pipeline
 
+import com.izum1k.pocopaw.camera.CameraCatalog
+
 /**
  * Per-lens calibrations measured on the Poco F5 (marble) with the research prototype; see
  * docs/research/IMPLEMENTATION.md §2.1 and §3.6. Camera ids are the Camera2 ids of this phone.
@@ -13,7 +15,7 @@ object LensCalibration {
         "2" to LensLca(kr1 = 0.000471f, kr2 = -0.000348f, kb1 = 0.000096f, kb2 = 0.000372f),
     )
 
-    fun lca(cameraId: String): LensLca? = lca[cameraId]
+    fun lca(cameraId: String): LensLca? = if (CameraCatalog.IS_MARBLE) lca[cameraId] else null
 
     /**
      * Sensor noise per ISO, from pipeline/calib/noise_curve_cam<id>.json (tools/noise_calib.py curve: dark and
@@ -28,5 +30,5 @@ object LensCalibration {
         ),
     )
 
-    fun noise(cameraId: String): NoiseCurve? = noise[cameraId]
+    fun noise(cameraId: String): NoiseCurve? = if (CameraCatalog.IS_MARBLE) noise[cameraId] else null
 }
