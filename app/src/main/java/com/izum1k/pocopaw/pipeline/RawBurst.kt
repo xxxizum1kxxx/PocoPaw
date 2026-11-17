@@ -62,6 +62,9 @@ class RawMetadata(
     val cropZoom: Float,
     val captureTimeMillis: Long,
 ) {
+    fun withResult(result: CaptureResult): RawMetadata =
+        from(cameraId, facing, characteristics, cfa, result, orientationDegrees, zoomRatio, cropZoom, captureTimeMillis)
+
     companion object {
         fun from(
             cameraId: String,
@@ -72,6 +75,7 @@ class RawMetadata(
             orientationDegrees: Int,
             zoomRatio: Float,
             cropZoom: Float,
+            captureTimeMillis: Long = System.currentTimeMillis(),
         ): RawMetadata {
             val pattern = characteristics.get(CameraCharacteristics.SENSOR_BLACK_LEVEL_PATTERN)
             val black = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
@@ -93,7 +97,7 @@ class RawMetadata(
                 orientationDegrees = orientationDegrees,
                 zoomRatio = zoomRatio,
                 cropZoom = cropZoom,
-                captureTimeMillis = System.currentTimeMillis(),
+                captureTimeMillis = captureTimeMillis,
             )
         }
     }
@@ -105,25 +109,30 @@ class RawMetadata(
  */
 class RawBurst(
     val frames: List<RawFrame>,
-    val metadata: RawMetadata,
+    metadata: RawMetadata,
     referenceIndex: Int = 0,
     val stream: BurstStream? = null,
 ) : Closeable {
+    var metadata: RawMetadata = metadata
+        private set
+
     override fun close() {
         stream?.close()
         frames.forEach { it.release() }
     }
 
-    /** Set by [ReferenceStage] before the other stages read [reference]. */
+    /** Set by [ReferenceStage] before the other stages read [reference] and [metadata]. */
     var referenceIndex: Int = referenceIndex
         set(value) {
             require(value in frames.indices)
             field = value
+            metadata = metadata.withResult(frames[value].result)
         }
 
     init {
         require(frames.isNotEmpty()) { "A burst needs at least one frame" }
         require(referenceIndex in frames.indices)
+        this.metadata = metadata.withResult(frames[referenceIndex].result)
     }
 
     val reference: RawFrame get() = frames[referenceIndex]

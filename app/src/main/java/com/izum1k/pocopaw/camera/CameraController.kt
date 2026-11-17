@@ -223,7 +223,18 @@ class CameraController(private val manager: CameraManager, private val motion: M
     fun updateControls(next: PreviewControls) {
         scope.launch {
             mutex.withLock {
+                val zoomMoving = abs(next.zoomRatio - controls.zoomRatio) > 0.002f
                 controls = next
+                if (zoomMoving && focusRegion == null) {
+                    cancelSweep()
+                    sceneFocus = null
+                    sceneStats = null
+                    val now = System.currentTimeMillis()
+                    if (yuvReader != null && _state.value is State.Previewing) {
+                        sceneSweepAfter = now + SCENE_SWEEP_MIN_MS
+                        sceneSweepDeadline = now + SCENE_SWEEP_MAX_WAIT_MS
+                    }
+                }
                 if (_state.value is State.Previewing) startPreview()
             }
         }
@@ -235,7 +246,7 @@ class CameraController(private val manager: CameraManager, private val motion: M
      * has settled on the point (a scan while the exposure ramps finds false peaks); with the YUV
      * stream, the app then sweeps around where AF stopped and holds the sharpest distance.
      */
-    fun focusAt(u: Float, v: Float) {
+    fun focusAt(u: Float, v: Float, zoom: Float = controls.zoomRatio) {
         scope.launch {
             mutex.withLock {
                 val info = camera ?: return@withLock
@@ -244,7 +255,7 @@ class CameraController(private val manager: CameraManager, private val motion: M
                 tapFocus = null
                 tapScan = null
                 sceneSweepAfter = 0L
-                focusRegion = meteringRect(info.activeArray, u, v)
+                focusRegion = meteringRect(info.activeArray, u, v, zoom)
                 aeLock = false
                 val now = System.currentTimeMillis()
                 aeLockAfter = now + AE_LOCK_MIN_MS
@@ -364,11 +375,7 @@ class CameraController(private val manager: CameraManager, private val motion: M
         val info = camera ?: return
         val region = focusRegion ?: return
         if (yuvReader == null) return
-        val a = info.activeArray
-        val zone = FocusZone(
-            RectF(region.x / a.width().toFloat(), region.y / a.height().toFloat(), (region.x + region.width) / a.width().toFloat(), (region.y + region.height) / a.height().toFloat()),
-            1f,
-        )
+        val zone = FocusZone(activeToZoomedRect(region, info.activeArray, controls.zoomRatio) ?: RectF(0.4f, 0.4f, 0.6f, 0.6f), 1f)
         val sw = Sweep(listOf(zone), d0 ?: 0f)
         launchSweep(
             sw,
@@ -381,9 +388,8 @@ class CameraController(private val manager: CameraManager, private val motion: M
     private fun startSceneSweep(d0: Float?) {
         val info = camera ?: return
         if (yuvReader == null) return
-        val a = info.activeArray
-        val zones = faceRegion?.let { f ->
-            listOf(FocusZone(RectF(f.x / a.width().toFloat(), f.y / a.height().toFloat(), (f.x + f.width) / a.width().toFloat(), (f.y + f.height) / a.height().toFloat()), 1f))
+        val zones = faceRegion?.let { f -> activeToZoomedRect(f, info.activeArray, controls.zoomRatio) }?.let { rect ->
+            listOf(FocusZone(rect, 1f))
         } ?: FocusSweeper.centreZones()
         val sw = Sweep(zones, d0 ?: 0f)
         launchSweep(
@@ -831,18 +837,20 @@ class CameraController(private val manager: CameraManager, private val motion: M
                     } + " (AF ${afStateName(frames.first().result.get(CaptureResult.CONTROL_AF_STATE))})",
                 )
                 gate?.flush()
-                val metadata = streamMetadata ?: metadataFor(frames.first().result)
-                if (BuildConfig.DEBUG) meterStats?.let { m ->
-                    Log.i(TAG, "meter grid ${(frames.first().timestampNs - m.timestampNs) / 1_000_000}ms before frame 0 " + SceneMeter.gridString(m))
-                    Log.i(TAG, "raw grid " + SceneMeter.rawGridString(frames.first(), metadata))
-                }
                 val g = gate
-                if (g != null) {
+                val accepted = if (g != null) {
                     if (g.dropped > 0) Log.w(TAG, "left out ${g.dropped} of ${frames.size} frames shot off focus")
-                    RawBurst(frames = g.accepted, metadata = metadata, stream = stream)
+                    g.accepted
                 } else {
-                    RawBurst(frames = steadyFrames(frames, spec), metadata = metadata)
+                    steadyFrames(frames, spec)
                 }
+                val firstFrame = accepted.firstOrNull() ?: frames.first()
+                val metadata = streamMetadata ?: metadataFor(firstFrame.result)
+                if (BuildConfig.DEBUG) meterStats?.let { m ->
+                    Log.i(TAG, "meter grid ${(firstFrame.timestampNs - m.timestampNs) / 1_000_000}ms before frame 0 " + SceneMeter.gridString(m))
+                    Log.i(TAG, "raw grid " + SceneMeter.rawGridString(firstFrame, metadata))
+                }
+                RawBurst(frames = accepted, metadata = metadata, stream = if (g != null) stream else null)
             } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
                 throw CameraFailure(Reason.TIMEOUT, e)
             } finally {
@@ -1141,8 +1149,15 @@ class CameraController(private val manager: CameraManager, private val motion: M
         } else {
             b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
         }
-        if (region != null && (c.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0) > 0) {
-            b.set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(region))
+        val aeRegion = region ?: if (zoom > 1.01f) {
+            val a = info.activeArray
+            val z = zoom.coerceAtLeast(1f)
+            val w = (a.width() / z).roundToInt().coerceAtLeast(1)
+            val h = (a.height() / z).roundToInt().coerceAtLeast(1)
+            MeteringRectangle((a.width() - w) / 2, (a.height() - h) / 2, w, h, MeteringRectangle.METERING_WEIGHT_MAX - 1)
+        } else null
+        if (aeRegion != null && (c.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0) > 0) {
+            b.set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(aeRegion))
         }
         when (exposure) {
             is ExposurePlan.Auto -> {
@@ -1307,8 +1322,15 @@ class CameraController(private val manager: CameraManager, private val motion: M
      */
     private fun followFaces(info: CameraInfo, faces: Array<Face>?) {
         val now = System.currentTimeMillis()
-        val face = faces?.filter { it.score >= MIN_FACE_SCORE }?.maxByOrNull { it.bounds.width() * it.bounds.height() }
         val a = info.activeArray
+        val z = controls.zoomRatio.coerceAtLeast(1f)
+        val xMin = a.width() * (0.5f - 0.5f / z)
+        val xMax = a.width() * (0.5f + 0.5f / z)
+        val yMin = a.height() * (0.5f - 0.5f / z)
+        val yMax = a.height() * (0.5f + 0.5f / z)
+        val face = faces?.filter {
+            it.score >= MIN_FACE_SCORE && (z <= 1.01f || (it.bounds.right >= xMin && it.bounds.left <= xMax && it.bounds.bottom >= yMin && it.bounds.top <= yMax))
+        }?.maxByOrNull { it.bounds.width() * it.bounds.height() }
         val next = face?.let {
             val r = it.bounds
             val half = (max(r.width(), r.height()) * FACE_REGION_SCALE / 2).roundToInt()
@@ -1473,13 +1495,27 @@ class CameraController(private val manager: CameraManager, private val motion: M
         return frames.filterIndexed { i, _ -> i !in off }
     }
 
-    private fun meteringRect(active: Rect, u: Float, v: Float): MeteringRectangle {
-        val half = (min(active.width(), active.height()) * TAP_REGION_HALF).roundToInt()
+    private fun meteringRect(active: Rect, u: Float, v: Float, zoom: Float = 1f): MeteringRectangle {
+        val half = (min(active.width(), active.height()) * TAP_REGION_HALF / zoom.coerceAtLeast(1f)).roundToInt().coerceAtLeast(1)
         val cx = active.left + (u.coerceIn(0f, 1f) * active.width()).roundToInt()
         val cy = active.top + (v.coerceIn(0f, 1f) * active.height()).roundToInt()
         val left = (cx - half).coerceIn(active.left, active.right - 2 * half)
         val top = (cy - half).coerceIn(active.top, active.bottom - 2 * half)
         return MeteringRectangle(left - active.left, top - active.top, 2 * half, 2 * half, MeteringRectangle.METERING_WEIGHT_MAX - 1)
+    }
+
+    /** Maps an active-array [MeteringRectangle] into normalised [0..1] zoomed YUV coordinates, or null if outside. */
+    private fun activeToZoomedRect(region: MeteringRectangle, active: Rect, zoom: Float): RectF? {
+        val aw = active.width().toFloat()
+        val ah = active.height().toFloat()
+        if (aw <= 0f || ah <= 0f) return null
+        val z = zoom.coerceAtLeast(1f)
+        fun map(norm: Float) = (0.5f + (norm - 0.5f) * z).coerceIn(0f, 1f)
+        val left = map(region.x / aw)
+        val top = map(region.y / ah)
+        val right = map((region.x + region.width) / aw)
+        val bottom = map((region.y + region.height) / ah)
+        return if (right - left < 0.01f || bottom - top < 0.01f) null else RectF(left, top, right, bottom)
     }
 
     /**

@@ -181,9 +181,11 @@ private fun CameraContent(vm: CameraViewModel) {
             focus = ui.focus,
             focusLocked = live.focusLocked,
             focusHeld = ui.focusHeld,
-            faces = remember(live.faces, current) {
+            faces = remember(live.faces, current, ui.zoom) {
                 val cam = current ?: return@remember emptyList()
-                live.faces.map { CameraViewModel.sensorToView(it, cam.sensorOrientation, cam.facing == LensFacing.FRONT) }
+                live.faces
+                    .map { CameraViewModel.sensorToView(it, cam.sensorOrientation, cam.facing == LensFacing.FRONT, ui.zoom) }
+                    .filter { it.right > 0f && it.left < 1f && it.bottom > 0f && it.top < 1f }
             },
             evLabel = evLabel,
             countdown = ui.countdown,

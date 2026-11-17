@@ -335,12 +335,12 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
             return
         }
         val cam = s.current ?: return
-        val (u, v) = viewToSensor(x, y, cam.sensorOrientation, cam.facing == LensFacing.FRONT)
+        val (u, v) = viewToSensor(x, y, cam.sensorOrientation, cam.facing == LensFacing.FRONT, s.zoom)
         if (s.evIndex != 0 || s.wbShift != 0) {
             _ui.update { it.copy(evIndex = 0, wbShift = 0) }
             pushControls()
         }
-        controller.focusAt(u, v)
+        controller.focusAt(u, v, s.zoom)
         _ui.update { it.copy(focus = FocusPoint(x, y, ++focusSeq), focusHeld = false) }
         focusResetJob?.cancel()
         focusResetJob = viewModelScope.launch {
@@ -593,33 +593,43 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
         }
 
         /**
-         * Displayed (portrait, mirrored for the front camera) to sensor coordinates. The preview
-         * shows the sensor rotated clockwise by its orientation.
+         * Active-array normalised point ([0..1]) to displayed (portrait, mirrored for the front camera),
+         * accounting for preview [zoom] around the center of the active array.
          */
-        /** [viewToSensor] undone, for a rectangle: what the face detector reports, as displayed. */
-        fun sensorToView(r: RectF, sensorOrientation: Int, mirrored: Boolean): RectF {
-            fun point(u: Float, v: Float): Pair<Float, Float> {
-                val (vx, y) = when (sensorOrientation) {
-                    90 -> 1f - v to u
-                    180 -> 1f - u to 1f - v
-                    270 -> v to 1f - u
-                    else -> u to v
-                }
-                return (if (mirrored) 1f - vx else vx) to y
+        internal fun sensorPointToView(u: Float, v: Float, sensorOrientation: Int, mirrored: Boolean, zoom: Float = 1f): Pair<Float, Float> {
+            val z = zoom.coerceAtLeast(1f)
+            val uz = 0.5f + (u - 0.5f) * z
+            val vz = 0.5f + (v - 0.5f) * z
+            val (vx, y) = when (sensorOrientation) {
+                90 -> 1f - vz to uz
+                180 -> 1f - uz to 1f - vz
+                270 -> vz to 1f - uz
+                else -> uz to vz
             }
-            val (x0, y0) = point(r.left, r.top)
-            val (x1, y1) = point(r.right, r.bottom)
+            return (if (mirrored) 1f - vx else vx) to y
+        }
+
+        /** [viewToSensor] undone, for a rectangle: what the face detector reports, as displayed. */
+        fun sensorToView(r: RectF, sensorOrientation: Int, mirrored: Boolean, zoom: Float = 1f): RectF {
+            val (x0, y0) = sensorPointToView(r.left, r.top, sensorOrientation, mirrored, zoom)
+            val (x1, y1) = sensorPointToView(r.right, r.bottom, sensorOrientation, mirrored, zoom)
             return RectF(minOf(x0, x1), minOf(y0, y1), maxOf(x0, x1), maxOf(y0, y1))
         }
 
-        fun viewToSensor(x: Float, y: Float, sensorOrientation: Int, mirrored: Boolean): Pair<Float, Float> {
+        /**
+         * Displayed (portrait, mirrored for the front camera) to active-array sensor coordinates.
+         * The preview shows the sensor rotated clockwise by its orientation and cropped by [zoom].
+         */
+        fun viewToSensor(x: Float, y: Float, sensorOrientation: Int, mirrored: Boolean, zoom: Float = 1f): Pair<Float, Float> {
             val vx = if (mirrored) 1f - x else x
-            return when (sensorOrientation) {
+            val (uz, vz) = when (sensorOrientation) {
                 90 -> y to 1f - vx
                 180 -> 1f - vx to 1f - y
                 270 -> 1f - y to vx
                 else -> vx to y
             }
+            val z = zoom.coerceAtLeast(1f)
+            return (0.5f + (uz - 0.5f) / z).coerceIn(0f, 1f) to (0.5f + (vz - 0.5f) / z).coerceIn(0f, 1f)
         }
     }
 }
