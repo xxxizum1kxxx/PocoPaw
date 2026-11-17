@@ -69,6 +69,12 @@ inline void load_tile(const Raw& F, int x0, int y0, f4* re, f4* im, f4* mean) {
     if (mean) *mean = s / (float)(T * T);
 }
 
+// the tile at x0 shifted by d still lands inside [0, q) wherever the unshifted tile does
+inline bool shift_inside(int x0, int d, int q) {
+    int lo = std::max(0, -x0), hi = std::min(T, q - x0);
+    return lo >= hi || (x0 + d + lo >= 0 && x0 + d + hi <= q);
+}
+
 }  // namespace
 
 ImageF merge_frames_freq(const std::vector<Raw>& frames, int ref, const std::vector<Offsets>& offs,
@@ -107,7 +113,13 @@ ImageF merge_frames_freq(const std::vector<Raw>& frames, int ref, const std::vec
                 float tileW = 0;
                 for (int k = 0; k < n; k++) {
                     if (k == ref) continue;
-                    load_tile(frames[k], x0 + offs[k].x(ai_, aj_), y0 + offs[k].y(ai_, aj_), rk, ik, nullptr);
+                    int dx = offs[k].x(ai_, aj_), dy = offs[k].y(ai_, aj_);
+                    // clamping would repeat the border into streaks: the reference stands in for this frame
+                    if (!shift_inside(x0, dx, qw) || !shift_inside(y0, dy, qh)) {
+                        for (int i = 0; i < T * T; i++) { ar[i] += r0[i]; ai[i] += i0[i]; }
+                        continue;
+                    }
+                    load_tile(frames[k], x0 + dx, y0 + dy, rk, ik, nullptr);
                     fft2d(rk, ik, false);
                     f4 wacc = 0;
                     for (int i = 0; i < T * T; i++) {

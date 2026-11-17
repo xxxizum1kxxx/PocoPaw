@@ -46,7 +46,7 @@ inline TileTaps taps(int qx, int qy, const Offsets& o) {
 
 #ifdef MERGE_NEON
 // merge_frames pass 1 for quads qx..qx+3 (qx a multiple of 4, so one tile column); false where a tap
-// reaches past the left / right edge and the scalar path has to clamp per quad
+// reaches past an edge and the scalar path has to reject per quad
 bool rob_quads4(ImageF& rob, int qx, int qy, const Offsets& of, const ImageF& m3, const ImageF& m3ref, float black,
                 const NoiseModel& nm, float g, const MergeOpts& o) {
     const int qw = rob.w, qh = rob.h;
@@ -58,7 +58,8 @@ bool rob_quads4(ImageF& rob, int qx, int qy, const Offsets& of, const ImageF& m3
         for (int c = 0; c < 2; c++) {
             int sx = qx + of.x(t.i[c], t.j[b]);
             if (sx < 0 || sx + 4 > qw) return false;
-            int sy = clampi(qy + of.y(t.i[c], t.j[b]), 0, qh - 1);
+            int sy = qy + of.y(t.i[c], t.j[b]);
+            if (sy < 0 || sy >= qh) return false;
             mu = vfmaq_f32(mu, vmulq_n_f32(wx[c], t.wy[b]), vld1q_f32(m3.row(sy) + sx));
         }
     const float a = (float)nm.a, bb = (float)nm.b;
@@ -109,13 +110,15 @@ NoiseModel estimate_noise(const ImageF& gref, const ImageF& galt, const Offsets&
         for (int qx = 2; qx < gref.w - 2; qx += 3) {
             TileTaps t = taps(qx, qy, off);
             float a = 0;
+            bool outside = false;
             for (int b = 0; b < 2; b++)
                 for (int c = 0; c < 2; c++) {
-                    int ox = off.x(t.i[c], t.j[b]), oy = off.y(t.i[c], t.j[b]);
-                    a += t.wx[c] * t.wy[b] * galt.atc(qx + ox, qy + oy);
+                    int x = qx + off.x(t.i[c], t.j[b]), y = qy + off.y(t.i[c], t.j[b]);
+                    outside |= x < 0 || x >= galt.w || y < 0 || y >= galt.h;
+                    a += t.wx[c] * t.wy[b] * galt.atc(x, y);
                 }
             float s = gref.at(qx, qy) / 4 - black;
-            if (s < 0) continue;
+            if (s < 0 || outside) continue;
             int k = std::min(kBins - 1, (int)(s / range * kBins));
             float d = gref.at(qx, qy) - a;
             bins[k].push_back(d * d);
@@ -225,10 +228,12 @@ void SpatialMerge::add(const Raw& F, const Offsets& of, const ImageF& m3, const 
             TileTaps t = taps(qx, qy, of);
             float mu = 0;
             bool clipped = false;
-            for (int b = 0; b < 2; b++)
-                for (int c = 0; c < 2; c++) {
-                    int sx = clampi(qx + of.x(t.i[c], t.j[b]), 0, qw - 1);
-                    int sy = clampi(qy + of.y(t.i[c], t.j[b]), 0, qh - 1);
+            for (int b = 0; b < 2 && !clipped; b++)
+                for (int c = 0; c < 2 && !clipped; c++) {
+                    int sx = qx + of.x(t.i[c], t.j[b]);
+                    int sy = qy + of.y(t.i[c], t.j[b]);
+                    // clamping would repeat the border row / column into streaks
+                    if (sx < 0 || sx >= qw || sy < 0 || sy >= qh) { clipped = true; break; }
                     mu += t.wx[c] * t.wy[b] * m3.at(sx, sy);
                     if (!checkClip) continue;
 #ifdef MERGE_NEON

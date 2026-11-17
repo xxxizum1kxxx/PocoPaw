@@ -233,8 +233,12 @@ ImageF kr_merge(const std::vector<Raw>& frames, int ref, const std::vector<Flow>
             for (int qx = 0; qx < qw; qx++) {
                 float dx, dy;
                 flow_at(flows[k], qx, qy, dx, dy);
+                int sx = (int)std::lround(qx + dx), sy = (int)std::lround(qy + dy);
+                if (sx < 0 || sx >= qw || sy < 0 || sy >= qh) {
+                    rob[k].at(qx, qy) = 0.f;
+                    continue;
+                }
                 float mu = bilinear(mean3[k], qx + dx, qy + dy);
-                int sx = clampi((int)std::lround(qx + dx), 0, qw - 1), sy = clampi((int)std::lround(qy + dy), 0, qh - 1);
                 bool clipped = std::max(std::max(F.at(2 * sx, 2 * sy), F.at(2 * sx + 1, 2 * sy)),
                                         std::max(F.at(2 * sx, 2 * sy + 1), F.at(2 * sx + 1, 2 * sy + 1))) >= clip;
                 rob[k].at(qx, qy) = clipped ? 0.f : frame_weight(mean3[ref].at(qx, qy), mu, black, nm, g, o);

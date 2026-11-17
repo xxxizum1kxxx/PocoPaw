@@ -47,7 +47,12 @@ __kernel void merge_rob(__global const float* mean3, int refOff, int kOff, __glo
     for (int b = 0; b < 2; b++)
         for (int c = 0; c < 2; c++) {
             int t = tj[b] * nx + ti[c];
-            int sx = clamp(qx + odx[t], 0, qw - 1), sy = clamp(qy + ody[t], 0, qh - 1);
+            int sx = qx + odx[t], sy = qy + ody[t];
+            // clamping would repeat the border row / column into streaks
+            if (sx < 0 || sx >= qw || sy < 0 || sy >= qh) {
+                clipped = true;
+                continue;
+            }
             mu += wx[c] * wy[b] * mk[sy * qw + sx];
             clipped |= quad_clipped(F, W, sx, sy, clip);
         }
@@ -147,6 +152,12 @@ inline float4 local_sum4(__local float4* scratch, float4 v, int i) {
     return r;
 }
 
+// the 16-wide tile at x0 shifted by d still lands inside [0, q) wherever the unshifted tile does
+inline bool shift_inside(int x0, int d, int q) {
+    int lo = max(0, -x0), hi = min(16, q - x0);
+    return lo >= hi || (x0 + d + lo >= 0 && x0 + d + hi <= q);
+}
+
 // tiles (ti, tj) with ti % 2 == px and tj % 2 == py do not overlap, so one launch accumulates without races
 __kernel void merge_freq_tiles(__global const ushort* frames, int W, int qw, int qh, int n, int ref, int frameSize,
                                __global const short* odx, __global const short* ody, int nx, int ny, int tileCount,
@@ -176,6 +187,12 @@ __kernel void merge_freq_tiles(__global const ushort* frames, int W, int qw, int
     for (int k = 0; k < n; k++) {
         if (k == ref) continue;
         int t = k * tileCount + oj * nx + oi;
+        // uniform over the work group, so the barriers in dft2d stay matched
+        if (!shift_inside(x0, odx[t], qw) || !shift_inside(y0, ody[t], qh)) {
+            ar += r0;
+            ai += i0;
+            continue;
+        }
         lre[i] = load_quad(frames + (size_t)k * frameSize, W, qw, qh, x0 + odx[t] + u, y0 + ody[t] + v) * wv;
         lim[i] = 0;
         float4 rk, ik;

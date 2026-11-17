@@ -165,8 +165,12 @@ __kernel void kr_rob(__global const float* fx, __global const float* fy, int tOf
     __global const float* mk = mean3 + kOff;
     __global const ushort* F = frames + fOff;
     float2 d = flow_at(fx, fy, nx, ny, win, qx, qy);
+    int sx = (int)round(qx + d.x), sy = (int)round(qy + d.y);
+    if (sx < 0 || sx >= qw || sy < 0 || sy >= qh) {
+        rob[qy * qw + qx] = 0.f;
+        return;
+    }
     float mu = bilinear(mk, qw, qh, qx + d.x, qy + d.y);
-    int sx = clamp((int)round(qx + d.x), 0, qw - 1), sy = clamp((int)round(qy + d.y), 0, qh - 1);
     rob[qy * qw + qx] = quad_clipped(F, W, sx, sy, clip) ? 0.f : frame_weight(mref[qy * qw + qx], mu, black, na, nb, g, lo, hi);
 }
 
