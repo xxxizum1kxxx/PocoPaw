@@ -683,6 +683,7 @@ class CameraController(private val manager: CameraManager, private val motion: M
     private fun onMeterStats(s: MeterStats) {
         if (_state.value !is State.Previewing && _state.value !is State.Capturing) return
         meterStats = s
+        _live.value = _live.value.copy(clippedFraction = s.clippedFraction)
         if (sceneBaselinePending && sweep == null) {
             sceneBaselinePending = false
             sceneStats = s
@@ -1464,6 +1465,7 @@ class CameraController(private val manager: CameraManager, private val motion: M
                 focusing = settling || af == CaptureResult.CONTROL_AF_STATE_ACTIVE_SCAN || af == CaptureResult.CONTROL_AF_STATE_PASSIVE_SCAN,
                 aeConverged = ae == CaptureResult.CONTROL_AE_STATE_CONVERGED,
                 flashRequired = ae == CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED,
+                clippedFraction = meterStats?.clippedFraction ?: 0f,
             )
         }
     }

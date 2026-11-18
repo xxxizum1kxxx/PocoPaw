@@ -69,4 +69,6 @@ data class LiveExposure(
     val faces: List<RectF> = emptyList(),
     /** Gyroscope angular speed RMS over the last second (rad/s), for night exposure; null if unknown. */
     val motionRadPerSec: Float? = null,
+    /** Fraction of preview meter samples clipping near white (>= 0.90 in any channel). */
+    val clippedFraction: Float = 0f,
 )

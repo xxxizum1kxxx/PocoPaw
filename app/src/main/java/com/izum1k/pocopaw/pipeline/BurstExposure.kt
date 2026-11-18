@@ -18,6 +18,9 @@ import kotlin.math.roundToLong
  */
 object BurstExposure {
     const val UNDEREXPOSURE_STOPS = -1.0
+    const val HIGHLIGHT_CLIP_SAFE = 0.02f
+    const val HIGHLIGHT_CLIP_FULL = 0.18f
+    const val HIGHLIGHT_GUARD_MAX_STOPS = 1.0
     const val MAX_EXPOSURE_OIS_NS = 66_000_000L
     const val MAX_EXPOSURE_NS = 33_000_000L
 
@@ -32,7 +35,49 @@ object BurstExposure {
     const val NIGHT_MIN_EXPOSURE_NS = 33_000_000L
 
     fun plan(live: LiveExposure, camera: CameraInfo, evIndex: Int = 0): ExposurePlan.Manual? =
-        meter(live, camera, UNDEREXPOSURE_STOPS + evIndex * camera.evStep.toDouble(), handheldLimit(camera))?.let { ExposurePlan.Manual(it) }
+        planExposure(
+            live = live,
+            hasOis = camera.hasOis,
+            evIndex = evIndex,
+            evStep = camera.evStep.toDouble(),
+            minIso = camera.isoRange?.lower,
+            maxIso = camera.isoRange?.upper,
+            minExp = camera.exposureRangeNs?.lower,
+            maxExp = camera.exposureRangeNs?.upper,
+        )?.let { ExposurePlan.Manual(it) }
+
+    internal fun highlightGuardStops(clippedFraction: Float): Double {
+        if (!clippedFraction.isFinite() || clippedFraction <= HIGHLIGHT_CLIP_SAFE) return 0.0
+        val t = ((clippedFraction - HIGHLIGHT_CLIP_SAFE) / (HIGHLIGHT_CLIP_FULL - HIGHLIGHT_CLIP_SAFE))
+            .toDouble()
+            .coerceIn(0.0, 1.0)
+        return -HIGHLIGHT_GUARD_MAX_STOPS * t * t * (3.0 - 2.0 * t)
+    }
+
+    internal fun planExposure(
+        live: LiveExposure,
+        hasOis: Boolean,
+        evIndex: Int = 0,
+        evStep: Double = 1.0 / 3.0,
+        minIso: Int? = null,
+        maxIso: Int? = null,
+        minExp: Long? = null,
+        maxExp: Long? = null,
+    ): ManualExposure? {
+        val iso0 = live.iso ?: return null
+        val exp0 = live.exposureNs ?: return null
+        val guard = if (evIndex == 0) highlightGuardStops(live.clippedFraction) else 0.0
+        val limit = (if (hasOis) MAX_EXPOSURE_OIS_NS else MAX_EXPOSURE_NS).coerceAtMost(maxExp ?: Long.MAX_VALUE)
+        return meterExposure(
+            iso0 = iso0,
+            exp0 = exp0,
+            stops = UNDEREXPOSURE_STOPS + evIndex * evStep + guard,
+            limit = limit,
+            minIso = minIso ?: iso0,
+            maxIso = maxIso ?: iso0,
+            minExp = minExp,
+        )
+    }
 
     /**
      * Two short frames then one [BRACKET_LONG_STOPS] longer, cycled. The native merge picks the

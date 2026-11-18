@@ -36,6 +36,8 @@ class MeterStats(
     /** Copying the points on the camera thread, and converting them off it. */
     val sampleMillis: Double,
     val millis: Double,
+    /** Fraction of the 64x48x4 preview samples with any channel at or above [SceneMeter.CLIP]. */
+    val clippedFraction: Float = 0f,
 ) {
     /** Grey world on [camRgb]: the illuminant's camera RGB, unit length, or null with too few valid cells. */
     fun greyWorld(): FloatArray? = SceneMeter.meanRgb(camRgb, valid, 0, SceneMeter.COLS, 0, SceneMeter.ROWS)
@@ -119,6 +121,7 @@ object SceneMeter {
         val valid = BooleanArray(cells)
         val grid = FloatArray(GRID_COLS * GRID_ROWS)
         var lumaSum = 0.0
+        var clippedSamples = 0
         val lin = FloatArray(3)
         val rgb = FloatArray(3)
         for (c in 0 until cells) {
@@ -136,11 +139,16 @@ object SceneMeter {
                 rgb[0] = yv + 1.402f * cr
                 rgb[1] = yv - 0.344136f * cb - 0.714136f * cr
                 rgb[2] = yv + 1.772f * cb
+                var sampleClipped = false
                 for (ch in 0 until 3) {
                     val e = (rgb[ch] / 255f).coerceIn(0f, 1f)
-                    if (e >= CLIP) clipped = true
+                    if (e >= CLIP) {
+                        clipped = true
+                        sampleClipped = true
+                    }
                     lin[ch] = lut[ch][(e * 255f + 0.5f).toInt()]
                 }
+                if (sampleClipped) clippedSamples++
                 r0 += lin[0]
                 g0 += lin[1]
                 b0 += lin[2]
@@ -162,7 +170,11 @@ object SceneMeter {
         val luma = max(lumaSum / cells, 1e-6)
         val seconds = exp / 1e9
         val ev = ln(luma / (iso / 100.0 * boost * seconds)) / ln(2.0)
-        return MeterStats(timestampNs, ev, grid, camRgb, valid, gains, curve != null, f.sampleNanos / 1e6, (System.nanoTime() - t0) / 1e6)
+        val clippedFraction = clippedSamples.toFloat() / (cells * PTS)
+        return MeterStats(
+            timestampNs, ev, grid, camRgb, valid, gains, curve != null, f.sampleNanos / 1e6,
+            (System.nanoTime() - t0) / 1e6, clippedFraction,
+        )
     }
 
     /** Pearson correlation of two grids: 1 for the same framing under any exposure. */
