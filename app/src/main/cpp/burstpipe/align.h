@@ -10,10 +10,13 @@ constexpr int kStride = kTile / 2;   // tiles overlap by half
 struct Offsets {
     int nx = 0, ny = 0;
     std::vector<int16_t> dx, dy;
+    std::vector<float> fx, fy;  // subpixel residual around (dx, dy) in gray px, [-0.5, 0.5]
     int16_t& x(int i, int j) { return dx[(size_t)j * nx + i]; }
     int16_t& y(int i, int j) { return dy[(size_t)j * nx + i]; }
     int16_t x(int i, int j) const { return dx[(size_t)j * nx + i]; }
     int16_t y(int i, int j) const { return dy[(size_t)j * nx + i]; }
+    float subx(int i, int j) const { return fx.empty() ? 0.f : fx[(size_t)j * nx + i]; }
+    float suby(int i, int j) const { return fy.empty() ? 0.f : fy[(size_t)j * nx + i]; }
 };
 
 ImageF gray_from_raw(const Raw& r);                       // sum of each 2x2 quad

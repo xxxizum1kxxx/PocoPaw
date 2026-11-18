@@ -25,16 +25,18 @@ inline float bilinear(__global const float* im, int w, int h, float x, float y) 
 // 4 tiles.
 __kernel void refine_flow(__global const float* mean3, int refOff, int altOff, __global const float* gxi,
                           __global const float* gyi, int w, int h, __global const short* odx,
-                          __global const short* ody, int tOff, int nx, int ny, int iters, __global float* fxo,
+                          __global const short* ody, int tOff, int subOff, int nx, int ny, int iters, __global float* fxo,
                           __global float* fyo, __local float* red) {
     int g0 = get_global_id(0), j = get_global_id(1), lid = get_local_id(0);
     int u = g0 & 15, i = g0 >> 4, base = lid & ~15;
     bool valid = i < nx && j < ny;
     __global const float* mref = mean3 + refOff;
     __global const float* malt = mean3 + altOff;
-    odx += tOff; ody += tOff; fxo += tOff; fyo += tOff;
     int t = j * nx + i;
-    float dx0 = valid ? odx[t] : 0.f, dy0 = valid ? ody[t] : 0.f;
+    float dx0 = valid ? odx[tOff + t] : 0.f, dy0 = valid ? ody[tOff + t] : 0.f;
+    float subx = (valid && subOff > 0) ? odx[subOff + tOff + t] * (1.f / 16384.f) : 0.f;
+    float suby = (valid && subOff > 0) ? ody[subOff + tOff + t] * (1.f / 16384.f) : 0.f;
+    fxo += tOff; fyo += tOff;
     int x0 = max(1, i * 8), x1 = min(w - 1, i * 8 + 16);
     int y0 = max(1, j * 8), y1 = min(h - 1, j * 8 + 16);
     int x = i * 8 + u;
@@ -53,7 +55,7 @@ __kernel void refine_flow(__global const float* mean3, int refOff, int altOff, _
     float det = a * c - b * b, tr = a + c;
     bool flat = x1 <= x0 || y1 <= y0 || tr <= 0 || det < 1e-4f * tr * tr;
     bool done = !valid || flat;
-    float dx = dx0, dy = dy0;
+    float dx = dx0 + subx, dy = dy0 + suby;
     for (int it = 0; it < iters; it++) {
         float sx = 0, sy = 0;
         if (!done && col) {
@@ -179,7 +181,7 @@ __kernel void kr_gather(__global const ushort* frames, int frameSize, int n, int
                         __global const float* fx, __global const float* fy, int nx, int ny, int tileCount,
                         __constant float* win, __global const float* rob, __global const float* icov, int qw,
                         int qh, float sc, int OW, int OH, int cfa, float4 blk, int lca, float4 lcaK, float lcx,
-                        float lcy, float invR2, __global float* out) {
+                        float lcy, float invR2, float4 sCol, float sat, float na, float nb, __global float* out) {
     int X = get_global_id(0), Y = get_global_id(1);
     if (X >= OW || Y >= OH) return;
     float ly = (Y + 0.5f) / sc, lx = (X + 0.5f) / sc;
@@ -195,6 +197,7 @@ __kernel void kr_gather(__global const ushort* frames, int frameSize, int n, int
         rdx = px * kr; rdy = py * kr; bdx = px * kb; bdy = py * kb;
     }
     float3 num = 0, den = 0;
+    float numG0 = 0, numG2 = 0, denCd0 = 0, denCd2 = 0;
     for (int k = 0; k < n; k++) {
         float r = 1.f, mx = lx, my = ly;
         if (k != ref) {
@@ -219,15 +222,48 @@ __kernel void kr_gather(__global const ushort* frames, int frameSize, int n, int
                 float bl = ch == 0 ? blk.x : ch == 1 ? blk.y : ch == 2 ? blk.z : blk.w;
                 float z = ia * ddx * ddx + ib2 * ddx * ddy + icc * ddy * ddy;
                 float w = r * native_exp(-0.5f * max(0.f, z));
+                float rawv = (float)F[(size_t)i * W + j];
                 float3 m = (float3)(ch == 0, ch == 1 || ch == 2, ch == 3);
-                num += m * (w * (F[(size_t)i * W + j] - bl));
+                num += m * (w * (rawv - bl));
                 den += m * w;
+                if ((ch == 0 || ch == 3) && j > 0 && j + 1 < W && i > 0 && i + 1 < H) {
+                    float rL = (float)F[(size_t)i * W + j - 1];
+                    float rR = (float)F[(size_t)i * W + j + 1];
+                    float rU = (float)F[(size_t)(i - 1) * W + j];
+                    float rD = (float)F[(size_t)(i + 1) * W + j];
+                    if (rawv < sat && rL < sat && rR < sat && rU < sat && rD < sat) {
+                        float bH = (i & 1) ? blk.z : blk.y, bV = (i & 1) ? blk.y : blk.z;
+                        float gL = rL - bH, gR = rR - bH, gU = rU - bV, gD = rD - bV;
+                        float dh = fabs(gL - gR), dv = fabs(gU - gD);
+                        float dh2 = dh * dh, dv2 = dv * dv;
+                        float gavg = 0.25f * (gL + gR + gU + gD);
+                        float eps = max(4.f * (na * max(0.f, gavg) + nb), 1.f);
+                        float wh = 1.f / (eps + dh2 * (dh2 + 0.1f));
+                        float wv = 1.f / (eps + dv2 * (dv2 + 0.1f));
+                        float gloc = (wh * 0.5f * (gL + gR) + wv * 0.5f * (gU + gD)) / (wh + wv);
+                        if (ch == 0) { numG0 += w * gloc; denCd0 += w; }
+                        else         { numG2 += w * gloc; denCd2 += w; }
+                    }
+                }
             }
         }
     }
+    float v0 = den.x > 1e-30f ? num.x / den.x : 0.f;
+    float v1 = den.y > 1e-30f ? num.y / den.y : 0.f;
+    float v2 = den.z > 1e-30f ? num.z / den.z : 0.f;
+    if (den.y > 1e-30f) {
+        float aR = native_exp(-2.f * (rdx * rdx + rdy * rdy));
+        float aB = native_exp(-2.f * (bdx * bdx + bdy * bdy));
+        float dR = (den.x > 1e-30f && denCd0 > 0.25f * den.x) ? aR * (denCd0 / den.x) * (v1 - numG0 / denCd0) / sCol.x : 0.f;
+        float dB = (den.z > 1e-30f && denCd2 > 0.25f * den.z) ? aB * (denCd2 / den.z) * (v1 - numG2 / denCd2) / sCol.z : 0.f;
+        float dY = 0.7f * (0.2126f * sCol.x * dR + 0.0722f * sCol.z * dB);
+        v0 += dR - dY / max(sCol.x, 0.1f);
+        v1 -= dY;
+        v2 += dB - dY / max(sCol.z, 0.1f);
+    }
     __global float* o = out + ((size_t)Y * OW + X) * 3;
-    o[0] = den.x > 1e-30f ? max(0.f, num.x / den.x) : 0.f;
-    o[1] = den.y > 1e-30f ? max(0.f, num.y / den.y) : 0.f;
-    o[2] = den.z > 1e-30f ? max(0.f, num.z / den.z) : 0.f;
+    o[0] = max(0.f, v0);
+    o[1] = max(0.f, v1);
+    o[2] = max(0.f, v2);
 }
 )CL"

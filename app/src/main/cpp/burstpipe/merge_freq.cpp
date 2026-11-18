@@ -11,12 +11,23 @@ constexpr int S = 8;   // stride (half overlap)
 
 float g_sin[T];        // sine window; its square sums to 1 under half overlap (analysis + synthesis)
 float g_twr[T / 2], g_twi[T / 2];
+float g_wr[T], g_wi[T]; // 1D DFT of g_sin, so mean * W decouples DC window cusp from phase shift
 int g_rev[T];
 
 struct Init {
     Init() {
         for (int u = 0; u < T; u++) g_sin[u] = std::sin((float)M_PI * (u + 0.5f) / T);
         for (int k = 0; k < T / 2; k++) { g_twr[k] = std::cos(2 * (float)M_PI * k / T); g_twi[k] = -std::sin(2 * (float)M_PI * k / T); }
+        for (int k = 0; k < T; k++) {
+            double re = 0, im = 0;
+            for (int u = 0; u < T; u++) {
+                double a = -2.0 * M_PI * k * u / T;
+                re += g_sin[u] * std::cos(a);
+                im += g_sin[u] * std::sin(a);
+            }
+            g_wr[k] = (float)re;
+            g_wi[k] = (float)im;
+        }
         for (int i = 0; i < T; i++) {
             int r = 0;
             for (int b = 0; b < 4; b++) if (i & (1 << b)) r |= 1 << (3 - b);
@@ -50,10 +61,13 @@ inline void fft2d(f4* re, f4* im, bool inverse) {
     for (int u = 0; u < T; u++) fft16(re + u, im + u, T, inverse);
 }
 
-// windowed tile of the 4 Bayer planes, quad origin (x0,y0), clamped at the image border
-inline void load_tile(const Raw& F, int x0, int y0, f4* re, f4* im, f4* mean) {
+// windowed tile of the 4 Bayer planes, quad origin (x0,y0), clamped at the image border.
+// When `zeroMean` is true, subtracts the tile's per-plane mean before windowing so continuous
+// Fourier phase shifts only act on zero-mean texture (preventing window-cusp DC ringing).
+inline f4 load_tile(const Raw& F, int x0, int y0, f4* re, f4* im, bool zeroMean = false) {
     const int qw = F.w / 2, qh = F.h / 2;
     f4 s = 0;
+    f4 raw[T * T];
     for (int v = 0; v < T; v++) {
         int y = clampi(y0 + v, 0, qh - 1);
         const uint16_t* r0 = F.row(2 * y);
@@ -62,11 +76,18 @@ inline void load_tile(const Raw& F, int x0, int y0, f4* re, f4* im, f4* mean) {
             int x = clampi(x0 + u, 0, qw - 1);
             f4 p = {(float)r0[2 * x], (float)r0[2 * x + 1], (float)r1[2 * x], (float)r1[2 * x + 1]};
             s += p;
-            re[v * T + u] = p * (g_sin[u] * g_sin[v]);
-            im[v * T + u] = 0;
+            raw[v * T + u] = p;
         }
     }
-    if (mean) *mean = s / (float)(T * T);
+    f4 mean = s / (float)(T * T);
+    f4 sub = zeroMean ? mean : (f4)0;
+    for (int v = 0; v < T; v++)
+        for (int u = 0; u < T; u++) {
+            int i = v * T + u;
+            re[i] = (raw[i] - sub) * (g_sin[u] * g_sin[v]);
+            im[i] = 0;
+        }
+    return mean;
 }
 
 // the tile at x0 shifted by d still lands inside [0, q) wherever the unshifted tile does
@@ -101,8 +122,7 @@ ImageF merge_frames_freq(const std::vector<Raw>& frames, int ref, const std::vec
             double wsum = 0;
             for (int ti = 0; ti < ntx; ti++) {
                 int x0 = (ti - 1) * S, y0 = (tj - 1) * S;
-                f4 mean;
-                load_tile(R, x0, y0, r0, i0, &mean);
+                f4 mean = load_tile(R, x0, y0, r0, i0, false);
                 fft2d(r0, i0, false);
                 // per-coefficient noise variance of a frame difference, from the raw noise model
                 f4 sig;
@@ -119,18 +139,44 @@ ImageF merge_frames_freq(const std::vector<Raw>& frames, int ref, const std::vec
                         for (int i = 0; i < T * T; i++) { ar[i] += r0[i]; ai[i] += i0[i]; }
                         continue;
                     }
-                    load_tile(frames[k], x0 + dx, y0 + dy, rk, ik, nullptr);
+                    float fx = offs[k].subx(ai_, aj_), fy = offs[k].suby(ai_, aj_);
+                    bool sub = (fx != 0.f || fy != 0.f);
+                    f4 mk = load_tile(frames[k], x0 + dx, y0 + dy, rk, ik, sub);
                     fft2d(rk, ik, false);
-                    f4 wacc = 0;
-                    for (int i = 0; i < T * T; i++) {
-                        f4 dr = r0[i] - rk[i], di = i0[i] - ik[i];
-                        f4 d2 = dr * dr + di * di;
-                        f4 a = d2 / (d2 + noiseD);
-                        // pairwise Wiener merge: keep the alternate where it agrees, the reference where not
-                        ar[i] += rk[i] + a * dr;
-                        ai[i] += ik[i] + a * di;
-                        wacc += 1.f - a;
+                    float pxr[T], pxi[T], pyr[T], pyi[T];
+                    if (sub) {
+                        for (int m = 0; m < T; m++) {
+                            int sm = m < 8 ? m : (m > 8 ? m - 16 : 0);
+                            float ax = (2.f * (float)M_PI / T) * (sm * fx);
+                            float ay = (2.f * (float)M_PI / T) * (sm * fy);
+                            pxr[m] = std::cos(ax); pxi[m] = std::sin(ax);
+                            pyr[m] = std::cos(ay); pyi[m] = std::sin(ay);
+                        }
                     }
+                    f4 wacc = 0;
+                    for (int v = 0; v < T; v++)
+                        for (int u = 0; u < T; u++) {
+                            int i = v * T + u;
+                            f4 skr, ski;
+                            if (sub) {
+                                float pr = pxr[u] * pyr[v] - pxi[u] * pyi[v];
+                                float pi = pxr[u] * pyi[v] + pxi[u] * pyr[v];
+                                float wr = g_wr[u] * g_wr[v] - g_wi[u] * g_wi[v];
+                                float wi = g_wr[u] * g_wi[v] + g_wi[u] * g_wr[v];
+                                skr = rk[i] * pr - ik[i] * pi + mk * wr;
+                                ski = rk[i] * pi + ik[i] * pr + mk * wi;
+                            } else {
+                                skr = rk[i];
+                                ski = ik[i];
+                            }
+                            f4 dr = r0[i] - skr, di = i0[i] - ski;
+                            f4 d2 = dr * dr + di * di;
+                            f4 a = d2 / (d2 + noiseD);
+                            // pairwise Wiener merge: keep the alternate where it agrees, the reference where not
+                            ar[i] += skr + a * dr;
+                            ai[i] += ski + a * di;
+                            wacc += 1.f - a;
+                        }
                     tileW += (wacc[0] + wacc[1] + wacc[2] + wacc[3]) / (4.f * T * T);
                 }
                 float inv = 1.f / n;

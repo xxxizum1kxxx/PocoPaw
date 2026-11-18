@@ -78,6 +78,50 @@ float tile_cost(const ImageF& ref, const ImageF& alt, int x0, int y0, int t, int
     return s;
 }
 
+// 2D quadratic fit on the 3x3 L2 residual grid around the finest-level integer minimum
+inline void parabolic_fit_2d(const float c[3][3], float& fx, float& fy) {
+    float gx = ((c[0][2] - c[0][0]) + (c[1][2] - c[1][0]) + (c[2][2] - c[2][0])) * (1.f / 6.f);
+    float gy = ((c[2][0] - c[0][0]) + (c[2][1] - c[0][1]) + (c[2][2] - c[0][2])) * (1.f / 6.f);
+    float hxx = ((c[0][2] - 2 * c[0][1] + c[0][0]) + (c[1][2] - 2 * c[1][1] + c[1][0]) +
+                 (c[2][2] - 2 * c[2][1] + c[2][0])) * (1.f / 3.f);
+    float hyy = ((c[2][0] - 2 * c[1][0] + c[0][0]) + (c[2][1] - 2 * c[1][1] + c[0][1]) +
+                 (c[2][2] - 2 * c[1][2] + c[0][2])) * (1.f / 3.f);
+    float hxy = (c[2][2] - c[2][0] - c[0][2] + c[0][0]) * 0.25f;
+
+    float tr = hxx + hyy;
+    if (tr <= 0.f) { fx = 0.f; fy = 0.f; return; }
+    float det = hxx * hyy - hxy * hxy;
+    float disc = std::sqrt(std::max(0.f, 0.25f * tr * tr - det));
+    float l1 = 0.5f * tr + disc, l2 = 0.5f * tr - disc;
+    float cmin = std::max(c[1][1], 1e-6f);
+    if (l1 <= 0.8f * cmin) { fx = 0.f; fy = 0.f; return; }
+
+    float e1x = 1.f, e1y = 0.f;
+    if (std::fabs(hxy) > 1e-12f * tr) {
+        if (hxx >= hyy) { e1x = l1 - hyy; e1y = hxy; }
+        else { e1x = hxy; e1y = l1 - hxx; }
+        float nrm = std::hypot(e1x, e1y);
+        e1x /= nrm; e1y /= nrm;
+    } else if (hyy > hxx) {
+        e1x = 0.f; e1y = 1.f;
+    }
+    float e2x = -e1y, e2y = e1x;
+    float g1 = gx * e1x + gy * e1y;
+    float g2 = gx * e2x + gy * e2y;
+
+    float mu = 0.02f * cmin;
+    float s1 = -g1 * l1 / (l1 * l1 + mu * mu);
+    float s2 = (l2 > std::max(0.05f * l1, 0.8f * cmin)) ? (-g2 * l2 / (l2 * l2 + mu * mu)) : 0.f;
+    fx = clampf(s1 * e1x + s2 * e2x, -0.5f, 0.5f);
+    fy = clampf(s1 * e1y + s2 * e2y, -0.5f, 0.5f);
+    // Reject one-sided step cliffs outside the tile border and non-minimum saddles
+    float c0 = c[1][1];
+    float dlx = c[1][0] - c0, drx = c[1][2] - c0;
+    float dly = c[0][1] - c0, dry = c[2][1] - c0;
+    if (dlx <= 0.f || drx <= 0.f || std::max(dlx, drx) > 12.f * std::min(dlx, drx)) fx = 0.f;
+    if (dly <= 0.f || dry <= 0.f || std::max(dly, dry) > 12.f * std::min(dly, dry)) fy = 0.f;
+}
+
 }  // namespace
 
 ImageF gray_from_raw(const Raw& r) {
@@ -138,6 +182,7 @@ std::vector<ImageF> build_pyramid(const ImageF& g0) {
     std::vector<ImageF> p;
     p.push_back(g0);
     for (int l = 0; l < 3; l++) p.push_back(downsample(p.back(), kFactor[l]));
+    p.push_back(box3(g0));
     return p;
 }
 
@@ -154,10 +199,12 @@ ImageF box3(const ImageF& g) {
 
 Offsets align_frames(const std::vector<ImageF>& ref, const std::vector<ImageF>& alt) {
     std::vector<int16_t> pdx, pdy;  // offsets of the coarser level
+    std::vector<float> ffx, ffy;
     Grid pg(ref[3], kTileL[3]);
     for (int l = 3; l >= 0; l--) {
         Grid g(ref[l], kTileL[l]);
         std::vector<int16_t> dx((size_t)g.nx * g.ny), dy(dx.size());
+        if (l == 0) { ffx.assign(dx.size(), 0.f); ffy.assign(dx.size(), 0.f); }
         bool l1 = (l == 0);
         int R = kRadius[l];
         parallel_for(g.ny, [&](int j) {
@@ -193,8 +240,18 @@ Offsets align_frames(const std::vector<ImageF>& ref, const std::vector<ImageF>& 
                         float s = tile_cost(ref[l], alt[l], x0, y0, g.tile, cx + ox, cy + oy, l1, best);
                         if (s < best) { best = s; bx = cx + ox; by = cy + oy; }
                     }
-                dx[(size_t)j * g.nx + i] = (int16_t)bx;
-                dy[(size_t)j * g.nx + i] = (int16_t)by;
+                size_t idx = (size_t)j * g.nx + i;
+                dx[idx] = (int16_t)bx;
+                dy[idx] = (int16_t)by;
+                if (l == 0) {
+                    const ImageF& rSub = ref.size() > 4 ? ref[4] : ref[0];
+                    const ImageF& aSub = alt.size() > 4 ? alt[4] : alt[0];
+                    float c3[3][3];
+                    for (int oy = -1; oy <= 1; oy++)
+                        for (int ox = -1; ox <= 1; ox++)
+                            c3[oy + 1][ox + 1] = tile_cost(rSub, aSub, x0, y0, g.tile, bx + ox, by + oy, false, 3.4e38f);
+                    parabolic_fit_2d(c3, ffx[idx], ffy[idx]);
+                }
             }
         });
         pdx.swap(dx);
@@ -206,5 +263,7 @@ Offsets align_frames(const std::vector<ImageF>& ref, const std::vector<ImageF>& 
     o.ny = pg.ny;
     o.dx = std::move(pdx);
     o.dy = std::move(pdy);
+    o.fx = std::move(ffx);
+    o.fy = std::move(ffy);
     return o;
 }

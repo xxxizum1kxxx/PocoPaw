@@ -77,7 +77,7 @@ private:
     static std::unique_ptr<GpuBurst> open(int width, int height, int slots, std::string& why);
     // gray pyramid of frame slot k (its 3x3 means into mean3_ on the way)
     std::vector<GImg> pyramid(int k);
-    Offsets align_pyramids(const std::vector<GImg>& refPyr, const std::vector<GImg>& altPyr);
+    Offsets align_pyramids(const std::vector<GImg>& refPyr, const std::vector<GImg>& altPyr, int refOff = 0, int altOff = 0);
     GImg upload(const ImageF& im);
     ImageF download(const GImg& g);
     void upload_offsets(const std::vector<Offsets>& offs);

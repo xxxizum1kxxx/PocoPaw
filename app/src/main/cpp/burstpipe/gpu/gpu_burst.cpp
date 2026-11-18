@@ -4,8 +4,7 @@
 
 namespace {
 
-// the frequency merge's per-coefficient DFT is ~10x slower than the CPU on Adreno 725
-std::set<std::string> g_off = {"freq"};
+std::set<std::string> g_off;
 
 cl_float4 f4(float a, float b, float c, float d) {
     cl_float4 v;
@@ -133,7 +132,7 @@ std::vector<GImg> GpuBurst::pyramid(int k) {
     return p;
 }
 
-Offsets GpuBurst::align_pyramids(const std::vector<GImg>& refPyr, const std::vector<GImg>& altPyr) {
+Offsets GpuBurst::align_pyramids(const std::vector<GImg>& refPyr, const std::vector<GImg>& altPyr, int refOff, int altOff) {
     Buf pdx, pdy;
     int pnx = 0, pny = 0, ptile = 0;
     for (int l = 3; l >= 0; l--) {
@@ -152,14 +151,23 @@ Offsets GpuBurst::align_pyramids(const std::vector<GImg>& refPyr, const std::vec
     }
     Offsets o;
     o.nx = pnx; o.ny = pny;
-    o.dx.resize((size_t)pnx * pny);
-    o.dy.resize(o.dx.size());
-    g_.read(pdx, o.dx.data(), o.dx.size() * 2);
-    g_.read(pdy, o.dy.data(), o.dy.size() * 2);
+    const size_t nt = (size_t)pnx * pny;
+    o.dx.resize(nt);
+    o.dy.resize(nt);
+    o.fx.resize(nt);
+    o.fy.resize(nt);
+    g_.read(pdx, o.dx.data(), nt * 2);
+    g_.read(pdy, o.dy.data(), nt * 2);
+    Buf sc3 = g_.alloc(nt * 9 * 4), fx = g_.alloc(nt * 4), fy = g_.alloc(nt * 4);
+    g_.run("align_subpixel_cost", gs(pnx * 3), gs(pny), mean3_, refOff, mean3_, altOff, qw_, qh_, pnx, pny, pdx, pdy, sc3);
+    g_.run("align_subpixel_fit", gs(pnx), gs(pny), pnx, pny, sc3, fx, fy);
+    g_.read(fx, o.fx.data(), nt * 4);
+    g_.read(fy, o.fy.data(), nt * 4);
     return o;
 }
 
 void GpuBurst::align(int ref, int alt, std::vector<Offsets>& offs, ImageF& grayRef, ImageF& grayAlt) {
+    const int qn = qw_ * qh_;
     std::vector<GImg> refPyr = pyramid(ref);
     grayRef_ = refPyr[0];
     offs.assign(n_, Offsets());
@@ -167,13 +175,15 @@ void GpuBurst::align(int ref, int alt, std::vector<Offsets>& offs, ImageF& grayR
         if (k == ref) continue;
         std::vector<GImg> altPyr = pyramid(k);
         if (k == alt) grayAlt = download(altPyr[0]);
-        offs[k] = align_pyramids(refPyr, altPyr);
+        offs[k] = align_pyramids(refPyr, altPyr, ref * qn, k * qn);
     }
     Offsets z;
     z.nx = (qw_ + kStride - 1) / kStride;
     z.ny = (qh_ + kStride - 1) / kStride;
     z.dx.assign((size_t)z.nx * z.ny, 0);
     z.dy = z.dx;
+    z.fx.assign(z.dx.size(), 0.f);
+    z.fy = z.fx;
     offs[ref] = z;
     grayRef = download(grayRef_);
     aligned_ = true;
@@ -190,10 +200,17 @@ void GpuBurst::upload_offsets(const std::vector<Offsets>& offs) {
     tnx_ = offs[0].nx;
     tny_ = offs[0].ny;
     nt_ = tnx_ * tny_;
-    std::vector<int16_t> dx((size_t)nt_ * n_), dy(dx.size());
+    const size_t nEntries = (size_t)nt_ * n_;
+    std::vector<int16_t> dx(nEntries * 2, 0), dy(nEntries * 2, 0);
     for (int k = 0; k < n_; k++) {
         std::copy(offs[k].dx.begin(), offs[k].dx.end(), dx.begin() + (size_t)k * nt_);
         std::copy(offs[k].dy.begin(), offs[k].dy.end(), dy.begin() + (size_t)k * nt_);
+        if (offs[k].fx.size() == (size_t)nt_ && offs[k].fy.size() == (size_t)nt_) {
+            for (int t = 0; t < nt_; t++) {
+                dx[nEntries + (size_t)k * nt_ + t] = (int16_t)clampi((int)std::lround(offs[k].fx[t] * 16384.f), -8192, 8192);
+                dy[nEntries + (size_t)k * nt_ + t] = (int16_t)clampi((int)std::lround(offs[k].fy[t] * 16384.f), -8192, 8192);
+            }
+        }
     }
     odx_ = g_.alloc(dx.size() * 2);
     ody_ = g_.alloc(dy.size() * 2);
@@ -254,7 +271,7 @@ Offsets GpuBurst::stream_align(const Raw& frame, ImageF* gray) {
     g_.write(frames_, frame.row(0), fs * 2, fs * 2);
     std::vector<GImg> altPyr = pyramid(1);
     if (gray) *gray = download(altPyr[0]);
-    return align_pyramids(refPyr_, altPyr);
+    return align_pyramids(refPyr_, altPyr, 0, qw_ * qh_);
 }
 
 void GpuBurst::stream_merge(const Offsets& of, const NoiseModel& nm, float black, const MergeOpts& o) {
@@ -298,23 +315,20 @@ double GpuBurst::stream_end(float black) {
 double GpuBurst::merge_freq(int ref, const std::vector<Offsets>& offs, const Meta& m, const NoiseModel& nm, float c, float spatial) {
     upload_offsets(offs);
     const Tables& t = tables();
-    Buf sinw = g_.alloc(64), tc = g_.alloc(64), ts = g_.alloc(64);
-    g_.write(sinw, t.sinw, 64);
-    g_.write(tc, t.tc, 64);
-    g_.write(ts, t.ts, 64);
     float bl[4];
     for (int l = 0; l < 4; l++) bl[l] = m.black[cfa_channel(m.cfa, l & 1, l >> 1)];
     GImg out = g_.image(W_, H_);
     g_.zero(out.b);
     const int ntx = (qw_ + 7) / 8 + 1, nty = (qh_ + 7) / 8 + 1;
     Buf tileW = g_.alloc((size_t)ntx * nty * 4);
-    const LocalMem lm{256 * sizeof(cl_float4)};
+    const LocalMem lm{272 * sizeof(cl_float4)};
+    const int subOff = nt_ * n_;
     for (int py = 0; py < 2; py++)
         for (int px = 0; px < 2; px++) {
-            size_t gx = (size_t)(ntx - px + 1) / 2 * 16, gy = (size_t)(nty - py + 1) / 2 * 16;
-            g_.run_local("merge_freq_tiles", gx, gy, 16, 16, frames_, W_, qw_, qh_, n_, ref, W_ * H_, odx_, ody_, tnx_, tny_, nt_,
-                         sinw, tc, ts, f4(bl[0], bl[1], bl[2], bl[3]), t.w2, c, spatial, nm.a, nm.b, px, py, ntx, nty, out, tileW,
-                         lm, lm, lm, lm, LocalMem{32 * sizeof(float)});
+            size_t gx = (size_t)(ntx - px + 1) / 2 * 64, gy = (size_t)(nty - py + 1) / 2;
+            g_.run_local("merge_freq_tiles", gx, gy, 64, 1, frames_, W_, qw_, qh_, n_, ref, W_ * H_, odx_, ody_, tnx_, tny_, nt_,
+                         subOff, f4(bl[0], bl[1], bl[2], bl[3]), t.w2, c, spatial, nm.a, nm.b, px, py, ntx, nty, out, tileW,
+                         lm, lm);
         }
     std::vector<float> tw((size_t)ntx * nty);
     g_.read(tileW, tw.data(), tw.size() * 4);
@@ -322,6 +336,7 @@ double GpuBurst::merge_freq(int ref, const std::vector<Offsets>& offs, const Met
     if (n_ > 1) for (float v : tw) s += v / (n_ - 1);
     merged_ = out;
     kr_ = false;
+    g_.finish();
     return s / ((double)ntx * nty);
 }
 
@@ -352,7 +367,7 @@ void GpuBurst::merge_kr(const Raw& R, int ref, const std::vector<Offsets>& offs,
     for (int k = 0; k < n; k++) {
         if (k == ref) continue;
         g_.run_local("refine_flow", gs(16 * tnx_), gs(tny_), 64, 1, mean3_, ref * qn, k * qn, gx, gy, qw, qh, odx_, ody_, k * nt_,
-                     tnx_, tny_, 3, fx, fy, LocalMem{64 * 3 * sizeof(float)});
+                     nt_ * n, tnx_, tny_, 3, fx, fy, LocalMem{64 * 3 * sizeof(float)});
     }
     gx = GImg();
     gy = GImg();
@@ -382,9 +397,11 @@ void GpuBurst::merge_kr(const Raw& R, int ref, const std::vector<Offsets>& offs,
     const bool lca = p.lcaR[0] != 0 || p.lcaR[1] != 0 || p.lcaB[0] != 0 || p.lcaB[1] != 0;
     const float fcx = (m.full_w() - 1) * 0.5f, fcy = (m.full_h() - 1) * 0.5f, invR2 = 1.f / (fcx * fcx + fcy * fcy);
     const float lcx = fcx - m.cropX, lcy = fcy - m.cropY;
+    const float wbG = 0.5f * (m.wb[1] + m.wb[2]);
     g_.run("kr_gather", gs(OW), gs(OH), frames_, fs, n, ref, W, H, fx, fy, tnx_, tny_, nt_, win_, rob, icov, qw, qh, sc, OW, OH,
            m.cfa, f4(m.black[0], m.black[1], m.black[2], m.black[3]), lca ? 1 : 0, f4(p.lcaR[0], p.lcaR[1], p.lcaB[0], p.lcaB[1]),
-           lcx, lcy, invR2, out);
+           lcx, lcy, invR2, f4(wbG > 0.f && m.wb[0] > 0.f ? m.wb[0] / wbG : 1.f, 1.f, wbG > 0.f && m.wb[3] > 0.f ? m.wb[3] / wbG : 1.f, 0.f),
+           0.96f * m.white, (float)nm.a, (float)nm.b, out);
 
     const int slots = qh * groups64(qw);
     std::vector<float> rs((size_t)slots * n);

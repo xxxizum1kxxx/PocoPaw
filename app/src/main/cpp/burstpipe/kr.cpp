@@ -89,7 +89,7 @@ Flow refine_flow(const ImageF& mref, const ImageF& malt, const Offsets& o, int i
     f.err.assign(f.fx.size(), 1e3f);
     parallel_for(o.ny, [&](int j) {
         for (int i = 0; i < o.nx; i++) {
-            float dx = o.x(i, j), dy = o.y(i, j);
+            float dx = o.x(i, j) + o.subx(i, j), dy = o.y(i, j) + o.suby(i, j);
             int x0 = std::max(1, i * kStride), x1 = std::min(mref.w - 1, i * kStride + kTile);
             int y0 = std::max(1, j * kStride), y1 = std::min(mref.h - 1, j * kStride + kTile);
             double a = 0, b = 0, c = 0;
@@ -284,6 +284,19 @@ ImageF kr_merge(const std::vector<Raw>& frames, int ref, const std::vector<Flow>
     const bool lca = p.lcaR[0] != 0 || p.lcaR[1] != 0 || p.lcaB[0] != 0 || p.lcaB[1] != 0;
     const float fcx = (m.full_w() - 1) * 0.5f, fcy = (m.full_h() - 1) * 0.5f, invR2 = 1.f / (fcx * fcx + fcy * fcy);
     const float lcx = fcx - m.cropX, lcy = fcy - m.cropY;
+    const float wbG = 0.5f * (m.wb[1] + m.wb[2]);
+    const float sCol[3] = {wbG > 0.f && m.wb[0] > 0.f ? m.wb[0] / wbG : 1.f, 1.f,
+                           wbG > 0.f && m.wb[3] > 0.f ? m.wb[3] / wbG : 1.f};
+    const float sat = 0.96f * m.white, na = (float)nm.a, nb = (float)nm.b;
+#if KR_NEON
+    float32x4_t rbMask[4], bHV_H[2], bHV_V[2];
+    for (int pi = 0; pi < 4; pi++) rbMask[pi] = vaddq_f32(maskV[pi][0], maskV[pi][2]);
+    for (int pr = 0; pr < 2; pr++) {
+        bHV_H[pr] = vdupq_n_f32(blk[pr ? 2 : 1]);
+        bHV_V[pr] = vdupq_n_f32(blk[pr ? 1 : 2]);
+    }
+    const float32x4_t satV = vdupq_n_f32(sat), nbV = vdupq_n_f32(nb), oneV = vdupq_n_f32(1.f), k01V = vdupq_n_f32(0.1f);
+#endif
     parallel_for(OH, [&](int Y) {
         float* o = out.row(Y);
         float ly = (Y + 0.5f) / sc;
@@ -303,6 +316,7 @@ ImageF kr_merge(const std::vector<Raw>& frames, int ref, const std::vector<Flow>
             int kx = clampi((int)std::lround(lx / 2 - 0.5f), 0, qw - 1);
             const float* ic = &icov.at(kx, ky);
             float num[3] = {0, 0, 0}, den[3] = {0, 0, 0};
+            float numG[3] = {0, 0, 0}, denCd[3] = {0, 0, 0};
             // per-colour shift of the query point (R, G, B), constant over the 3x3 support
             float qdx[3] = {0, 0, 0}, qdy[3] = {0, 0, 0};
             if (lca) {
@@ -311,8 +325,11 @@ ImageF kr_merge(const std::vector<Raw>& frames, int ref, const std::vector<Flow>
                 qdx[0] = px * kr; qdy[0] = py * kr; qdx[2] = px * kb; qdy[2] = py * kb;
             }
 #if KR_NEON
-            float32x4_t accN[4], accD[4];
-            for (int i = 0; i < 4; i++) { accN[i] = vdupq_n_f32(0.f); accD[i] = vdupq_n_f32(0.f); }
+            float32x4_t accN[4], accD[4], accG[4], accCd[4];
+            for (int i = 0; i < 4; i++) {
+                accN[i] = vdupq_n_f32(0.f); accD[i] = vdupq_n_f32(0.f);
+                accG[i] = vdupq_n_f32(0.f); accCd[i] = vdupq_n_f32(0.f);
+            }
             const float32x4_t ia = vdupq_n_f32(ic[0]), ib2 = vdupq_n_f32(2 * ic[1]), icc = vdupq_n_f32(ic[2]), zero = vdupq_n_f32(0.f);
             float32x4_t sdx[4], sdy[4];
             if (lca)
@@ -320,6 +337,29 @@ ImageF kr_merge(const std::vector<Raw>& frames, int ref, const std::vector<Flow>
                     sdx[pi] = vaddq_f32(vmulq_n_f32(maskV[pi][0], qdx[0]), vmulq_n_f32(maskV[pi][2], qdx[2]));
                     sdy[pi] = vaddq_f32(vmulq_n_f32(maskV[pi][0], qdy[0]), vmulq_n_f32(maskV[pi][2], qdy[2]));
                 }
+            auto accum_cd = [&](const Raw& F, int i, int cx, int pi, float32x4_t rawF, float32x4_t w) {
+                float32x4_t rL = vcvtq_f32_u32(vmovl_u16(vld1_u16(F.row(i) + cx - 2)));
+                float32x4_t rR = vcvtq_f32_u32(vmovl_u16(vld1_u16(F.row(i) + cx)));
+                float32x4_t rU = vcvtq_f32_u32(vmovl_u16(vld1_u16(F.row(i - 1) + cx - 1)));
+                float32x4_t rD = vcvtq_f32_u32(vmovl_u16(vld1_u16(F.row(i + 1) + cx - 1)));
+                float32x4_t mx = vmaxq_f32(rawF, vmaxq_f32(vmaxq_f32(rL, rR), vmaxq_f32(rU, rD)));
+                uint32x4_t ok = vcltq_f32(mx, satV);
+                int pr = i & 1;
+                float32x4_t gL = vsubq_f32(rL, bHV_H[pr]), gR = vsubq_f32(rR, bHV_H[pr]);
+                float32x4_t gU = vsubq_f32(rU, bHV_V[pr]), gD = vsubq_f32(rD, bHV_V[pr]);
+                float32x4_t dh = vabsq_f32(vsubq_f32(gL, gR)), dv = vabsq_f32(vsubq_f32(gU, gD));
+                float32x4_t dh2 = vmulq_f32(dh, dh), dv2 = vmulq_f32(dv, dv);
+                float32x4_t gavg = vmulq_n_f32(vaddq_f32(vaddq_f32(gL, gR), vaddq_f32(gU, gD)), 0.25f);
+                float32x4_t eps = vmaxq_f32(vmulq_n_f32(vfmaq_n_f32(nbV, vmaxq_f32(gavg, zero), na), 4.f), oneV);
+                float32x4_t wh = vdivq_f32(oneV, vaddq_f32(eps, vmulq_f32(dh2, vaddq_f32(dh2, k01V))));
+                float32x4_t wv = vdivq_f32(oneV, vaddq_f32(eps, vmulq_f32(dv2, vaddq_f32(dv2, k01V))));
+                float32x4_t gloc = vdivq_f32(
+                    vfmaq_f32(vmulq_f32(wh, vmulq_n_f32(vaddq_f32(gL, gR), 0.5f)), wv, vmulq_n_f32(vaddq_f32(gU, gD), 0.5f)),
+                    vaddq_f32(wh, wv));
+                float32x4_t wcd = vmulq_f32(vbslq_f32(ok, w, zero), rbMask[pi]);
+                accG[pi] = vfmaq_f32(accG[pi], wcd, gloc);
+                accCd[pi] = vaddq_f32(accCd[pi], wcd);
+            };
 #endif
             for (int k = 0; k < n; k++) {
                 float r = 1.f, mx = lx, my = ly;
@@ -337,15 +377,18 @@ ImageF kr_merge(const std::vector<Raw>& frames, int ref, const std::vector<Flow>
                 if (lca && cx >= 1 && cx + 2 < W && cy >= 1 && cy + 1 < H) {
                     const float32x4_t ddx0 = vaddq_f32(vdupq_n_f32(cx - 1 - mj), lane);
                     int pc = (cx - 1) & 1;
+                    bool cdOk = cx >= 2 && cx + 3 < W && cy >= 2 && cy + 2 < H;
                     for (int i = cy - 1; i <= cy + 1; i++) {
                         int pi = (i & 1) * 2 + pc;
                         float32x4_t ddx = vsubq_f32(ddx0, sdx[pi]), ddy = vsubq_f32(vdupq_n_f32(i - mi), sdy[pi]);
                         float32x4_t z = vfmaq_f32(vmulq_f32(vmulq_f32(ia, ddx), ddx), vmulq_f32(ib2, ddx), ddy);
                         z = vfmaq_f32(z, vmulq_f32(icc, ddy), ddy);
                         float32x4_t w = vmulq_n_f32(exp_neg(vmulq_n_f32(vmaxq_f32(z, zero), -0.5f)), r);
-                        float32x4_t v = vsubq_f32(vcvtq_f32_u32(vmovl_u16(vld1_u16(F.row(i) + cx - 1))), blackV[pi]);
+                        float32x4_t rawF = vcvtq_f32_u32(vmovl_u16(vld1_u16(F.row(i) + cx - 1)));
+                        float32x4_t v = vsubq_f32(rawF, blackV[pi]);
                         accN[pi] = vfmaq_f32(accN[pi], w, v);
                         accD[pi] = vaddq_f32(accD[pi], w);
+                        if (cdOk) accum_cd(F, i, cx, pi, rawF, w);
                     }
                     continue;
                 }
@@ -354,14 +397,17 @@ ImageF kr_merge(const std::vector<Raw>& frames, int ref, const std::vector<Flow>
                     float32x4_t ax2 = vmulq_f32(vmulq_f32(ia, ddx), ddx);
                     float32x4_t bx = vmulq_f32(ib2, ddx);
                     int pc = (cx - 1) & 1;
+                    bool cdOk = cx >= 2 && cx + 3 < W && cy >= 2 && cy + 2 < H;
                     for (int i = cy - 1; i <= cy + 1; i++) {
                         float ddy = i - mi;
                         float32x4_t z = vfmaq_n_f32(vaddq_f32(ax2, vdupq_n_f32(ic[2] * ddy * ddy)), bx, ddy);
                         float32x4_t w = vmulq_n_f32(exp_neg(vmulq_n_f32(vmaxq_f32(z, zero), -0.5f)), r);
                         int pi = (i & 1) * 2 + pc;
-                        float32x4_t v = vsubq_f32(vcvtq_f32_u32(vmovl_u16(vld1_u16(F.row(i) + cx - 1))), blackV[pi]);
+                        float32x4_t rawF = vcvtq_f32_u32(vmovl_u16(vld1_u16(F.row(i) + cx - 1)));
+                        float32x4_t v = vsubq_f32(rawF, blackV[pi]);
                         accN[pi] = vfmaq_f32(accN[pi], w, v);
                         accD[pi] = vaddq_f32(accD[pi], w);
+                        if (cdOk) accum_cd(F, i, cx, pi, rawF, w);
                     }
                     continue;
                 }
@@ -377,8 +423,24 @@ ImageF kr_merge(const std::vector<Raw>& frames, int ref, const std::vector<Flow>
                         float ddx = j - mj - qdx[col], ddy = i - mi - qdy[col];
                         float z = ic[0] * ddx * ddx + 2 * ic[1] * ddx * ddy + ic[2] * ddy * ddy;
                         float w = r * std::exp(-0.5f * std::max(0.f, z));
-                        num[col] += w * (F.at(j, i) - blk[ch]);
+                        uint16_t rawv = F.at(j, i);
+                        num[col] += w * (rawv - blk[ch]);
                         den[col] += w;
+                        if (col != 1 && j > 0 && j + 1 < W && i > 0 && i + 1 < H) {
+                            uint16_t rL = F.at(j - 1, i), rR = F.at(j + 1, i), rU = F.at(j, i - 1), rD = F.at(j, i + 1);
+                            if (rawv < sat && rL < sat && rR < sat && rU < sat && rD < sat) {
+                                float bH = blk[(i & 1) ? 2 : 1], bV = blk[(i & 1) ? 1 : 2];
+                                float gL = rL - bH, gR = rR - bH, gU = rU - bV, gD = rD - bV;
+                                float dh = std::fabs(gL - gR), dv = std::fabs(gU - gD);
+                                float dh2 = dh * dh, dv2 = dv * dv;
+                                float gavg = 0.25f * (gL + gR + gU + gD);
+                                float eps = std::max(4.f * (na * std::max(0.f, gavg) + nb), 1.f);
+                                float wh = 1.f / (eps + dh2 * (dh2 + 0.1f)), wv = 1.f / (eps + dv2 * (dv2 + 0.1f));
+                                float gloc = (wh * 0.5f * (gL + gR) + wv * 0.5f * (gU + gD)) / (wh + wv);
+                                numG[col] += w * gloc;
+                                denCd[col] += w;
+                            }
+                        }
                     }
                 }
             }
@@ -387,9 +449,28 @@ ImageF kr_merge(const std::vector<Raw>& frames, int ref, const std::vector<Flow>
                 for (int c = 0; c < 3; c++) {
                     num[c] += vaddvq_f32(vmulq_f32(accN[pi], maskV[pi][c]));
                     den[c] += vaddvq_f32(vmulq_f32(accD[pi], maskV[pi][c]));
+                    if (c != 1) {
+                        numG[c] += vaddvq_f32(vmulq_f32(accG[pi], maskV[pi][c]));
+                        denCd[c] += vaddvq_f32(vmulq_f32(accCd[pi], maskV[pi][c]));
+                    }
                 }
 #endif
-            for (int c = 0; c < 3; c++) o[c] = den[c] > 1e-30f ? std::max(0.f, num[c] / den[c]) : 0.f;
+            float v0 = den[0] > 1e-30f ? num[0] / den[0] : 0.f;
+            float v1 = den[1] > 1e-30f ? num[1] / den[1] : 0.f;
+            float v2 = den[2] > 1e-30f ? num[2] / den[2] : 0.f;
+            if (den[1] > 1e-30f) {
+                float aR = std::exp(-2.f * (qdx[0] * qdx[0] + qdy[0] * qdy[0]));
+                float aB = std::exp(-2.f * (qdx[2] * qdx[2] + qdy[2] * qdy[2]));
+                float dR = (den[0] > 1e-30f && denCd[0] > 0.25f * den[0]) ? aR * (denCd[0] / den[0]) * (v1 - numG[0] / denCd[0]) / sCol[0] : 0.f;
+                float dB = (den[2] > 1e-30f && denCd[2] > 0.25f * den[2]) ? aB * (denCd[2] / den[2]) * (v1 - numG[2] / denCd[2]) / sCol[2] : 0.f;
+                float dY = 0.7f * (0.2126f * sCol[0] * dR + 0.0722f * sCol[2] * dB);
+                v0 += dR - dY / std::max(sCol[0], 0.1f);
+                v1 -= dY;
+                v2 += dB - dY / std::max(sCol[2], 0.1f);
+            }
+            o[0] = std::max(0.f, v0);
+            o[1] = std::max(0.f, v1);
+            o[2] = std::max(0.f, v2);
         }
     });
 

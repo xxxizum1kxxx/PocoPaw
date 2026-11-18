@@ -49,6 +49,8 @@ const char* const kSource[] = {
     ,
 #include "kernels/merge.cl.inc"
     ,
+#include "kernels/freq.cl.inc"
+    ,
 #include "kernels/kr.cl.inc"
     ,
 #include "kernels/finish.cl.inc"
@@ -321,8 +323,8 @@ void Gpu::read_rows(const Buf& b, void* dst, size_t rowBytes, size_t rows, size_
 }
 
 void Gpu::zero(const Buf& b) {
-    float z = 0;
-    check_cl(cl.clEnqueueFillBuffer(q_, b.mem(), &z, sizeof z, 0, b.bytes() / 4 * 4, 0, nullptr, nullptr), "clEnqueueFillBuffer");
+    int n = (int)(b.bytes() / sizeof(float));
+    run("zero_f", (size_t)n, 1, b, n);
 }
 
 void Gpu::finish() {

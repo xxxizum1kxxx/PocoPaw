@@ -538,4 +538,101 @@ __kernel void align_pick(int tile, int nx, int ny, int R, __global const short* 
     dx[t] = (short)bx;
     dy[t] = (short)by;
 }
+
+__kernel void align_subpixel_cost(__global const float* refM3, int refOff, __global const float* altM3, int altOff,
+                                  int w, int h, int nx, int ny, __global const short* dx, __global const short* dy,
+                                  __global float* sc3) {
+    int g = get_global_id(0), j = get_global_id(1), i = g / 3, oy = (g - i * 3) - 1;
+    if (i >= nx || j >= ny) return;
+    __global const float* ref = refM3 + refOff;
+    __global const float* alt = altM3 + altOff;
+    int t = j * nx + i;
+    int x0 = i * 8, y0 = j * 8;
+    int bx = x0 + (int)dx[t] - 1, by = y0 + (int)dy[t] + oy;
+    float s0 = 0, s1 = 0, s2 = 0;
+    float4 a0, a1, a2, a3, b0, b1, b2, b3;
+    float b16, b17;
+    for (int v = 0; v < 16; v++) {
+        if (x0 >= 0 && x0 + 16 <= w && y0 + v >= 0 && y0 + v < h) {
+            __global const float* rp = ref + (y0 + v) * w + x0;
+            a0 = vload4(0, rp); a1 = vload4(1, rp); a2 = vload4(2, rp); a3 = vload4(3, rp);
+        } else {
+            int yy = clamp(y0 + v, 0, h - 1);
+            a0 = (float4)(at_clamped(ref, w, h, x0 + 0, yy), at_clamped(ref, w, h, x0 + 1, yy), at_clamped(ref, w, h, x0 + 2, yy), at_clamped(ref, w, h, x0 + 3, yy));
+            a1 = (float4)(at_clamped(ref, w, h, x0 + 4, yy), at_clamped(ref, w, h, x0 + 5, yy), at_clamped(ref, w, h, x0 + 6, yy), at_clamped(ref, w, h, x0 + 7, yy));
+            a2 = (float4)(at_clamped(ref, w, h, x0 + 8, yy), at_clamped(ref, w, h, x0 + 9, yy), at_clamped(ref, w, h, x0 + 10, yy), at_clamped(ref, w, h, x0 + 11, yy));
+            a3 = (float4)(at_clamped(ref, w, h, x0 + 12, yy), at_clamped(ref, w, h, x0 + 13, yy), at_clamped(ref, w, h, x0 + 14, yy), at_clamped(ref, w, h, x0 + 15, yy));
+        }
+        if (bx >= 0 && bx + 18 <= w && by + v >= 0 && by + v < h) {
+            __global const float* ap = alt + (by + v) * w + bx;
+            b0 = vload4(0, ap); b1 = vload4(1, ap); b2 = vload4(2, ap); b3 = vload4(3, ap);
+            b16 = ap[16]; b17 = ap[17];
+        } else {
+            int yy = clamp(by + v, 0, h - 1);
+            b0 = (float4)(at_clamped(alt, w, h, bx + 0, yy), at_clamped(alt, w, h, bx + 1, yy), at_clamped(alt, w, h, bx + 2, yy), at_clamped(alt, w, h, bx + 3, yy));
+            b1 = (float4)(at_clamped(alt, w, h, bx + 4, yy), at_clamped(alt, w, h, bx + 5, yy), at_clamped(alt, w, h, bx + 6, yy), at_clamped(alt, w, h, bx + 7, yy));
+            b2 = (float4)(at_clamped(alt, w, h, bx + 8, yy), at_clamped(alt, w, h, bx + 9, yy), at_clamped(alt, w, h, bx + 10, yy), at_clamped(alt, w, h, bx + 11, yy));
+            b3 = (float4)(at_clamped(alt, w, h, bx + 12, yy), at_clamped(alt, w, h, bx + 13, yy), at_clamped(alt, w, h, bx + 14, yy), at_clamped(alt, w, h, bx + 15, yy));
+            b16 = at_clamped(alt, w, h, bx + 16, yy);
+            b17 = at_clamped(alt, w, h, bx + 17, yy);
+        }
+        float4 d0 = a0 - b0, d1 = a1 - b1, d2 = a2 - b2, d3 = a3 - b3;
+        s0 += dot(d0, d0) + dot(d1, d1) + dot(d2, d2) + dot(d3, d3);
+        d0 = a0 - (float4)(b0.s1, b0.s2, b0.s3, b1.s0);
+        d1 = a1 - (float4)(b1.s1, b1.s2, b1.s3, b2.s0);
+        d2 = a2 - (float4)(b2.s1, b2.s2, b2.s3, b3.s0);
+        d3 = a3 - (float4)(b3.s1, b3.s2, b3.s3, b16);
+        s1 += dot(d0, d0) + dot(d1, d1) + dot(d2, d2) + dot(d3, d3);
+        d0 = a0 - (float4)(b0.s2, b0.s3, b1.s0, b1.s1);
+        d1 = a1 - (float4)(b1.s2, b1.s3, b2.s0, b2.s1);
+        d2 = a2 - (float4)(b2.s2, b2.s3, b3.s0, b3.s1);
+        d3 = a3 - (float4)(b3.s2, b3.s3, b16, b17);
+        s2 += dot(d0, d0) + dot(d1, d1) + dot(d2, d2) + dot(d3, d3);
+    }
+    __global float* o = sc3 + ((size_t)t * 3 + (oy + 1)) * 3;
+    o[0] = s0; o[1] = s1; o[2] = s2;
+}
+
+__kernel void align_subpixel_fit(int nx, int ny, __global const float* sc3, __global float* fx, __global float* fy) {
+    int i = get_global_id(0), j = get_global_id(1);
+    if (i >= nx || j >= ny) return;
+    int t = j * nx + i;
+    __global const float* c = sc3 + (size_t)t * 9;
+    float c00 = c[0], c01 = c[1], c02 = c[2];
+    float c10 = c[3], c11 = c[4], c12 = c[5];
+    float c20 = c[6], c21 = c[7], c22 = c[8];
+    float gx = ((c02 - c00) + (c12 - c10) + (c22 - c20)) * (1.f / 6.f);
+    float gy = ((c20 - c00) + (c21 - c01) + (c22 - c02)) * (1.f / 6.f);
+    float hxx = ((c02 - 2.f * c01 + c00) + (c12 - 2.f * c11 + c10) + (c22 - 2.f * c21 + c20)) * (1.f / 3.f);
+    float hyy = ((c20 - 2.f * c10 + c00) + (c21 - 2.f * c11 + c01) + (c22 - 2.f * c12 + c02)) * (1.f / 3.f);
+    float hxy = (c22 - c20 - c02 + c00) * 0.25f;
+    float tr = hxx + hyy;
+    if (tr <= 0.f) { fx[t] = 0.f; fy[t] = 0.f; return; }
+    float det = hxx * hyy - hxy * hxy;
+    float disc = sqrt(max(0.f, 0.25f * tr * tr - det));
+    float l1 = 0.5f * tr + disc, l2 = 0.5f * tr - disc;
+    float cmin = max(c11, 1e-6f);
+    if (l1 <= 0.8f * cmin) { fx[t] = 0.f; fy[t] = 0.f; return; }
+    float e1x = 1.f, e1y = 0.f;
+    if (fabs(hxy) > 1e-12f * tr) {
+        if (hxx >= hyy) { e1x = l1 - hyy; e1y = hxy; }
+        else { e1x = hxy; e1y = l1 - hxx; }
+        float nrm = hypot(e1x, e1y);
+        e1x /= nrm; e1y /= nrm;
+    } else if (hyy > hxx) {
+        e1x = 0.f; e1y = 1.f;
+    }
+    float e2x = -e1y, e2y = e1x;
+    float g1 = gx * e1x + gy * e1y, g2 = gx * e2x + gy * e2y;
+    float mu = 0.02f * cmin;
+    float s1 = -g1 * l1 / (l1 * l1 + mu * mu);
+    float s2 = (l2 > max(0.05f * l1, 0.8f * cmin)) ? (-g2 * l2 / (l2 * l2 + mu * mu)) : 0.f;
+    float ox = clamp(s1 * e1x + s2 * e2x, -0.5f, 0.5f);
+    float oy = clamp(s1 * e1y + s2 * e2y, -0.5f, 0.5f);
+    float dlx = c10 - c11, drx = c12 - c11;
+    float dly = c01 - c11, dry = c21 - c11;
+    if (dlx <= 0.f || drx <= 0.f || max(dlx, drx) > 12.f * min(dlx, drx)) ox = 0.f;
+    if (dly <= 0.f || dry <= 0.f || max(dly, dry) > 12.f * min(dly, dry)) oy = 0.f;
+    fx[t] = ox; fy[t] = oy;
+}
 )CL"

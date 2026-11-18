@@ -2,11 +2,13 @@ R"CL(
 // merge.cpp (spatial robust merge) and merge_freq.cpp (frequency-domain Wiener merge) on the device.
 
 inline float frame_weight(float mu0, float mu, float black, float na, float nb, float g, float lo, float hi) {
-    float s = max(0.f, mu0 / 4 - black);
+    float s0 = max(0.f, mu0 / 4 - black);
+    float s = max(0.f, (mu0 + mu) / 8 - black);
     float vRef = na * s + nb, vAlt = g * na * s + g * g * nb;
     float varMu = 4.f * (vRef + vAlt) / 9.f;
     float z = fabs(mu - mu0) / sqrt(max(varMu, 1e-3f));
-    return clamp((hi - z) / (hi - lo), 0.f, 1.f) * (vRef / vAlt);
+    float vRef0 = na * s0 + nb, vAlt0 = g * na * s0 + g * g * nb;
+    return clamp((hi - z) / (hi - lo), 0.f, 1.f) * (vRef0 / vAlt0);
 }
 
 inline bool quad_clipped(__global const ushort* F, int W, int sx, int sy, float clip) {
@@ -98,137 +100,5 @@ __kernel void merge_norm(__global float* out, __global const float* wsum, int W,
     size_t i0 = (size_t)(2 * qy) * W + 2 * qx, i1 = i0 + W;
     out[i0] = out[i0] * inv + black; out[i0 + 1] = out[i0 + 1] * inv + black;
     out[i1] = out[i1] * inv + black; out[i1 + 1] = out[i1 + 1] * inv + black;
-}
-
-// ---- frequency-domain merge: one 16x16 work group per tile, one work item per (u, v) coefficient,
-// the four Bayer planes in the lanes of a float4. The 2D DFT is two passes of 16-point DFTs through
-// local memory.
-
-inline float4 load_quad(__global const ushort* F, int W, int qw, int qh, int x, int y) {
-    x = clamp(x, 0, qw - 1);
-    y = clamp(y, 0, qh - 1);
-    __global const ushort* r0 = F + (size_t)(2 * y) * W + 2 * x;
-    __global const ushort* r1 = r0 + W;
-    return (float4)(r0[0], r0[1], r1[0], r1[1]);
-}
-
-// in: lre/lim hold the tile (index v*16+u); out: this item's coefficient. sgn -1 forward, +1 inverse.
-inline void dft2d(__local float4* lre, __local float4* lim, __local float4* tre, __local float4* tim,
-                  __local const float* tc, __local const float* ts, int u, int v, float sgn, float4* ore, float4* oim) {
-    barrier(CLK_LOCAL_MEM_FENCE);
-    float4 sr = 0, si = 0;
-    for (int x = 0; x < 16; x++) {
-        int m = (u * x) & 15;
-        float c = tc[m], s = sgn * ts[m];
-        float4 a = lre[v * 16 + x], b = lim[v * 16 + x];
-        sr += a * c - b * s;
-        si += a * s + b * c;
-    }
-    tre[v * 16 + u] = sr;
-    tim[v * 16 + u] = si;
-    barrier(CLK_LOCAL_MEM_FENCE);
-    sr = 0; si = 0;
-    for (int y = 0; y < 16; y++) {
-        int m = (v * y) & 15;
-        float c = tc[m], s = sgn * ts[m];
-        float4 a = tre[y * 16 + u], b = tim[y * 16 + u];
-        sr += a * c - b * s;
-        si += a * s + b * c;
-    }
-    *ore = sr;
-    *oim = si;
-    barrier(CLK_LOCAL_MEM_FENCE);
-}
-
-inline float4 local_sum4(__local float4* scratch, float4 v, int i) {
-    scratch[i] = v;
-    barrier(CLK_LOCAL_MEM_FENCE);
-    for (int s = 128; s > 0; s >>= 1) {
-        if (i < s) scratch[i] += scratch[i + s];
-        barrier(CLK_LOCAL_MEM_FENCE);
-    }
-    float4 r = scratch[0];
-    barrier(CLK_LOCAL_MEM_FENCE);
-    return r;
-}
-
-// the 16-wide tile at x0 shifted by d still lands inside [0, q) wherever the unshifted tile does
-inline bool shift_inside(int x0, int d, int q) {
-    int lo = max(0, -x0), hi = min(16, q - x0);
-    return lo >= hi || (x0 + d + lo >= 0 && x0 + d + hi <= q);
-}
-
-// tiles (ti, tj) with ti % 2 == px and tj % 2 == py do not overlap, so one launch accumulates without races
-__kernel void merge_freq_tiles(__global const ushort* frames, int W, int qw, int qh, int n, int ref, int frameSize,
-                               __global const short* odx, __global const short* ody, int nx, int ny, int tileCount,
-                               __global const float* sinw, __global const float* tc, __global const float* ts,
-                               float4 black, float w2, float c, float spatial, float na, float nb, int px, int py,
-                               int ntx, int nty, __global float* out, __global float* tileW, __local float4* lre,
-                               __local float4* lim, __local float4* tre, __local float4* tim, __local float* ltw) {
-    __local float* ltc = ltw;
-    __local float* lts = ltw + 16;
-    int u = get_local_id(0), v = get_local_id(1), i = v * 16 + u;
-    int ti = 2 * get_group_id(0) + px, tj = 2 * get_group_id(1) + py;
-    if (ti >= ntx || tj >= nty) return;
-    if (i < 16) { ltc[i] = tc[i]; lts[i] = ts[i]; }
-    int x0 = (ti - 1) * 8, y0 = (tj - 1) * 8;
-    float wv = sinw[u] * sinw[v];
-
-    float4 p = load_quad(frames + (size_t)ref * frameSize, W, qw, qh, x0 + u, y0 + v);
-    float4 mean = local_sum4(tre, p, i) / 256.f;
-    float4 sig = na * max(mean - black, (float4)0) + nb;
-    float4 noiseD = 2.f * w2 * sig * c;
-    lre[i] = p * wv;
-    lim[i] = 0;
-    float4 r0, i0;
-    dft2d(lre, lim, tre, tim, ltc, lts, u, v, -1.f, &r0, &i0);
-    float4 ar = r0, ai = i0, wacc = 0;
-    int oi = clamp(ti - 1, 0, nx - 1), oj = clamp(tj - 1, 0, ny - 1);
-    for (int k = 0; k < n; k++) {
-        if (k == ref) continue;
-        int t = k * tileCount + oj * nx + oi;
-        // uniform over the work group, so the barriers in dft2d stay matched
-        if (!shift_inside(x0, odx[t], qw) || !shift_inside(y0, ody[t], qh)) {
-            ar += r0;
-            ai += i0;
-            continue;
-        }
-        lre[i] = load_quad(frames + (size_t)k * frameSize, W, qw, qh, x0 + odx[t] + u, y0 + ody[t] + v) * wv;
-        lim[i] = 0;
-        float4 rk, ik;
-        dft2d(lre, lim, tre, tim, ltc, lts, u, v, -1.f, &rk, &ik);
-        float4 dr = r0 - rk, di = i0 - ik;
-        float4 d2 = dr * dr + di * di;
-        float4 a = d2 / (d2 + noiseD);
-        ar += rk + a * dr;
-        ai += ik + a * di;
-        wacc += 1.f - a;
-    }
-    float4 ws = local_sum4(tre, wacc, i);
-    if (i == 0) tileW[tj * ntx + ti] = (ws.x + ws.y + ws.z + ws.w) / (4.f * 256.f);
-    float inv = 1.f / n;
-    ar *= inv;
-    ai *= inv;
-    if (spatial > 0 && i) {
-        float4 sigM = w2 * sig * spatial / (float)n;
-        float sigMs = sigM.x + sigM.y + sigM.z + sigM.w;
-        int fu = min(u, 16 - u), fv = min(v, 16 - v);
-        float boost = 1.f + 0.25f * sqrt((float)(fu * fu + fv * fv));
-        float4 p4 = ar * ar + ai * ai;
-        float pw = p4.x + p4.y + p4.z + p4.w;
-        float g = pw / (pw + sigMs * boost);
-        ar *= g;
-        ai *= g;
-    }
-    lre[i] = ar;
-    lim[i] = ai;
-    float4 yr, yi;
-    dft2d(lre, lim, tre, tim, ltc, lts, u, v, 1.f, &yr, &yi);
-    int x = x0 + u, y = y0 + v;
-    if (x < 0 || x >= qw || y < 0 || y >= qh) return;
-    float4 o = yr * (wv / 256.f);
-    size_t r0i = (size_t)(2 * y) * W + 2 * x, r1i = r0i + W;
-    out[r0i] += o.x; out[r0i + 1] += o.y;
-    out[r1i] += o.z; out[r1i + 1] += o.w;
 }
 )CL"
