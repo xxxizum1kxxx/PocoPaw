@@ -10,7 +10,7 @@ android {
     ndkVersion = "29.0.14206865"
 
     defaultConfig {
-        applicationId = "com.izum1k.pocopaw"
+        applicationId = "com.izum1k.pocopaw.opt"
         minSdk = 31
         targetSdk = 36
         versionCode = 10

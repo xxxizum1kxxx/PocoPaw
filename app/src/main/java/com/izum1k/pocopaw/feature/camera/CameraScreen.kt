@@ -1,18 +1,15 @@
 package com.izum1k.pocopaw.feature.camera
 
 import android.Manifest
-import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -49,10 +46,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.layout
-import androidx.compose.ui.unit.Constraints
-import com.izum1k.pocopaw.ui.theme.YoinContainerShapes
 import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
@@ -75,14 +69,14 @@ import com.izum1k.pocopaw.ui.component.Reveal
 import com.izum1k.pocopaw.ui.navigation.LocalNavigator
 import com.izum1k.pocopaw.ui.navigation.Route
 import com.izum1k.pocopaw.ui.theme.YoinMotion
-import kotlin.math.max
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
 @Composable
 fun CameraScreen() {
     val context = LocalContext.current
-    val vm: CameraViewModel = viewModel { CameraViewModel(context.container) }
+    val appContext = context.applicationContext
+    val vm: CameraViewModel = viewModel { CameraViewModel(appContext, context.container) }
     var granted by remember { mutableStateOf(hasCameraPermission(context)) }
     var asked by rememberSaveable { mutableStateOf(false) }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
@@ -113,7 +107,6 @@ private fun CameraContent(vm: CameraViewModel) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val cameraState by vm.cameraState.collectAsStateWithLifecycle()
     val live by vm.live.collectAsStateWithLifecycle()
-    val remaining by vm.rawRemaining.collectAsStateWithLifecycle()
     val deviceRotation by rememberDeviceRotation()
     val rotation = animatedControlRotation(deviceRotation)
     val snackbar = remember { SnackbarHostState() }
@@ -137,6 +130,11 @@ private fun CameraContent(vm: CameraViewModel) {
         snackbar.showSnackbar(if (m == CaptureMessage.CAPTURE_FAILED) failedText else saveFailedText)
         vm.consumeMessage()
     }
+    LaunchedEffect(ui.galleryOpenId) {
+        if (!ui.openGalleryPending) return@LaunchedEffect
+        vm.consumeGalleryOpen()
+        openGallery(context, ui.last, ui.recentUris)
+    }
     val zoomAnim = remember { Animatable(1f) }
     val zoomSpec = YoinMotion.defaultSpatialSpec<Float>()
     LaunchedEffect(ui.zoomAnimId) {
@@ -149,19 +147,16 @@ private fun CameraContent(vm: CameraViewModel) {
     val frame = rememberAspectFrame(settings.aspect)
     val tallest = remember { AspectRatio.entries.maxOf { it.portraitRatio } }
     val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-    val evLabel = if (ui.mode == CaptureMode.PHOTO && ui.evIndex != 0 && current != null) CameraFormat.ev(ui.evIndex, current.evStep) else null
-    val evDial = if (ui.mode == CaptureMode.PHOTO && current != null) {
+    val evLabel = if (ui.evIndex != 0 && current != null) CameraFormat.ev(ui.evIndex, current.evStep) else null
+    val evDial = if (current != null) {
         SwipeDial(ui.evIndex, current.evRange.lower, current.evRange.upper, "EV " + CameraFormat.ev(ui.evIndex, current.evStep))
     } else {
         null
     }
-    // Chips keep their last value while they fade out at 0.
     var evChip by remember { mutableStateOf("") }
     if (evLabel != null) evChip = evLabel
     var wbChip by remember { mutableStateOf("") }
     if (ui.wbShift != 0) wbChip = CameraFormat.wb(ui.wbShift)
-    var quickOpen by rememberSaveable { mutableStateOf(false) }
-    // The chips leave, turn while hidden and come back upright in the user's new corner.
     var chipRotation by remember { mutableFloatStateOf(-deviceRotation.toFloat()) }
     var chipsShown by remember { mutableStateOf(true) }
     LaunchedEffect(deviceRotation) {
@@ -177,7 +172,6 @@ private fun CameraContent(vm: CameraViewModel) {
         Viewfinder(
             frame = frame,
             grid = settings.grid,
-            gridStyle = settings.gridStyle,
             focus = ui.focus,
             focusLocked = live.focusLocked,
             focusHeld = ui.focusHeld,
@@ -200,7 +194,7 @@ private fun CameraContent(vm: CameraViewModel) {
             controlRotation = rotation,
             onSurfaceAvailable = vm::onSurfaceAvailable,
             onSurfaceDestroyed = vm::onSurfaceDestroyed,
-            onTap = { x, y, onRing -> if (quickOpen) quickOpen = false else vm.tapFocus(x, y, onRing) },
+            onTap = vm::tapFocus,
             onEvSteps = { vm.setEv(ui.evIndex + it) },
             onWbSteps = { vm.setWb(ui.wbShift + it) },
             onRetry = vm::retry,
@@ -211,70 +205,32 @@ private fun CameraContent(vm: CameraViewModel) {
                 }
                 .padding(horizontal = SIDE_MARGIN),
             topOverlay = {
-                // In the user's top corner, clear of the controls floating on a tall framing.
                 val b = frame.blowUp(tallest)
                 UprightBox(
                     chipRotation,
                     Modifier.padding(
                         top = (TOP_BAR_HEIGHT - TOP_INSET + FLOAT_INSET) * b,
-                        bottom = CHIP_FLOAT_CLEARANCE * max(b, if (ui.mode == CaptureMode.PRO) 1f else 0f),
+                        bottom = CHIP_FLOAT_CLEARANCE * b,
                     ),
                 ) {
                     Column(Modifier.align(Alignment.TopStart), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        PillReveal(chipsShown && settings.developerInfo && live.focusDioptres != null) { AfChip(live, onClick = vm::unlockFocus) }
                         PillReveal(chipsShown && evLabel != null && ui.focus == null) { EvChip(evChip) { vm.setEv(0) } }
                         PillReveal(chipsShown && ui.wbShift != 0) { EvChip(wbChip, tag = "WB") { vm.setWb(0) } }
                     }
                 }
             },
-            cover = {
-                // Unrolls down from the top controls and rolls back up into them.
-                val reveal by animateFloatAsState(
-                    if (quickOpen) 1f else 0f,
-                    if (quickOpen) YoinMotion.defaultSpatialSpec() else YoinMotion.fastSpatialSpec(),
-                    label = "quickReveal",
-                )
-                if (quickOpen || reveal > 0f) {
-                    // From the top of the 4:3 picture, where it sits in every framing, as tall as its rows.
-                    QuickSettingsPanel(
-                        settings = settings,
-                        onOutput = { vm.setQuick { copy(output = it) } },
-                        onProcessing = { vm.setQuick { copy(processing = it) } },
-                        onFrames = { vm.setQuick { copy(burstFrames = it) } },
-                        onScene = { vm.setQuick { copy(scene = it) } },
-                        onLook = { vm.setQuick { copy(look = it) } },
-                        onUltraHdr = { vm.setQuick { copy(ultraHdr = it) } },
-                        modifier = Modifier
-                            .offset { IntOffset(0, ((TOP_BAR_HEIGHT + VIEWFINDER_GAP).toPx() * frame.blowUp(tallest)).roundToInt()) }
-                            .clip(YoinContainerShapes.Panel)
-                            .layout { measurable, constraints ->
-                                val w = constraints.maxWidth
-                                val max = (w * AspectRatio.FOUR_THREE.portraitRatio).roundToInt()
-                                val placeable = measurable.measure(Constraints(minWidth = w, maxWidth = w, maxHeight = max))
-                                layout(w, (placeable.height * reveal.coerceIn(0f, 1f)).roundToInt()) { placeable.place(0, 0) }
-                            }
-                            .graphicsLayer { alpha = (reveal / 0.5f).coerceIn(0f, 1f) },
-                    )
-                }
-            },
         )
 
-        BackHandler(quickOpen) { quickOpen = false }
         TopControls(
             settings = settings,
             hasFlash = current?.hasFlash == true,
             flashRequired = live.flashRequired,
             rotation = rotation,
-            onFlash = { vm.setFlash(it) },
-            onTimer = { vm.setTimer(it) },
-            onAspect = { vm.setAspect(it) },
-            onGrid = { vm.setGrid(it) },
-            quickOpen = quickOpen,
-            onQuick = { quickOpen = it },
-            onSettings = {
-                quickOpen = false
-                nav.push(Route.Settings)
-            },
+            onFlash = vm::setFlash,
+            onTimer = vm::setTimer,
+            onAspect = vm::setAspect,
+            onGrid = vm::setGrid,
+            onSettings = { nav.push(Route.Settings) },
             modifier = Modifier
                 .statusBarsPadding()
                 .offset { IntOffset(0, ((FLOAT_INSET - TOP_INSET).toPx() * frame.blowUp(tallest)).roundToInt()) },
@@ -284,16 +240,13 @@ private fun CameraContent(vm: CameraViewModel) {
             Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .navigationBarsPadding(),
+                .navigationBarsPadding()
+                .padding(bottom = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             SnackbarHost(snackbar, Modifier.align(Alignment.CenterHorizontally))
-            // In 4:3 the info and the lenses sit in the black under the picture. A taller framing
-            // blowing up under them, or the Pro panel taking their place, floats them onto the
-            // picture, [FLOAT_INSET] inside its bottom edge.
             var floatTop by remember { mutableFloatStateOf(0f) }
-            val pro by animateFloatAsState(if (ui.mode == CaptureMode.PRO) 1f else 0f, YoinMotion.defaultSpatialSpec(), label = "proFloat")
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Column(
                     Modifier
                         .fillMaxWidth()
@@ -305,13 +258,11 @@ private fun CameraContent(vm: CameraViewModel) {
                                 val top = statusTop.toPx() + (TOP_BAR_HEIGHT + VIEWFINDER_GAP).toPx() * (1f - b)
                                 val bottom = top + (placeable.width - 2 * SIDE_MARGIN.toPx()) * frame.heightRatio
                                 val lift = (floatTop + placeable.height - bottom + FLOAT_INSET.toPx()).coerceAtLeast(0f)
-                                placeable.place(0, -(lift * max(b, pro)).roundToInt())
+                                placeable.place(0, -(lift * b).roundToInt())
                             }
                         },
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    if (settings.developerInfo) DevChip(settings, current, live)
                     Reveal(current?.facing == LensFacing.BACK) {
                         current?.let {
                             LensSelector(
@@ -325,52 +276,21 @@ private fun CameraContent(vm: CameraViewModel) {
                         }
                     }
                 }
-                Reveal(ui.mode == CaptureMode.PRO) {
-                    ProPanel(
-                        camera = current,
-                        iso = ui.manualIso,
-                        isoAuto = ui.isoAuto,
-                        exposureNs = ui.manualExposureNs,
-                        shutterAuto = ui.shutterAuto,
-                        metered = CameraViewModel.priorityExposure(ui, live, current),
-                        clipped = CameraViewModel.priorityClipped(ui, live, current),
-                        onIso = vm::setIso,
-                        onShutter = vm::setShutter,
-                    )
-                }
                 ControlsWave(
                     capturing = ui.busy == Busy.CAPTURING,
                     modifier = Modifier.padding(horizontal = SIDE_MARGIN + 12.dp),
                 )
-                ModeBar(
-                    mode = ui.mode,
-                    onMode = vm::setMode,
-                    start = {
-                        PillReveal(settings.developerInfo && current != null && vm.rawLimit != Int.MAX_VALUE) {
-                            BudgetPill(
-                                remaining = remaining,
-                                limit = vm.rawLimit,
-                                enabled = ui.busy == Busy.IDLE && cameraState is CameraController.State.Previewing,
-                                onRestart = vm::restartCamera,
-                            )
-                        }
-                    },
-                    end = {
-                        PillReveal(settings.developerInfo && ui.lastRun != null) {
-                            ui.lastRun?.let { RunPill(it) }
-                        }
-                    },
-                )
                 ShutterRow(
                     last = ui.last?.thumbnail,
                     hasLast = ui.last != null,
+                    awaitingGallery = ui.awaitingGallery,
                     busy = ui.busy,
                     processing = ui.backgroundProcessing || ui.busy == Busy.PROCESSING,
                     progress = ui.progress,
                     countdown = ui.countdown,
                     canFlip = ui.canFlip,
                     rotation = rotation,
-                    onThumbnail = { ui.last?.let { openCapture(context, it.uri, it.mimeType) } },
+                    onThumbnail = vm::onThumbnailClick,
                     onShutter = { vm.shutter(deviceRotation) },
                     onFlip = vm::flip,
                 )
@@ -424,25 +344,14 @@ private fun PermissionGate(asked: Boolean, onRequest: () -> Unit) {
     }
 }
 
-/** [TopControls]' height under the status bar: 56dp of controls under [TOP_INSET]. */
 private val TOP_BAR_HEIGHT = 64.dp
-
-/** Between the 4:3 picture and the controls above and below it. */
 private val VIEWFINDER_GAP = 16.dp
 private val SIDE_MARGIN = 12.dp
-
-/** [TopControls]' own top padding, which is all that separates them from the picture's top in the tallest framing. */
 private val TOP_INSET = 8.dp
-
-/** How far inside the tallest framing's edges the controls floating on it keep. */
 private val FLOAT_INSET = 18.dp
-
-/** The info and lenses floating on a tall framing's bottom, which the chips keep clear of. */
-private val CHIP_FLOAT_CLEARANCE = 104.dp
-
-/** How long the chips take to leave before they turn. */
+private val CHIP_FLOAT_CLEARANCE = 72.dp
 private const val CHIP_TURN_MS = 220L
-/** The camera whose frames are on screen; a reopen mid-capture (RAW budget) keeps the busy flag instead. */
+
 private fun CameraController.State.showing(): String? = when (this) {
     is CameraController.State.Previewing -> cameraId
     is CameraController.State.Capturing -> cameraId
@@ -451,14 +360,3 @@ private fun CameraController.State.showing(): String? = when (this) {
 
 private fun hasCameraPermission(context: Context): Boolean =
     ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-
-private fun openCapture(context: Context, uri: Uri, mimeType: String) {
-    val view = Intent(Intent.ACTION_VIEW).setDataAndType(uri, mimeType).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    try {
-        context.startActivity(view)
-    } catch (_: ActivityNotFoundException) {
-        runCatching {
-            context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "image/*").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
-        }
-    }
-}

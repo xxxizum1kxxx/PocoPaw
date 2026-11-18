@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">PocoPaw</string>
+    <string name="app_name">PocoPaw Opt</string>
 
     <string name="action_back">Back</string>
     <string name="action_flip">Switch camera</string>
@@ -16,18 +16,11 @@
     <string name="control_timer">Timer</string>
     <string name="control_aspect">Ratio</string>
     <string name="control_grid">Grid</string>
-    <string name="quick_settings">Quick settings</string>
-    <string name="control_shutter">Shutter</string>
 
     <string name="value_off">Off</string>
     <string name="value_on">On</string>
     <string name="value_auto">Auto</string>
     <string name="value_seconds">%1$ds</string>
-    <string name="value_yes">Yes</string>
-    <string name="value_no">No</string>
-
-    <string name="mode_photo">Photo</string>
-    <string name="mode_pro">Pro</string>
 
     <string name="message_capture_failed">Capture failed</string>
     <string name="message_save_failed">Could not save</string>
@@ -38,146 +31,10 @@
     <string name="error_camera_configuration">Stream configuration rejected</string>
     <string name="error_camera_device">Camera error</string>
 
-    <string name="settings_title">Settings</string>
-    <string name="settings_defaults">Capture defaults</string>
-    <string name="settings_defaults_note">Used every time the camera opens. Changes in the viewfinder\'s quick settings last until the app is closed.</string>
-    <string name="settings_processing">Processing defaults</string>
-    <string name="settings_viewfinder">Viewfinder</string>
-    <string name="settings_output">Output</string>
-    <string name="settings_pipeline">Processing</string>
-    <string name="settings_grid_style">Grid style</string>
-    <string name="settings_feedback">Feedback</string>
-    <string name="settings_shutter_sound">Shutter sound</string>
-    <string name="settings_haptics">Haptics</string>
-    <string name="settings_appearance">Appearance</string>
-    <string name="settings_color_style">Colour style</string>
-    <string name="settings_developer">Developer</string>
-    <string name="settings_developer_info">RAW info</string>
-    <string name="settings_developer_info_value">Output, pipeline and exposure on the viewfinder; RAW requests left and the last run by the modes</string>
-    <string name="settings_about">About</string>
-
-    <string name="output_dng">DNG</string>
-    <string name="output_jpeg">JPEG (multi-frame)</string>
-    <string name="output_dng_jpeg">DNG + JPEG (multi-frame)</string>
-    <string name="settings_dng_content">DNG content</string>
-    <string name="dng_content_merged">Merged</string>
-    <string name="dng_content_reference">Reference frame</string>
-    <string name="settings_dng_kr_note">Kernel regression outputs the reference frame as the DNG; choose HDR+ merge for a merged 16-bit DNG</string>
-
-    <string name="pipeline_hdrplus">HDR+ merge</string>
-    <string name="pipeline_hdrplus_kr">Kernel regression merge (finer, slower)</string>
-    <string name="settings_burst_frames">Burst frames</string>
-    <string name="burst_frames_value">%1$d frames</string>
-    <string name="settings_scene">Scene</string>
-    <string name="scene_auto">Auto</string>
-    <string name="scene_bracket">HDR bracket (backlit scenes)</string>
-    <string name="scene_night">Night (long frames, motion metered)</string>
-    <string name="settings_look">Look</string>
-    <string name="look_standard">Standard</string>
-    <string name="look_pixel">Pixel style</string>
-    <string name="settings_ultra_hdr">Ultra HDR</string>
-    <string name="settings_ultra_hdr_value">JPEG with a gain map; brighter highlights on HDR screens</string>
-    <string name="settings_gpu">GPU acceleration</string>
-    <string name="settings_gpu_value">Align, merge and finish on the GPU (OpenCL); any failing step falls back to the CPU</string>
-    <string name="dev_processed">%1$d f · %2$.1f s</string>
-    <string name="pipeline_single">Single frame</string>
-    <string name="scene_bracket_short">Bracket</string>
-    <string name="scene_night_short">Night</string>
-    <string name="flash_short">Flash</string>
-
-    <string name="grid_thirds">Thirds</string>
-    <string name="grid_golden">Golden ratio</string>
-    <string name="grid_square">4 × 4</string>
-
-    <string name="color_expressive">Wallpaper</string>
-    <string name="color_system">System</string>
-
-    <string name="credit_aperture">Layout reference, LineageOS, Apache-2.0</string>
-    <string name="credit_yoin">Theme and design language, Apache-2.0</string>
-    <string name="credit_symbols">Icons, MIT</string>
-    <string name="credit_mcu">Colour, Apache-2.0</string>
-    <string name="credit_font">Typeface, SIL OFL 1.1</string>
-
-    <string name="capabilities_title">Camera capabilities</string>
-    <string name="lens_back">Back %1$s</string>
-    <string name="lens_front">Front</string>
-    <string name="lens_external">External</string>
-    <string name="cap_id">Camera ID</string>
-    <string name="cap_raw_size">RAW size</string>
-    <string name="cap_cfa">Bayer pattern</string>
-    <string name="cap_levels">Black / white level</string>
-    <string name="cap_focal">Focal length</string>
-    <string name="cap_equivalent">%1$d mm equiv.</string>
-    <string name="cap_aperture">Aperture</string>
-    <string name="cap_iso">ISO</string>
-    <string name="cap_exposure">Exposure</string>
-    <string name="cap_preview">Preview</string>
-    <string name="cap_hardware_level">Hardware level</string>
-    <string name="cap_ois">OIS</string>
-    <string name="cap_flash">Flash</string>
-    <string name="cap_af">Autofocus</string>
-    <string name="cap_noise_profile">Noise profile</string>
-    <string name="cap_raw_budget">RAW requests per open</string>
-    <string name="cap_gpu">GPU (OpenCL)</string>
-    <string name="cap_dsp">cDSP / NPU (read-only probe)</string>
-    <string name="cap_probing">Probing…</string>
     <string name="focus_held">AE/AF LOCK</string>
 
-    <string name="p1_title">P1 capture set</string>
-    <string name="p1_entry_value">RAW bursts from the P1 capture list, probe format</string>
-    <string name="p1_group_motion">Handheld and motion</string>
-    <string name="p1_group_bracket">Bracketing (strong backlight)</string>
-    <string name="p1_group_night">Night (motion metering)</string>
-    <string name="p1_group_awb">White balance reference</string>
-    <string name="p1_group_tripod">Tripod, 64 frames</string>
-    <string name="p1_group_dark">Dark frames</string>
-    <string name="p1_group_lca">Lateral CA</string>
-    <string name="p1_note_motion">Clear motion in the frame with a still background, to compare ghosting.</string>
-    <string name="p1_note_bracket">Backlit room by a window, or buildings against a bright sky.</string>
-    <string name="p1_note_night">Dark room with one small lamp, or a night street. The gyroscope decides the shutter and frame count. Braced means leaning on a wall or table.</string>
-    <string name="p1_note_awb">A grey card or white paper at about 5% of the frame, not clipped; the same sheet in every scene.</string>
-    <string name="p1_note_tripod">A tripod, or resting firmly on a stack of books. Static scene with rich texture and both bright and dark areas. About 2 GB per set.</string>
-    <string name="p1_note_dark">Cover the main lens completely (finger or black cloth).</string>
-    <string name="p1_note_lca">Static high-contrast fine edges filling the frame (window frames, branches against the sky, a full-screen checkerboard).</string>
-    <string name="p1_scene_wave">Someone waving or shaking their head</string>
-    <string name="p1_scene_walk">A pedestrian crossing the frame</string>
-    <string name="p1_scene_street">Street traffic, or leaves in the wind</string>
-    <string name="p1_scene_day">Daylight or overcast outdoors</string>
-    <string name="p1_scene_shade">Outdoor shade</string>
-    <string name="p1_scene_warm">Warm incandescent or warm LED</string>
-    <string name="p1_scene_cool">Cool white LED or fluorescent</string>
-    <string name="p1_scene_mixed">Window daylight mixed with warm indoor light</string>
-    <string name="p1_scene_street_light">Street lights at night (sodium or LED)</string>
-    <string name="p1_scene_bright">Bright static scene: a window by day or strong lights, highlights not clipped</string>
-    <string name="p1_hold_hand">Handheld</string>
-    <string name="p1_hold_brace">Braced</string>
-    <string name="p1_hold_fixed">Fixed</string>
-    <string name="p1_lens_main">Main</string>
-    <string name="p1_lens_uw">Ultra-wide</string>
-    <string name="p1_sets">%d sets</string>
-    <string name="p1_d_ev">%1$d frames, all at %2$s EV</string>
-    <string name="p1_d_bracket">%1$d frames: %2$d at %3$s EV + %4$d at %5$s EV, cycled %6$s</string>
-    <string name="p1_d_iso">%1$d frames at ISO %2$d, %3$s EV</string>
-    <string name="p1_d_night">Gyro metered: %1$s–%2$s per frame, 6–30 frames (about 3 s)</string>
-    <string name="p1_d_dark">%1$d frames: %2$d each at ISO %3$s, %4$s</string>
-    <string name="p1_metering">Waiting for metering…</string>
-    <string name="p1_writing">Writing %1$d / %2$d</string>
-    <string name="p1_failed">Capture failed</string>
-    <string name="p1_result">%1$s\n%2$d frames · ISO %3$d · %4$s · gyro %5$s rad/s</string>
-    <string name="p1_export">Export zip</string>
-    <string name="p1_export_value">%1$d sets · %2$s</string>
-    <string name="p1_exporting">Exporting %d%%</string>
-    <string name="p1_export_done">Exported %s</string>
-    <string name="p1_export_failed">Export failed</string>
-    <string name="p1_export_pick">Items to export</string>
-    <string name="p1_clear_confirm">Delete every P1 capture on this phone?</string>
-    <string name="p1_adb">Or: adb pull %s</string>
-    <string name="p1_empty">Nothing captured yet</string>
-    <string name="p1_keep_title">Keep this set?</string>
-    <string name="p1_keep">Keep</string>
-    <string name="p1_discard">Discard</string>
-    <string name="p1_discarded">Set discarded</string>
-    <string name="p1_reset">Reset and delete all captures</string>
-    <string name="action_delete">Delete</string>
-    <string name="action_cancel">Cancel</string>
+    <string name="settings_title">Settings</string>
+    <string name="settings_developer">Developer</string>
+    <string name="settings_debug_capture">Debug Data Capture</string>
+    <string name="settings_debug_capture_value">Save raw frames and sensor metadata per shot to %1$s</string>
 </resources>

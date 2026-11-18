@@ -78,7 +78,6 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.graphics.shapes.Morph
 import com.izum1k.pocopaw.R
 import com.izum1k.pocopaw.camera.CameraController
-import com.izum1k.pocopaw.data.GridStyle
 import com.izum1k.pocopaw.ui.theme.MorphShape
 import com.izum1k.pocopaw.ui.theme.YoinContainerShapes
 import com.izum1k.pocopaw.ui.theme.YoinMotion
@@ -97,7 +96,6 @@ enum class SwipeSide { EV, WB }
 fun Viewfinder(
     frame: AspectFrame,
     grid: Boolean,
-    gridStyle: GridStyle,
     focus: FocusPoint?,
     focusLocked: Boolean,
     /** The tap lock holds until released rather than timing out. */
@@ -179,7 +177,7 @@ fun Viewfinder(
             FocusRing(focus, focusLocked, focusHeld, evLabel, controlRotation)
         }
 
-        if (grid) GridOverlay(gridStyle, Modifier.framedBand(frame))
+        if (grid) GridOverlay(Modifier.framedBand(frame))
 
         val gaugeSide = swiping ?: lingering
         SwipeGauge(gaugeSide, if (gaugeSide == SwipeSide.WB) wb else ev, swiping != null, controlRotation)
@@ -498,12 +496,8 @@ private fun FaceBoxes(faces: List<RectF>, focusLocked: Boolean) {
 }
 
 @Composable
-private fun GridOverlay(style: GridStyle, modifier: Modifier) {
-    val lines = when (style) {
-        GridStyle.THIRDS -> listOf(1f / 3f, 2f / 3f)
-        GridStyle.GOLDEN -> listOf(0.382f, 0.618f)
-        GridStyle.SQUARE -> listOf(0.25f, 0.5f, 0.75f)
-    }
+private fun GridOverlay(modifier: Modifier) {
+    val lines = listOf(1f / 3f, 2f / 3f)
     Canvas(modifier) {
         val stroke = 1.dp.toPx()
         val c = Color.White.copy(alpha = 0.35f)

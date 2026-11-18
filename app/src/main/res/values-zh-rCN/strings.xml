@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="app_name">PocoPaw Opt</string>
+
     <string name="action_back">返回</string>
     <string name="action_flip">切换镜头</string>
     <string name="action_open_last">最近拍摄</string>
@@ -14,18 +16,11 @@
     <string name="control_timer">定时</string>
     <string name="control_aspect">画幅</string>
     <string name="control_grid">网格</string>
-    <string name="quick_settings">快捷设置</string>
-    <string name="control_shutter">快门</string>
 
     <string name="value_off">关</string>
     <string name="value_on">开</string>
     <string name="value_auto">自动</string>
     <string name="value_seconds">%1$d 秒</string>
-    <string name="value_yes">有</string>
-    <string name="value_no">无</string>
-
-    <string name="mode_photo">照片</string>
-    <string name="mode_pro">专业</string>
 
     <string name="message_capture_failed">拍摄失败</string>
     <string name="message_save_failed">保存失败</string>
@@ -36,146 +31,10 @@
     <string name="error_camera_configuration">数据流配置被拒绝</string>
     <string name="error_camera_device">相机出错</string>
 
-    <string name="settings_title">设置</string>
-    <string name="settings_defaults">默认拍摄参数</string>
-    <string name="settings_defaults_note">每次打开相机时使用。取景器快捷设置里的调整只在本次有效，关闭应用后恢复为这里的默认值。</string>
-    <string name="settings_processing">默认处理参数</string>
-    <string name="settings_viewfinder">取景器</string>
-    <string name="settings_output">输出格式</string>
-    <string name="settings_pipeline">处理管线</string>
-    <string name="settings_grid_style">网格样式</string>
-    <string name="settings_feedback">反馈</string>
-    <string name="settings_shutter_sound">快门声</string>
-    <string name="settings_haptics">触感</string>
-    <string name="settings_appearance">外观</string>
-    <string name="settings_color_style">配色风格</string>
-    <string name="settings_developer">开发</string>
-    <string name="settings_developer_info">RAW 信息</string>
-    <string name="settings_developer_info_value">在取景器上显示输出格式、管线和曝光，在模式栏两侧显示剩余 RAW 请求数和上次处理耗时</string>
-    <string name="settings_about">关于</string>
-
-    <string name="output_dng">DNG</string>
-    <string name="output_jpeg">JPEG（多帧合成）</string>
-    <string name="output_dng_jpeg">DNG + JPEG（多帧合成）</string>
-    <string name="settings_dng_content">DNG 内容</string>
-    <string name="dng_content_merged">合成</string>
-    <string name="dng_content_reference">参考帧</string>
-    <string name="settings_dng_kr_note">核回归管线仅输出参考帧 DNG；需要合成 16 位 DNG 请切换至 HDR+ 合并</string>
-
-    <string name="pipeline_hdrplus">HDR+ 合并</string>
-    <string name="pipeline_hdrplus_kr">核回归合并（细节更好，较慢）</string>
-    <string name="settings_burst_frames">连拍帧数</string>
-    <string name="burst_frames_value">%1$d 帧</string>
-    <string name="settings_scene">场景</string>
-    <string name="scene_auto">自动</string>
-    <string name="scene_bracket">包围曝光 HDR（逆光）</string>
-    <string name="scene_night">夜景（长曝光帧，按手抖测光）</string>
-    <string name="settings_look">风格</string>
-    <string name="look_standard">标准</string>
-    <string name="look_pixel">Pixel 风格</string>
-    <string name="settings_ultra_hdr">Ultra HDR</string>
-    <string name="settings_ultra_hdr_value">带增益图的 JPEG，HDR 屏上高光更亮</string>
-    <string name="settings_gpu">GPU 加速</string>
-    <string name="settings_gpu_value">对齐、合并和后处理在 GPU（OpenCL）上运行，任一步失败自动回退 CPU</string>
-    <string name="dev_processed">%1$d 帧 · %2$.1f 秒</string>
-    <string name="pipeline_single">单帧直出</string>
-    <string name="scene_bracket_short">包围</string>
-    <string name="scene_night_short">夜景</string>
-    <string name="flash_short">闪光</string>
-
-    <string name="grid_thirds">三分线</string>
-    <string name="grid_golden">黄金分割</string>
-    <string name="grid_square">4 × 4</string>
-
-    <string name="color_expressive">壁纸取色</string>
-    <string name="color_system">系统</string>
-
-    <string name="credit_aperture">布局参照，LineageOS，Apache-2.0</string>
-    <string name="credit_yoin">主题与设计语言，Apache-2.0</string>
-    <string name="credit_symbols">图标，MIT</string>
-    <string name="credit_mcu">配色，Apache-2.0</string>
-    <string name="credit_font">字体，SIL OFL 1.1</string>
-
-    <string name="capabilities_title">设备能力</string>
-    <string name="lens_back">后置 %1$s</string>
-    <string name="lens_front">前置</string>
-    <string name="lens_external">外接</string>
-    <string name="cap_id">相机 ID</string>
-    <string name="cap_raw_size">RAW 尺寸</string>
-    <string name="cap_cfa">拜耳排列</string>
-    <string name="cap_levels">黑电平 / 白电平</string>
-    <string name="cap_focal">焦距</string>
-    <string name="cap_equivalent">等效 %1$d mm</string>
-    <string name="cap_aperture">光圈</string>
-    <string name="cap_iso">ISO</string>
-    <string name="cap_exposure">曝光时间</string>
-    <string name="cap_preview">预览尺寸</string>
-    <string name="cap_hardware_level">硬件级别</string>
-    <string name="cap_ois">光学防抖</string>
-    <string name="cap_flash">闪光灯</string>
-    <string name="cap_af">自动对焦</string>
-    <string name="cap_noise_profile">噪声模型</string>
-    <string name="cap_raw_budget">每次打开的 RAW 请求上限</string>
-    <string name="cap_gpu">GPU（OpenCL）</string>
-    <string name="cap_dsp">cDSP / NPU（只读探测）</string>
-    <string name="cap_probing">探测中…</string>
     <string name="focus_held">AE/AF 锁定</string>
 
-    <string name="p1_title">P1 素材采集</string>
-    <string name="p1_entry_value">按 P1 拍摄清单采集 RAW 连拍，probe 格式</string>
-    <string name="p1_group_motion">手持与运动</string>
-    <string name="p1_group_bracket">包围曝光（强逆光）</string>
-    <string name="p1_group_night">夜景（运动测光）</string>
-    <string name="p1_group_awb">白平衡真值</string>
-    <string name="p1_group_tripod">三脚架 64 帧</string>
-    <string name="p1_group_dark">暗场</string>
-    <string name="p1_group_lca">横向色差</string>
-    <string name="p1_note_motion">画面中要有明显运动，同时保留静止背景，方便对比鬼影。</string>
-    <string name="p1_note_bracket">窗前逆光的室内，或对着亮天空的建筑。</string>
-    <string name="p1_note_night">关灯的室内（留一盏小灯），或室外夜景。陀螺仪会决定单帧曝光和帧数。「靠稳」指靠墙或靠桌子稳住手机。</string>
-    <string name="p1_note_awb">画面里放一张灰卡或白纸（约占画面 5%，不要过曝），每个场景都用同一张。</string>
-    <string name="p1_note_tripod">三脚架，或稳稳靠在书堆上。场景静止、纹理丰富、亮暗都有。每组约 2 GB。</string>
-    <string name="p1_note_dark">完全遮住主摄镜头（手指或黑布）。</string>
-    <string name="p1_note_lca">静止的高对比细边，最好铺满画面（窗框、天空前的树枝和楼宇、全屏黑白棋盘格）。</string>
-    <string name="p1_scene_wave">有人在画面中挥手或摇头</string>
-    <string name="p1_scene_walk">行人横穿画面</string>
-    <string name="p1_scene_street">街道车流，或风吹的树叶</string>
-    <string name="p1_scene_day">室外日光或阴天</string>
-    <string name="p1_scene_shade">室外阴影处</string>
-    <string name="p1_scene_warm">暖色白炽灯或暖光 LED</string>
-    <string name="p1_scene_cool">冷白 LED 或荧光灯</string>
-    <string name="p1_scene_mixed">窗外日光加室内暖灯混合</string>
-    <string name="p1_scene_street_light">夜晚路灯（钠灯或 LED）</string>
-    <string name="p1_scene_bright">明亮的静止场景：白天窗边或开强光，最亮处不要过曝</string>
-    <string name="p1_hold_hand">手持</string>
-    <string name="p1_hold_brace">靠稳</string>
-    <string name="p1_hold_fixed">固定</string>
-    <string name="p1_lens_main">主摄</string>
-    <string name="p1_lens_uw">超广角</string>
-    <string name="p1_sets">已采 %d 组</string>
-    <string name="p1_d_ev">%1$d 帧，全部 %2$s EV</string>
-    <string name="p1_d_bracket">%1$d 帧：%2$d 张 %3$s EV + %4$d 张 %5$s EV，按 %6$s 循环</string>
-    <string name="p1_d_iso">%1$d 帧，固定 ISO %2$d，%3$s EV</string>
-    <string name="p1_d_night">陀螺仪测光：单帧 %1$s–%2$s，6–30 帧（约 3 秒）</string>
-    <string name="p1_d_dark">%1$d 帧：ISO %3$s 各 %2$d 帧，快门 %4$s</string>
-    <string name="p1_metering">等待测光…</string>
-    <string name="p1_writing">写入 %1$d / %2$d</string>
-    <string name="p1_failed">采集失败</string>
-    <string name="p1_result">%1$s\n%2$d 帧 · ISO %3$d · %4$s · 陀螺仪 %5$s rad/s</string>
-    <string name="p1_export">导出 zip</string>
-    <string name="p1_export_value">%1$d 组 · %2$s</string>
-    <string name="p1_exporting">正在导出 %d%%</string>
-    <string name="p1_export_done">已导出 %s</string>
-    <string name="p1_export_failed">导出失败</string>
-    <string name="p1_export_pick">导出哪些项目</string>
-    <string name="p1_clear_confirm">删除手机上所有 P1 采集数据？</string>
-    <string name="p1_adb">或用 adb pull %s</string>
-    <string name="p1_empty">还没有采集数据</string>
-    <string name="p1_keep_title">保留这组素材？</string>
-    <string name="p1_keep">保留</string>
-    <string name="p1_discard">丢弃</string>
-    <string name="p1_discarded">已丢弃这组</string>
-    <string name="p1_reset">重置并清除全部素材</string>
-    <string name="action_delete">删除</string>
-    <string name="action_cancel">取消</string>
+    <string name="settings_title">设置</string>
+    <string name="settings_developer">开发</string>
+    <string name="settings_debug_capture">调试数据采集</string>
+    <string name="settings_debug_capture_value">每次拍摄保存全部原始帧与传感器元数据至 %1$s</string>
 </resources>

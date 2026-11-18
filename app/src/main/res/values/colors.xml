@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="window_background">#FF000000</color>
-    <color name="brand">#FF3F6A2E</color>
-    <color name="brand_container">#FFD8F0C4</color>
+    <color name="brand_container">#FF1B214A</color>
+    <color name="brand_halo">#FF2A3470</color>
+    <color name="brand">#FFDDE1FF</color>
+    <color name="brand_accent">#FFFFB951</color>
 </resources>

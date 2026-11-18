@@ -21,9 +21,6 @@ import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberSaveableStateHolderNavEntryDecorator
 import androidx.navigation3.ui.NavDisplay
 import com.izum1k.pocopaw.feature.camera.CameraScreen
-import com.izum1k.pocopaw.feature.p1.P1CaptureScreen
-import com.izum1k.pocopaw.feature.p1.P1CapturesScreen
-import com.izum1k.pocopaw.feature.settings.CapabilitiesScreen
 import com.izum1k.pocopaw.feature.settings.SettingsScreen
 import com.izum1k.pocopaw.ui.theme.YoinMotion
 
@@ -56,9 +53,6 @@ fun AppNavHost(navigator: Navigator) {
             entryProvider = entryProvider {
                 entry<Route.Camera> { CameraScreen() }
                 entry<Route.Settings> { SettingsScreen() }
-                entry<Route.Capabilities> { CapabilitiesScreen() }
-                entry<Route.P1Captures> { P1CapturesScreen() }
-                entry<Route.P1Capture> { P1CaptureScreen(it.item) }
             },
         )
     }

@@ -1,5 +1,6 @@
 package com.izum1k.pocopaw.feature.camera
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
@@ -9,50 +10,34 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.izum1k.pocopaw.AppContainer
+import com.izum1k.pocopaw.BuildConfig
 import com.izum1k.pocopaw.camera.CameraController
 import com.izum1k.pocopaw.camera.CameraInfo
 import com.izum1k.pocopaw.camera.CaptureSpec
 import com.izum1k.pocopaw.camera.ExposurePlan
 import com.izum1k.pocopaw.camera.LensFacing
 import com.izum1k.pocopaw.camera.LiveExposure
-import com.izum1k.pocopaw.camera.ManualExposure
 import com.izum1k.pocopaw.camera.PreviewControls
 import com.izum1k.pocopaw.data.AspectRatio
 import com.izum1k.pocopaw.data.CameraSettings
+import com.izum1k.pocopaw.data.DebugCapturePipeline
 import com.izum1k.pocopaw.data.FlashMode
-import com.izum1k.pocopaw.data.DngContent
-import com.izum1k.pocopaw.data.OutputFormat
-import com.izum1k.pocopaw.data.Processing
 import com.izum1k.pocopaw.data.TimerMode
-import com.izum1k.pocopaw.data.SceneMode
-import com.izum1k.pocopaw.data.BurstFrames
-import com.izum1k.pocopaw.data.LookStyle
-import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.stateIn
 import com.izum1k.pocopaw.pipeline.BurstLook
-import com.izum1k.pocopaw.pipeline.BurstScene
-import com.izum1k.pocopaw.pipeline.DngPassthroughPipeline
-import com.izum1k.pocopaw.pipeline.LensCalibration
-import com.izum1k.pocopaw.pipeline.HdrPlusPipeline
 import com.izum1k.pocopaw.pipeline.ImagePipeline
+import com.izum1k.pocopaw.pipeline.LensCalibration
 import com.izum1k.pocopaw.pipeline.PipelineOptions
 import com.izum1k.pocopaw.pipeline.PipelineRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
-import kotlin.math.ln
-import kotlin.math.roundToInt
-import kotlin.math.roundToLong
-
-enum class CaptureMode { PHOTO, PRO }
 
 enum class Busy { IDLE, COUNTDOWN, CAPTURING, PROCESSING }
 
@@ -63,42 +48,9 @@ data class FocusPoint(val x: Float, val y: Float, val id: Long)
 
 data class LastCapture(val uri: Uri, val mimeType: String, val thumbnail: Bitmap?)
 
-/** The last pipeline run, for the developer chip. */
-data class PipelineRun(val pipelineId: String, val frames: Int, val millis: Long)
-
-/** The quick settings panel's choices; null keeps the saved default. */
-data class SessionSettings(
-    val output: OutputFormat? = null,
-    val processing: Processing? = null,
-    val burstFrames: BurstFrames? = null,
-    val scene: SceneMode? = null,
-    val look: LookStyle? = null,
-    val ultraHdr: Boolean? = null,
-) {
-    fun over(saved: CameraSettings) = saved.copy(
-        output = output ?: saved.output,
-        processing = processing ?: saved.processing,
-        burstFrames = burstFrames ?: saved.burstFrames,
-        scene = scene ?: saved.scene,
-        look = look ?: saved.look,
-        ultraHdr = ultraHdr ?: saved.ultraHdr,
-    )
-
-    /** Drops the choices whose saved default just changed. */
-    fun without(prev: CameraSettings, saved: CameraSettings) = copy(
-        output = output.takeIf { prev.output == saved.output },
-        processing = processing.takeIf { prev.processing == saved.processing },
-        burstFrames = burstFrames.takeIf { prev.burstFrames == saved.burstFrames },
-        scene = scene.takeIf { prev.scene == saved.scene },
-        look = look.takeIf { prev.look == saved.look },
-        ultraHdr = ultraHdr.takeIf { prev.ultraHdr == saved.ultraHdr },
-    )
-}
-
 data class CameraUiState(
     val cameras: List<CameraInfo> = emptyList(),
     val current: CameraInfo? = null,
-    val mode: CaptureMode = CaptureMode.PHOTO,
     val zoom: Float = 1f,
     /** The main lens's 2x step: the photo is cropped to the centre 1/[cropZoom]. */
     val cropZoom: Float = 1f,
@@ -108,12 +60,6 @@ data class CameraUiState(
     val evIndex: Int = 0,
     /** Warm (+) / cool (−) steps off auto white balance, within ±[WB_MAX_STEPS]. */
     val wbShift: Int = 0,
-    val manualIso: Int = 100,
-    val manualExposureNs: Long = 10_000_000L,
-    /** Pro: AE picks the ISO (with a manual shutter, the one that keeps AE's exposure). */
-    val isoAuto: Boolean = true,
-    /** Pro: AE picks the shutter (with a manual ISO, the one that keeps AE's exposure). */
-    val shutterAuto: Boolean = true,
     val focus: FocusPoint? = null,
     /** The tap's AF/AE lock holds until released, instead of for [FOCUS_HOLD_MS]. */
     val focusHeld: Boolean = false,
@@ -123,7 +69,10 @@ data class CameraUiState(
     val progress: Float = 0f,
     val shutterTick: Int = 0,
     val last: LastCapture? = null,
-    val lastRun: PipelineRun? = null,
+    val recentUris: List<Uri> = emptyList(),
+    val awaitingGallery: Boolean = false,
+    val openGalleryPending: Boolean = false,
+    val galleryOpenId: Long = 0,
     val message: CaptureMessage? = null,
     val messageId: Long = 0,
 ) {
@@ -131,20 +80,17 @@ data class CameraUiState(
     val canFlip: Boolean get() = cameras.any { it.facing == LensFacing.FRONT } && cameras.any { it.facing == LensFacing.BACK }
 }
 
-class CameraViewModel(private val container: AppContainer) : ViewModel() {
+class CameraViewModel(
+    private val appContext: Context,
+    private val container: AppContainer,
+) : ViewModel() {
     private val controller = container.controller
     private val motion = container.motion
     private val settingsRepo = container.settings
 
-    /** Quick settings changed in the viewfinder: this session's, over the saved defaults, never saved. */
-    private val session = MutableStateFlow(SessionSettings())
-
-    val settings: StateFlow<CameraSettings> = combine(settingsRepo.settings, session) { saved, s -> s.over(saved) }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, session.value.over(settingsRepo.settings.value))
+    val settings: StateFlow<CameraSettings> = settingsRepo.settings
     val cameraState: StateFlow<CameraController.State> = controller.state
     val live: StateFlow<LiveExposure> = controller.live
-    val rawRemaining: StateFlow<Int> = controller.budget.remaining
-    val rawLimit: Int = controller.budget.limit
 
     private val _ui = MutableStateFlow(CameraUiState())
     val ui: StateFlow<CameraUiState> = _ui.asStateFlow()
@@ -154,56 +100,68 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
     private var permitted = false
     private var focusResetJob: Job? = null
     private var shutterJob: Job? = null
+    private var refreshJob: Job? = null
     private var focusSeq = 0L
     private val sound = MediaActionSound().apply { load(MediaActionSound.SHUTTER_CLICK) }
 
     init {
         val catalog = container.catalog
-        // A default changed in Settings wins over this session's choice for that setting.
-        viewModelScope.launch {
-            var prev = settingsRepo.settings.value
-            settingsRepo.settings.collect { saved ->
-                session.update { it.without(prev, saved) }
-                prev = saved
-            }
-        }
-        viewModelScope.launch {
-            settings.collect { if (needsMotion(it)) motion.start() else motion.stop() }
-        }
-        // A setting that asks for more frames than are left (8 to 16, DNG to a burst) reopens
-        // right away instead of at the next press.
-        viewModelScope.launch {
-            combine(settings, cameraState) { _, state -> state }.collect { state ->
-                if (state is CameraController.State.Previewing && _ui.value.busy == Busy.IDLE && !controller.budget.canAfford(nextFrames())) {
-                    controller.reopen()
-                }
-            }
-        }
         viewModelScope.launch {
             val cameras = withContext(Dispatchers.IO) { catalog.cameras }
             val initial = catalog.byId(settings.value.lastCameraId) ?: catalog.default()
             _ui.update { it.copy(cameras = cameras, current = initial) }
             maybeOpen()
-            container.output.latest()?.let { latest ->
-                if (_ui.value.last == null) _ui.update { it.copy(last = LastCapture(latest.uri, latest.mimeType, container.output.thumbnail(latest.uri))) }
-            }
+            refreshRecentCaptures()
         }
         viewModelScope.launch {
             var seenErrors = container.processing.state.value.errorSeq
             container.processing.state.collect { st ->
-                if (st.errorSeq > seenErrors) {
+                val hadError = st.errorSeq > seenErrors
+                if (hadError) {
                     seenErrors = st.errorSeq
                     _ui.update { it.copy(message = CaptureMessage.SAVE_FAILED, messageId = it.messageId + 1) }
                 }
                 _ui.update { ui ->
+                    val latest = st.last?.let { LastCapture(it.uri, it.mimeType, it.thumbnail) } ?: ui.last
+                    val updatedRecents = if (st.last != null) {
+                        (listOf(st.last.uri) + ui.recentUris).distinct()
+                    } else {
+                        ui.recentUris
+                    }
+                    val finishedWaiting = ui.awaitingGallery && !st.active
                     ui.copy(
                         backgroundProcessing = st.active,
                         progress = st.progress,
                         busy = if (ui.busy == Busy.PROCESSING && !st.isFull) Busy.IDLE else ui.busy,
-                        last = st.last?.let { LastCapture(it.uri, it.mimeType, it.thumbnail) } ?: ui.last,
-                        lastRun = st.lastRun?.let { PipelineRun(it.pipelineId, it.frames, it.millis) } ?: ui.lastRun,
+                        last = latest,
+                        recentUris = updatedRecents,
+                        awaitingGallery = ui.awaitingGallery && st.active && !hadError,
+                        openGalleryPending = if (finishedWaiting && !hadError) true else ui.openGalleryPending,
+                        galleryOpenId = if (finishedWaiting && !hadError) ui.galleryOpenId + 1 else ui.galleryOpenId,
                     )
                 }
+            }
+        }
+    }
+
+    private fun refreshRecentCaptures() {
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch {
+            val recent = queryAppRecentCaptures(appContext)
+            if (recent.isEmpty()) {
+                if (!container.processing.state.value.active) {
+                    _ui.update { it.copy(last = null, recentUris = emptyList()) }
+                }
+                return@launch
+            }
+            val (firstUri, firstMime) = recent.first()
+            val thumb = container.output.thumbnail(firstUri)
+            _ui.update { s ->
+                val keepInMemory = s.last != null && s.last.uri == firstUri && s.last.thumbnail != null
+                s.copy(
+                    last = if (keepInMemory) s.last else LastCapture(firstUri, firstMime, thumb),
+                    recentUris = recent.map { it.first },
+                )
             }
         }
     }
@@ -216,11 +174,13 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
     fun onResume() {
         resumed = true
         maybeOpen()
+        refreshRecentCaptures()
     }
 
     fun onPause() {
         resumed = false
         shutterJob?.takeIf { _ui.value.busy == Busy.COUNTDOWN }?.cancel()
+        _ui.update { it.copy(awaitingGallery = false) }
         viewModelScope.launch { controller.close() }
     }
 
@@ -250,8 +210,15 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
         focusResetJob?.cancel()
         _ui.update {
             it.copy(
-                current = info, zoom = 1f, cropZoom = 1f, zoomTarget = null, zoomAnimId = it.zoomAnimId + 1,
-                evIndex = 0, wbShift = 0, focus = null, focusHeld = false,
+                current = info,
+                zoom = 1f,
+                cropZoom = 1f,
+                zoomTarget = null,
+                zoomAnimId = it.zoomAnimId + 1,
+                evIndex = 0,
+                wbShift = 0,
+                focus = null,
+                focusHeld = false,
             )
         }
         viewModelScope.launch { settingsRepo.setLastCameraId(info.id) }
@@ -266,24 +233,6 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
             s.cameras.firstOrNull { it.facing == LensFacing.FRONT }
         }
         target?.let(::selectCamera)
-    }
-
-    fun setMode(mode: CaptureMode) {
-        val s = _ui.value
-        if (mode == s.mode) return
-        val next = if (mode == CaptureMode.PRO) {
-            val l = live.value
-            val cam = s.current
-            s.copy(
-                mode = mode,
-                manualIso = snapIso(l.iso ?: s.manualIso, cam),
-                manualExposureNs = snapShutter(l.exposureNs ?: s.manualExposureNs, cam),
-            )
-        } else {
-            s.copy(mode = mode)
-        }
-        _ui.value = next
-        pushControls()
     }
 
     /** Tap on the selected main lens: 1x and the cropped 2x in turn; the viewfinder animates there. */
@@ -319,29 +268,6 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
         pushControls()
     }
 
-    /** A manual ISO, or null for auto. */
-    fun setIso(iso: Int?) {
-        _ui.update { if (iso == null) it.copy(isoAuto = true) else it.copy(isoAuto = false, manualIso = iso) }
-        pushControls()
-    }
-
-    /** A manual shutter, or null for auto. */
-    fun setShutter(ns: Long?) {
-        _ui.update { if (ns == null) it.copy(shutterAuto = true) else it.copy(shutterAuto = false, manualExposureNs = ns) }
-        pushControls()
-    }
-
-    /** Reopens the camera to give back its RAW budget. */
-    fun restartCamera() {
-        if (_ui.value.busy != Busy.IDLE) return
-        viewModelScope.launch { controller.reopen() }
-    }
-
-    /**
-     * A tap at normalised texture coordinates (portrait, as displayed). With nothing locked it locks
-     * AF and AE at that point for [FOCUS_HOLD_MS], with EV and white balance back at 0; a tap on that
-     * lock's ring holds it until a photo is taken; a tap anywhere else releases it.
-     */
     fun tapFocus(x: Float, y: Float, onRing: Boolean) {
         val s = _ui.value
         if (s.focus != null) {
@@ -368,9 +294,6 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
         }
     }
 
-    /** Back to continuous AF and AE, if a tap lock is on. */
-    fun unlockFocus() = releaseFocus()
-
     private fun releaseFocus() {
         focusResetJob?.cancel()
         if (_ui.value.focus == null) return
@@ -384,11 +307,22 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
     }
 
     fun setTimer(v: TimerMode) = viewModelScope.launch { settingsRepo.setTimer(v) }
-
-    /** A capture setting changed from the quick settings panel, for this session only. */
-    fun setQuick(change: SessionSettings.() -> SessionSettings) = session.update(change)
     fun setAspect(v: AspectRatio) = viewModelScope.launch { settingsRepo.setAspect(v) }
     fun setGrid(v: Boolean) = viewModelScope.launch { settingsRepo.setGrid(v) }
+
+    fun onThumbnailClick() {
+        val s = _ui.value
+        val active = container.processing.state.value.active || s.busy == Busy.CAPTURING || s.busy == Busy.PROCESSING
+        if (active) {
+            _ui.update { it.copy(awaitingGallery = !it.awaitingGallery) }
+        } else {
+            _ui.update { it.copy(openGalleryPending = true, galleryOpenId = it.galleryOpenId + 1) }
+        }
+    }
+
+    fun consumeGalleryOpen() {
+        _ui.update { it.copy(openGalleryPending = false) }
+    }
 
     fun consumeMessage() {
         _ui.update { it.copy(message = null) }
@@ -420,18 +354,30 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
     private suspend fun capture(deviceRotation: Int) {
         val s = _ui.value
         val cam = s.current ?: return
-        val fires = flashFires(settings.value, cam, live.value)
-        val shake = motion.rms()
-        // KR's super-resolution comes from hand shake; on a tripod it only costs time
-        val still = settings.value.processing == Processing.HDR_PLUS_KR && shake != null && shake < STILL_RAD_PER_SEC
-        if (still) Log.i(TAG, "HDR+ KR -> HDR+: still (gyro rms %.4f rad/s)".format(shake))
-        val pipeline = pipelineFor(settings.value, cam, fires, still)
+        val cfg = settings.value
+        val liveNow = live.value.copy(motionRadPerSec = motion.rms())
+        val fires = flashFires(cfg, cam, liveNow)
+        val base = basePipelineFor(cfg, cam, fires)
+        val resolvedExposure = base.exposureFor(ExposurePlan.Auto(s.evIndex), liveNow, cam)
+        val pipeline: ImagePipeline = if (cfg.debugCapture) {
+            DebugCapturePipeline(
+                delegate = base,
+                debugRoot = container.debugCapturesDir,
+                packageName = container.packageName,
+                versionName = BuildConfig.VERSION_NAME,
+                aspect = cfg.aspect,
+                exposurePlan = resolvedExposure,
+                liveExposure = liveNow,
+            )
+        } else {
+            base
+        }
         _ui.update { it.copy(busy = Busy.CAPTURING, progress = 0f, shutterTick = it.shutterTick + 1) }
-        if (settings.value.shutterSound) sound.play(MediaActionSound.SHUTTER_CLICK)
+        sound.play(MediaActionSound.SHUTTER_CLICK)
         val spec = CaptureSpec(
             frameCount = pipeline.framesPerCapture,
-            exposure = pipeline.exposureFor(captureExposure(s, cam, fires), live.value.copy(motionRadPerSec = shake), cam),
-            flash = if (fires) settings.value.flash else FlashMode.OFF,
+            exposure = resolvedExposure,
+            flash = if (fires) cfg.flash else FlashMode.OFF,
             deviceRotation = deviceRotation,
             zoomRatio = s.zoom,
             cropZoom = s.cropZoom,
@@ -448,7 +394,6 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
         }
         releaseFocus()
         container.processing.enqueue(pipeline, burst)
-        // The burst is in memory now; reopening while it merges keeps the next press from waiting.
         if (!controller.budget.canAfford(nextFrames())) viewModelScope.launch { controller.reopen() }
         _ui.update {
             val q = container.processing.state.value
@@ -460,71 +405,47 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
         }
     }
 
-    /**
-     * DNG output keeps the single-frame pass-through; JPEG output runs the burst pipeline. A flash
-     * fires for one frame only, so a flash capture is a burst of one. [still] runs KR as plain HDR+.
-     */
-    private fun pipelineFor(
+    /** Single unadjustable Indigo / Pixel-1 pipeline; flash reduces burst to 1 frame. */
+    private fun basePipelineFor(
         cfg: CameraSettings,
         cam: CameraInfo,
-        flash: Boolean = flashFires(cfg, cam, live.value),
-        still: Boolean = false,
+        fires: Boolean = flashFires(cfg, cam, live.value),
     ): ImagePipeline {
-        if (cfg.output == OutputFormat.DNG) return PipelineRegistry.create(DngPassthroughPipeline.ID)
-        val id = when (cfg.processing) {
-            Processing.HDR_PLUS -> HdrPlusPipeline.ID
-            Processing.HDR_PLUS_KR -> if (still) HdrPlusPipeline.ID else HdrPlusPipeline.ID_KR
-        }
-        return PipelineRegistry.create(
-            id,
-            PipelineOptions(
-                frames = if (flash) 1 else cfg.burstFrames.count,
-                writeJpeg = true,
-                writeDng = cfg.output == OutputFormat.DNG_JPEG,
-                mergedDng = cfg.dngContent == DngContent.MERGED,
-                look = BurstLook(style = cfg.look.preset),
-                scene = if (flash) BurstScene.AUTO else when (cfg.scene) {
-                    SceneMode.AUTO -> BurstScene.AUTO
-                    SceneMode.BRACKET -> BurstScene.BRACKET
-                    SceneMode.NIGHT -> BurstScene.NIGHT
-                },
-                ultraHdr = cfg.ultraHdr,
-                lca = LensCalibration.lca(cam.id),
-                noise = LensCalibration.noise(cam.id),
-                gpu = cfg.gpuAcceleration,
-                aspectRatio = if (cfg.aspect == AspectRatio.SIXTEEN_NINE) 16f / 9f else 0f,
-            ),
+        val baseOptions = PipelineOptions(
+            writeJpeg = true,
+            writeDng = false,
+            look = BurstLook(style = "pixel"),
+            lca = LensCalibration.lca(cam.id),
+            noise = LensCalibration.noise(cam.id),
+            gpu = true,
+            aspectRatio = if (cfg.aspect == AspectRatio.SIXTEEN_NINE) 16f / 9f else 0f,
         )
+        val options = if (fires) baseOptions.copy(frames = 1) else baseOptions
+        return PipelineRegistry.create(PipelineRegistry.defaultId, options)
     }
 
-    /** RAW frames the next press will ask for. */
-    private fun nextFrames(): Int = _ui.value.current?.let { pipelineFor(settings.value, it).framesPerCapture } ?: 1
+    private fun nextFrames(): Int = _ui.value.current?.let { basePipelineFor(settings.value, it).framesPerCapture } ?: 1
 
     private fun fail(message: CaptureMessage) {
-        _ui.update { it.copy(busy = Busy.IDLE, countdown = null, message = message, messageId = it.messageId + 1) }
-    }
-
-    /** What the preview runs: Camera2 has no half-auto, so unless both are manual AE keeps metering. */
-    private fun exposurePlan(s: CameraUiState): ExposurePlan = when {
-        s.mode == CaptureMode.PHOTO -> ExposurePlan.Auto(s.evIndex)
-        s.isoAuto || s.shutterAuto -> ExposurePlan.Auto()
-        else -> ExposurePlan.Manual(ManualExposure(s.manualIso, s.manualExposureNs))
-    }
-
-    /**
-     * With the flash firing, anything left on auto goes to AE's precapture flash metering: the
-     * preview metered the scene without the flash, so a priority exposure from it plus a full
-     * flash would overexpose. Fully manual keeps the user's exposure, with the flash at full power.
-     */
-    private fun captureExposure(s: CameraUiState, cam: CameraInfo, flash: Boolean): ExposurePlan {
-        if (flash && s.mode == CaptureMode.PRO && (s.isoAuto || s.shutterAuto)) return ExposurePlan.Auto()
-        if (s.mode != CaptureMode.PRO || s.isoAuto == s.shutterAuto) return exposurePlan(s)
-        return priorityExposure(s, live.value, cam)?.let { ExposurePlan.Manual(it) } ?: ExposurePlan.Auto()
+        _ui.update {
+            it.copy(
+                busy = Busy.IDLE,
+                countdown = null,
+                awaitingGallery = false,
+                message = message,
+                messageId = it.messageId + 1,
+            )
+        }
     }
 
     private fun previewControls(flash: FlashMode = settings.value.flash): PreviewControls {
         val s = _ui.value
-        return PreviewControls(exposure = exposurePlan(s), flash = flash, zoomRatio = s.zoom, wbShift = s.wbShift)
+        return PreviewControls(
+            exposure = ExposurePlan.Auto(s.evIndex),
+            flash = flash,
+            zoomRatio = s.zoom,
+            wbShift = s.wbShift,
+        )
     }
 
     private fun pushControls(flash: FlashMode = settings.value.flash) {
@@ -532,82 +453,18 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
     }
 
     override fun onCleared() {
-        motion.stop()
         sound.release()
     }
 
     companion object {
         private const val TAG = "PocoPawCamera"
         private const val FOCUS_HOLD_MS = 5_000L
-        /** Gyro RMS below which the phone is on a support: ~0.001 on a tripod, above 0.02 in hand. */
-        private const val STILL_RAD_PER_SEC = 0.005f
-
-        /** Night meters hand shake for its exposure; KR checks it to skip super-resolution when still. */
-        fun needsMotion(cfg: CameraSettings) = cfg.scene == SceneMode.NIGHT || cfg.processing == Processing.HDR_PLUS_KR
         const val WB_MAX_STEPS = 10
         private const val TWO_X = 2f
 
-        val ISO_STOPS = listOf(50, 64, 80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600, 2000, 2500, 3200, 4000, 5000, 6400)
-
-        /** Third stops, as a camera's dial marks them: evenly spaced in exposure, not in time. */
-        val SHUTTER_STOPS: List<Long> = listOf(
-            8000, 6400, 5000, 4000, 3200, 2500, 2000, 1600, 1250, 1000, 800, 640, 500, 400, 320, 250, 200, 160,
-            125, 100, 80, 60, 50, 40, 30, 25, 20, 15, 13, 10, 8, 6, 5, 4,
-        ).map { 1_000_000_000L / it } + listOf(0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.3, 1.6, 2.0, 2.5, 3.2, 4.0, 5.0, 6.0, 8.0, 10.0, 13.0, 15.0, 20.0, 25.0, 30.0)
-            .map { (it * 1e9).roundToLong() }
-
-        fun isoStops(cam: CameraInfo?): List<Int> {
-            val r = cam?.isoRange ?: return ISO_STOPS
-            return ISO_STOPS.filter { it in r.lower..r.upper }.ifEmpty { listOf(r.lower) }
-        }
-
-        fun shutterStops(cam: CameraInfo?): List<Long> {
-            val r = cam?.exposureRangeNs ?: return SHUTTER_STOPS
-            return SHUTTER_STOPS.filter { it in r.lower..r.upper }.ifEmpty { listOf(r.lower) }
-        }
-
-        /** On always fires; Auto only when the preview AE asks for it, so a lit scene keeps its burst. */
         fun flashFires(cfg: CameraSettings, cam: CameraInfo, live: LiveExposure): Boolean =
             cam.hasFlash && (cfg.flash == FlashMode.ON || cfg.flash == FlashMode.AUTO && live.flashRequired)
 
-        fun snapIso(iso: Int, cam: CameraInfo?): Int = isoStops(cam).minBy { abs(it - iso) }
-
-        fun snapShutter(ns: Long, cam: CameraInfo?): Long = shutterStops(cam).minBy { abs(ln(it.toDouble() / ns)) }
-
-        /**
-         * Pro with one of the two on auto: the other one is the user's, and the auto one is
-         * whatever keeps the preview AE's ISO × exposure. Null until AE has reported.
-         */
-        fun priorityExposure(s: CameraUiState, live: LiveExposure, cam: CameraInfo?): ManualExposure? {
-            val iso0 = live.iso ?: return null
-            val exp0 = live.exposureNs ?: return null
-            val product = iso0.toDouble() * exp0
-            return when {
-                s.isoAuto && !s.shutterAuto -> {
-                    val r = cam?.isoRange
-                    val iso = (product / s.manualExposureNs).roundToInt()
-                    ManualExposure(if (r != null) iso.coerceIn(r.lower, r.upper) else iso, s.manualExposureNs)
-                }
-                s.shutterAuto && !s.isoAuto -> {
-                    val r = cam?.exposureRangeNs
-                    val exp = (product / s.manualIso).roundToLong()
-                    ManualExposure(s.manualIso, if (r != null) exp.coerceIn(r.lower, r.upper) else exp)
-                }
-                else -> ManualExposure(iso0, exp0)
-            }
-        }
-
-        /** The auto half of [priorityExposure] hit its range and misses AE's exposure by more than a sixth of a stop. */
-        fun priorityClipped(s: CameraUiState, live: LiveExposure, cam: CameraInfo?): Boolean {
-            val m = priorityExposure(s, live, cam) ?: return false
-            val product = (live.iso ?: return false).toDouble() * (live.exposureNs ?: return false)
-            return abs(ln(m.iso.toDouble() * m.exposureNs / product)) > ln(2.0) / 6
-        }
-
-        /**
-         * Active-array normalised point ([0..1]) to displayed (portrait, mirrored for the front camera),
-         * accounting for preview [zoom] around the center of the active array.
-         */
         internal fun sensorPointToView(u: Float, v: Float, sensorOrientation: Int, mirrored: Boolean, zoom: Float = 1f): Pair<Float, Float> {
             val z = zoom.coerceAtLeast(1f)
             val uz = 0.5f + (u - 0.5f) * z
@@ -621,17 +478,12 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
             return (if (mirrored) 1f - vx else vx) to y
         }
 
-        /** [viewToSensor] undone, for a rectangle: what the face detector reports, as displayed. */
         fun sensorToView(r: RectF, sensorOrientation: Int, mirrored: Boolean, zoom: Float = 1f): RectF {
             val (x0, y0) = sensorPointToView(r.left, r.top, sensorOrientation, mirrored, zoom)
             val (x1, y1) = sensorPointToView(r.right, r.bottom, sensorOrientation, mirrored, zoom)
             return RectF(minOf(x0, x1), minOf(y0, y1), maxOf(x0, x1), maxOf(y0, y1))
         }
 
-        /**
-         * Displayed (portrait, mirrored for the front camera) to active-array sensor coordinates.
-         * The preview shows the sensor rotated clockwise by its orientation and cropped by [zoom].
-         */
         fun viewToSensor(x: Float, y: Float, sensorOrientation: Int, mirrored: Boolean, zoom: Float = 1f): Pair<Float, Float> {
             val vx = if (mirrored) 1f - x else x
             val (uz, vz) = when (sensorOrientation) {
