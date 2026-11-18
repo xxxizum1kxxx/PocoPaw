@@ -13,6 +13,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -1204,6 +1205,7 @@ private val SLIDER_ROW_HEIGHT = 40.dp
 fun ShutterRow(
     last: Bitmap?,
     hasLast: Boolean,
+    awaitingGallery: Boolean = false,
     busy: Busy,
     processing: Boolean,
     progress: Float,
@@ -1220,24 +1222,40 @@ fun ShutterRow(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Thumbnail(last, hasLast, rotation, onThumbnail)
+        Thumbnail(last, hasLast, awaitingGallery, rotation, onThumbnail)
         ShutterButton(busy, processing, progress, countdown, rotation, onShutter)
         FlipButton(canFlip && busy == Busy.IDLE, rotation, onFlip)
     }
 }
 
 @Composable
-private fun Thumbnail(bitmap: Bitmap?, hasLast: Boolean, rotation: Float, onClick: () -> Unit) {
+private fun Thumbnail(
+    bitmap: Bitmap?,
+    hasLast: Boolean,
+    awaiting: Boolean,
+    rotation: Float,
+    onClick: () -> Unit,
+) {
     val haptics = LocalHapticFeedback.current
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(if (pressed) 0.88f else 1f, YoinMotion.fastSpatialSpec(), label = "thumbnailScale")
+    val waitAlpha by animateFloatAsState(if (awaiting) 1f else 0f, YoinMotion.defaultEffectsSpec(), label = "thumbnailWait")
+    val description = stringResource(if (hasLast) R.string.action_open_last else R.string.action_open_gallery)
     Box(
         Modifier
             .size(52.dp)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
             .clip(MaterialShapes.Cookie9Sided.toShape())
             .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-            .clickable(enabled = hasLast) {
+            .clickable(interactionSource = interaction, indication = LocalIndication.current) {
                 haptics.performHapticFeedback(HapticFeedbackType.ContextClick)
                 onClick()
-            },
+            }
+            .semantics { contentDescription = description },
         contentAlignment = Alignment.Center,
     ) {
         val spatial = YoinMotion.defaultSpatialSpec<Float>()
@@ -1249,14 +1267,25 @@ private fun Thumbnail(bitmap: Bitmap?, hasLast: Boolean, rotation: Float, onClic
             label = "thumbnail",
         ) { b ->
             if (b != null) {
-                Image(b.asImageBitmap(), contentDescription = stringResource(R.string.action_open_last), contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                Image(b.asImageBitmap(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
             } else {
                 Icon(
                     YoinSymbols.Image,
-                    contentDescription = if (hasLast) stringResource(R.string.action_open_last) else null,
+                    contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.graphicsLayer { rotationZ = rotation },
                 )
+            }
+        }
+        if (awaiting || waitAlpha > 0.01f) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { alpha = waitAlpha }
+                    .background(Color.Black.copy(alpha = 0.45f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                LoadingIndicator(color = Color.White, modifier = Modifier.size(26.dp))
             }
         }
     }

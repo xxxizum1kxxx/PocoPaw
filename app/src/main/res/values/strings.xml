@@ -4,6 +4,7 @@
 
     <string name="action_back">Back</string>
     <string name="action_flip">Switch camera</string>
+    <string name="action_open_gallery">Gallery</string>
     <string name="action_open_last">Last capture</string>
     <string name="action_retry">Retry</string>
     <string name="action_shutter">Shutter</string>

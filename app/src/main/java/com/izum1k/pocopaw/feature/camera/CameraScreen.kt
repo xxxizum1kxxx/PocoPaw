@@ -1,7 +1,6 @@
 package com.izum1k.pocopaw.feature.camera
 
 import android.Manifest
-import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -137,6 +136,11 @@ private fun CameraContent(vm: CameraViewModel) {
         haptics.performHapticFeedback(HapticFeedbackType.Reject)
         snackbar.showSnackbar(if (m == CaptureMessage.CAPTURE_FAILED) failedText else saveFailedText)
         vm.consumeMessage()
+    }
+    LaunchedEffect(ui.galleryOpenId) {
+        if (!ui.openGalleryPending) return@LaunchedEffect
+        vm.consumeGalleryOpen()
+        openGallery(context, ui.last, ui.recentUris)
     }
     val zoomAnim = remember { Animatable(1f) }
     val zoomSpec = YoinMotion.defaultSpatialSpec<Float>()
@@ -425,13 +429,14 @@ private fun CameraContent(vm: CameraViewModel) {
                 ShutterRow(
                     last = ui.last?.thumbnail,
                     hasLast = ui.last != null,
+                    awaitingGallery = ui.awaitingGallery,
                     busy = ui.busy,
                     processing = ui.backgroundProcessing || ui.busy == Busy.PROCESSING,
                     progress = ui.progress,
                     countdown = ui.countdown,
                     canFlip = ui.canFlip,
                     rotation = rotation,
-                    onThumbnail = { ui.last?.let { openCapture(context, it.uri, it.mimeType) } },
+                    onThumbnail = vm::onThumbnailClick,
                     onShutter = { vm.shutter(deviceRotation) },
                     onFlip = vm::flip,
                 )
@@ -514,14 +519,3 @@ private fun CameraController.State.showing(): String? = when (this) {
 
 private fun hasCameraPermission(context: Context): Boolean =
     ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-
-private fun openCapture(context: Context, uri: Uri, mimeType: String) {
-    val view = Intent(Intent.ACTION_VIEW).setDataAndType(uri, mimeType).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    try {
-        context.startActivity(view)
-    } catch (_: ActivityNotFoundException) {
-        runCatching {
-            context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "image/*").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
-        }
-    }
-}

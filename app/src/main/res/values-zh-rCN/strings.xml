@@ -2,6 +2,7 @@
 <resources>
     <string name="action_back">返回</string>
     <string name="action_flip">切换镜头</string>
+    <string name="action_open_gallery">相册</string>
     <string name="action_open_last">最近拍摄</string>
     <string name="action_retry">重试</string>
     <string name="action_shutter">快门</string>

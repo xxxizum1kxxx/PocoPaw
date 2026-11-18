@@ -18,7 +18,7 @@ PocoPaw follows the Yoin design language (see Yoin's `docs/design.md`) and the c
 - **Viewfinder**: 4:3 or 16:9 (the RAW frame is always full sensor; 16:9 crops the JPEG and Ultra HDR outputs to match the framing). Thirds grid. Tap to focus and meter: a cookie-shaped ring that morphs to a circle when focus locks; drag vertically beside it to set exposure compensation. Timer countdown and shutter flash draw over the picture.
 - **Lens row**: one pill per back camera (0.6x, 1x). Tapping the selected 1x pill springs the zoom between 1x and 2x; there is no pinch zoom.
 - **Mode bar**: Photo (auto exposure) and Pro (manual ISO, shutter, EV within the camera's ranges).
-- **Shutter row**: last capture thumbnail (opens the JPEG, or the DNG for DNG-only output, in the system viewer), the shutter (morphs on press, shows a loading indicator while the pipeline runs), front/back switch.
+- **Shutter row**: last capture thumbnail (reviews the latest JPEG, or the DNG for DNG-only output, in the system gallery with recent captures attached, opens the gallery when empty, and waits for an in-flight capture if tapped while processing), the shutter (morphs on press, shows a loading indicator while the pipeline runs), front/back switch.
 - **Developer chip** (setting): the RAW size, the remaining RAW requests before the device is reopened, and the frame count and time of the last pipeline run.
 
 ## Capture

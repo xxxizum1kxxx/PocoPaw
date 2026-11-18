@@ -39,6 +39,7 @@ import com.izum1k.pocopaw.pipeline.FlowMethod
 import com.izum1k.pocopaw.pipeline.LensCalibration
 import com.izum1k.pocopaw.pipeline.HdrPlusPipeline
 import com.izum1k.pocopaw.pipeline.ImagePipeline
+import com.izum1k.pocopaw.pipeline.MediaStoreWriter
 import com.izum1k.pocopaw.pipeline.PipelineOptions
 import com.izum1k.pocopaw.pipeline.PipelineRegistry
 import com.izum1k.pocopaw.pipeline.TonemapMode
@@ -140,6 +141,10 @@ data class CameraUiState(
     val progress: Float = 0f,
     val shutterTick: Int = 0,
     val last: LastCapture? = null,
+    val recentUris: List<Uri> = emptyList(),
+    val awaitingGallery: Boolean = false,
+    val openGalleryPending: Boolean = false,
+    val galleryOpenId: Long = 0,
     val lastRun: PipelineRun? = null,
     val message: CaptureMessage? = null,
     val messageId: Long = 0,
@@ -171,6 +176,7 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
     private var permitted = false
     private var focusResetJob: Job? = null
     private var shutterJob: Job? = null
+    private var refreshJob: Job? = null
     private var focusSeq = 0L
     private val sound = MediaActionSound().apply { load(MediaActionSound.SHUTTER_CLICK) }
 
@@ -209,24 +215,40 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
             val initial = catalog.byId(settings.value.lastCameraId) ?: catalog.default()
             _ui.update { it.copy(cameras = cameras, current = initial) }
             maybeOpen()
-            container.output.latest()?.let { latest ->
-                if (_ui.value.last == null) _ui.update { it.copy(last = LastCapture(latest.uri, latest.mimeType, container.output.thumbnail(latest.uri))) }
-            }
+            refreshLatest()
         }
         viewModelScope.launch {
             var seenErrors = container.processing.state.value.errorSeq
+            var seenCompleted = container.processing.state.value.completedSeq
             container.processing.state.collect { st ->
-                if (st.errorSeq > seenErrors) {
-                    seenErrors = st.errorSeq
-                    _ui.update { it.copy(message = CaptureMessage.SAVE_FAILED, messageId = it.messageId + 1) }
-                }
+                val hadError = st.errorSeq > seenErrors
+                if (hadError) seenErrors = st.errorSeq
+                val newlyCompleted = st.completedSeq > seenCompleted
+                if (newlyCompleted) seenCompleted = st.completedSeq
                 _ui.update { ui ->
+                    val settled = !st.active
+                    val triggerOpen = ui.awaitingGallery && settled && resumed && !hadError
+                    val nextAwaiting = if (settled || hadError) false else ui.awaitingGallery
+                    val completedCapture = if (newlyCompleted) st.last else null
+                    val nextLast = completedCapture?.let { LastCapture(it.uri, it.mimeType, it.thumbnail) } ?: ui.last
+                    val nextRecent = if (completedCapture != null) {
+                        (listOf(completedCapture.uri) + ui.recentUris.filter { it != completedCapture.uri })
+                            .take(MediaStoreWriter.MAX_RECENT_REVIEW)
+                    } else {
+                        ui.recentUris
+                    }
                     ui.copy(
                         backgroundProcessing = st.active,
                         progress = st.progress,
                         busy = if (ui.busy == Busy.PROCESSING && !st.isFull) Busy.IDLE else ui.busy,
-                        last = st.last?.let { LastCapture(it.uri, it.mimeType, it.thumbnail) } ?: ui.last,
+                        last = nextLast,
+                        recentUris = nextRecent,
                         lastRun = st.lastRun?.let { PipelineRun(it.pipelineId, it.frames, it.millis) } ?: ui.lastRun,
+                        awaitingGallery = nextAwaiting,
+                        openGalleryPending = if (triggerOpen) true else ui.openGalleryPending,
+                        galleryOpenId = if (triggerOpen) ui.galleryOpenId + 1 else ui.galleryOpenId,
+                        message = if (hadError) CaptureMessage.SAVE_FAILED else ui.message,
+                        messageId = if (hadError) ui.messageId + 1 else ui.messageId,
                     )
                 }
             }
@@ -242,12 +264,67 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
         resumed = true
         container.syncAwbEstimator()
         maybeOpen()
+        refreshLatest()
     }
 
     fun onPause() {
         resumed = false
         shutterJob?.takeIf { _ui.value.busy == Busy.COUNTDOWN }?.cancel()
+        _ui.update { if (it.awaitingGallery) it.copy(awaitingGallery = false) else it }
         viewModelScope.launch { controller.close() }
+    }
+
+    private fun refreshLatest() {
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch {
+            val seqBefore = container.processing.state.value.completedSeq
+            val recent = container.output.recent()
+            val latest = recent.firstOrNull()
+            val thumb = if (latest != null) {
+                _ui.value.last?.takeIf { it.uri == latest.uri }?.thumbnail
+                    ?: container.output.thumbnail(latest.uri)
+            } else {
+                null
+            }
+            _ui.update { ui ->
+                if (container.processing.state.value.completedSeq != seqBefore) {
+                    val currentLast = ui.last
+                    val merged = if (currentLast != null) {
+                        (listOf(currentLast.uri) + recent.asSequence().map { it.uri }.filter { it != currentLast.uri })
+                            .take(MediaStoreWriter.MAX_RECENT_REVIEW)
+                    } else {
+                        recent.map { it.uri }
+                    }
+                    ui.copy(recentUris = merged)
+                } else {
+                    ui.copy(
+                        last = latest?.let { LastCapture(it.uri, it.mimeType, thumb) },
+                        recentUris = recent.map { it.uri },
+                    )
+                }
+            }
+        }
+    }
+
+    fun onThumbnailClick() {
+        if (container.processing.state.value.active) {
+            _ui.update { it.copy(awaitingGallery = !it.awaitingGallery) }
+            if (!container.processing.state.value.active) {
+                _ui.update { ui ->
+                    if (ui.awaitingGallery) {
+                        ui.copy(awaitingGallery = false, openGalleryPending = true, galleryOpenId = ui.galleryOpenId + 1)
+                    } else {
+                        ui
+                    }
+                }
+            }
+        } else {
+            _ui.update { it.copy(awaitingGallery = false, openGalleryPending = true, galleryOpenId = it.galleryOpenId + 1) }
+        }
+    }
+
+    fun consumeGalleryOpen() {
+        _ui.update { if (it.openGalleryPending) it.copy(openGalleryPending = false) else it }
     }
 
     fun onSurfaceAvailable(t: SurfaceTexture) {

@@ -21,6 +21,7 @@ data class ProcessingQueueState(
     val progress: Float = 0f,
     val last: ProcessedCapture? = null,
     val lastRun: PipelineRunSummary? = null,
+    val completedSeq: Long = 0,
     val errorSeq: Long = 0,
 ) {
     val active: Boolean get() = pending > 0
@@ -55,6 +56,7 @@ class ProcessingQueue(
                         s.copy(
                             last = if (primary != null) ProcessedCapture(primary.uri, primary.kind.mimeType, result.thumbnail) else s.last,
                             lastRun = PipelineRunSummary(pipeline.id, burst.size, result.totalMillis),
+                            completedSeq = if (primary != null) s.completedSeq + 1 else s.completedSeq,
                         )
                     }
                 }
