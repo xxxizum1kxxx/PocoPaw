@@ -148,10 +148,58 @@ data class PipelineOptions(
     /** Calibrated noise of the capturing camera; null estimates it from each burst. */
     val noise: NoiseCurve? = null,
     /** Run the native steps on the GPU where possible ([NativeBurst.useGpu]). */
-    val gpu: Boolean = false,
+    val gpu: Boolean = true,
     /** Output aspect ratio for JPEG / Ultra HDR (e.g. 16f/9f); 0 keeps full-sensor 4:3. */
     val aspectRatio: Float = 0f,
 )
+
+/**
+ * Single unadjustable multi-frame RAW pipeline locked to the Project Indigo + Original Pixel (Pixel 1 HDR+)
+ * rendering philosophy: highlight-guarded underexposed burst, HDR+ pyramid alignment, spatial robust merge
+ * with calibrated noise and symmetric variance, RCD demosaic, dual-illuminant CCM fallback, perceptual Oklab
+ * gamut compression, authentic SLR-like light & shadow rolloff, natural fine grain, and halo-free capture
+ * sharpening, accelerated end-to-end on Adreno OpenCL with automatic per-stage CPU fallback.
+ */
+class IndigoHdrPlusPipeline(
+    private val options: PipelineOptions = PipelineOptions(),
+) : StagedPipeline(ID, stagesFor(options)) {
+
+    override val framesPerCapture: Int
+        get() = if (options.frames <= 1) 1 else DEFAULT_FRAMES
+
+    override fun openStream(exposure: ExposurePlan): BurstStream? =
+        if (framesPerCapture < 2 || exposure is ExposurePlan.PerFrame) null
+        else BurstStream(options.gpu, options.noise, mergeOptions(options))
+
+    override fun exposureFor(requested: ExposurePlan, live: LiveExposure, camera: CameraInfo): ExposurePlan =
+        when (requested) {
+            is ExposurePlan.Auto -> if (framesPerCapture <= 1) requested else BurstExposure.plan(live, camera, requested.evIndex) ?: requested
+            is ExposurePlan.Manual, is ExposurePlan.PerFrame -> requested
+        }
+
+    companion object {
+        const val ID = "indigo_hdrplus"
+        const val DEFAULT_FRAMES = 8
+
+        val INDIGO_LOOK = BurstLook(style = "indigo")
+
+        private fun mergeOptions(o: PipelineOptions) =
+            MergeOptions(kernelRegression = false, frequencyMerge = false, demosaic = DemosaicMethod.RCD, lca = o.lca)
+
+        private fun stagesFor(o: PipelineOptions): List<PipelineStage> = buildList {
+            add(ReferenceStage())
+            if (o.writeDng) {
+                add(QuickLookStage())
+                if (!o.mergedDng) add(DngWriteStage())
+            }
+            add(AlignStage(o.gpu, o.noise))
+            add(MergeStage(mergeOptions(o)))
+            if (o.writeDng && o.mergedDng) add(MergedDngStage())
+            add(FinishStage(INDIGO_LOOK, ultraHdr = false, aspectRatio = o.aspectRatio, writeJpeg = o.writeJpeg))
+            if (o.writeJpeg) add(JpegWriteStage())
+        }
+    }
+}
 
 /** The single-frame pipeline: quick look, then the reference frame written as DNG unchanged. */
 class DngPassthroughPipeline : StagedPipeline(ID, listOf(QuickLookStage(), DngWriteStage())) {
@@ -226,14 +274,16 @@ class HdrPlusPipeline(
  */
 object PipelineRegistry {
     private val factories = linkedMapOf<String, (PipelineOptions) -> ImagePipeline>(
+        IndigoHdrPlusPipeline.ID to { o -> IndigoHdrPlusPipeline(o) },
+        HdrPlusPipeline.ID to { o -> IndigoHdrPlusPipeline(o) },
         DngPassthroughPipeline.ID to { _ -> DngPassthroughPipeline() },
-        HdrPlusPipeline.ID to { o -> HdrPlusPipeline(HdrPlusPipeline.ID, kernelRegression = false, o) },
-        HdrPlusPipeline.ID_KR to { o -> HdrPlusPipeline(HdrPlusPipeline.ID_KR, kernelRegression = true, o) },
     )
 
     val ids: List<String> get() = factories.keys.toList()
 
-    val defaultId: String = HdrPlusPipeline.ID
+    val defaultId: String = IndigoHdrPlusPipeline.ID
+
+    fun indigo(options: PipelineOptions = PipelineOptions()): ImagePipeline = IndigoHdrPlusPipeline(options)
 
     fun register(id: String, factory: (PipelineOptions) -> ImagePipeline) {
         factories[id] = factory

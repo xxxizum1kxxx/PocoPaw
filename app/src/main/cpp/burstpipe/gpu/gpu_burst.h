@@ -3,111 +3,89 @@
 
 #include "../demosaic.h"
 #include "../finish.h"
-#include "../kr.h"
 #include "../merge.h"
 #include "../ultrahdr.h"
 #include "cl_runtime.h"
 
-// The burst pipeline on the GPU (OpenCL). Mirrors align / merge / merge_freq / kr / finish stage by stage
-// on device-resident buffers: the frames are uploaded once, the merged image stays on the device through
-// finishing, and only the RGBA result (plus the small statistics the CPU code computes on the host) comes
-// back. Each call throws GpuError on failure; the caller then reruns that stage on the CPU.
+// The Indigo HDR+ burst pipeline on Adreno OpenCL. Frames stay device-resident through alignment, spatial merge,
+// RCD demosaic, chroma denoise, guided exposure fusion, perceptual Oklab look, and local-tile capture sharpening,
+// writing dithered RGB8 directly into a zero-copy host-mapped unified memory buffer.
 class GpuBurst {
 public:
-    // Null (with the reason) when there is no usable GPU, another burst holds it, or the frames do not fit.
     static std::unique_ptr<GpuBurst> create(const std::vector<Raw>& frames, std::string& why);
 
-    // Stages listed in `off` ("align,merge,freq,kr,finish") run on the CPU, for bisecting a GPU problem;
-    // the default is "freq".
     static void set_disabled(const std::string& off);
     static bool enabled(const char* stage);
 
-    // gray images, 3x3 means and tile offsets of every frame; the gray images of `ref` and `alt` are read
-    // back for the noise fit
     void align(int ref, int alt, std::vector<Offsets>& offs, ImageF& grayRef, ImageF& grayAlt);
     bool aligned() const { return aligned_; }
-    // 3x3 means and reference gray image of a CPU align, for a GPU merge after it
     void set_aligned(const std::vector<ImageF>& mean3, const ImageF& grayRef);
 
-    // merges keep their result on the device; frames come from the device, offsets from the host
     double merge_spatial(int ref, const std::vector<Offsets>& offs, const NoiseModel& nm, float black, const MergeOpts& o);
-    double merge_freq(int ref, const std::vector<Offsets>& offs, const Meta& m, const NoiseModel& nm, float c, float spatial);
-    // `ref` frame on the host for the SNR estimate, as kr_merge
-    void merge_kr(const Raw& refFrame, int ref, const std::vector<Offsets>& offs, const Meta& m, const NoiseModel& nm,
-                  const MergeOpts& o, KrParams p, KrStats* st);
-    // frees the frames after the merge
     void drop_frames();
 
-    // The spatial merge while the burst is captured (BurstSession::add_frame): only the reference and the
-    // frame being merged are on the device. stream_ref() starts the accumulators from the reference; each
-    // frame is then stream_align()ed (its gray image read back when `gray` is given) and stream_merge()d;
-    // stream_end() normalises into the merged mosaic and returns the mean robustness weight.
+    // Streaming align + spatial merge with GPU-resident offsets and ping-pong upload slots (zero per-frame host stalls).
     static std::unique_ptr<GpuBurst> create_stream(int width, int height, std::string& why);
     void stream_ref(const Raw& ref, float black, ImageF* gray);
-    Offsets stream_align(const Raw& frame, ImageF* gray);
-    void stream_merge(const Offsets& of, const NoiseModel& nm, float black, const MergeOpts& o);
-    double stream_end(float black);
-    // the merged mosaic (classic) or RGB (kernel regression) for a CPU finish; finish() keeps it intact
-    // until it returns
+    void stream_align(const Raw& frame, Offsets* hostOffs, ImageF* gray);
+    void stream_merge(const NoiseModel& nm, float black, const MergeOpts& o);
+    double stream_end(float black, double* maxShift = nullptr);
+
     ImageF download_merged();
-    bool merged() const { return merged_.w > 0; }
-    // a CPU merge's result, for a GPU finish
-    void set_merged(const ImageF& im, bool kernelRegression);
+    bool merged() const { return merged_.w > 0 && static_cast<bool>(merged_.b); }
+    void set_merged(const ImageF& im);
 
     struct FinishOut {
-        double sigma = 0, visibleSigma = 0, chroma = 0, localContrast = 0, tUpscale = 0, targetKey = 0, sharpenCore = 0;
+        double sigma = 0, visibleSigma = 0, chroma = 0, tUpscale = 0, targetKey = 0, sharpenCore = 0;
         ToneInfo tone{};
         FinishTimes ft;
         HdrLuma hdr;
     };
     void finish(const Meta& m, const LookParams& lp, Demosaic dm, float zoom, bool keepHdr, FinishOut& out, float aspect = 0.f,
                 const float lcaR[2] = nullptr, const float lcaB[2] = nullptr);
-    int width() const { return rgb_.w; }
-    int height() const { return rgb_.h; }
+    int width() const { return outW_; }
+    int height() const { return outH_; }
+    const uint8_t* rgb8_ptr() const { return rgb8Ptr_; }
     void render(uint8_t* rgba, size_t stride);
     std::vector<uint8_t> render_rgb8();
     void render_thumb(uint8_t* rgba, size_t stride, int outW, int outH);
     ImageF download_rgb();
 
-    // per-kernel device times since the last call, when profiling is on
     std::string profile();
+    ~GpuBurst() = default;
 
 private:
+    static constexpr int kMaxStreamFrames = 16;
+
     GpuBurst(Gpu& g, std::unique_lock<std::mutex> lock) : g_(g), lock_(std::move(lock)) {}
     static std::unique_ptr<GpuBurst> open(int width, int height, int slots, std::string& why);
-    // gray pyramid of frame slot k (its 3x3 means into mean3_ on the way)
     std::vector<GImg> pyramid(int k);
-    Offsets align_pyramids(const std::vector<GImg>& refPyr, const std::vector<GImg>& altPyr);
+    void align_pyramids_to(const std::vector<GImg>& refPyr, const std::vector<GImg>& altPyr, Buf& outDx, Buf& outDy, int outOff);
     GImg upload(const ImageF& im);
     ImageF download(const GImg& g);
     void upload_offsets(const std::vector<Offsets>& offs);
-    void robustness_rows(const GImg& rob, int k, std::vector<double>& rowSums);
-    GImg gaussian(const GImg& in, float sigma);
-    GImg box(const GImg& in, int r);
+    Buf gaussian_weights(float sigma, int maxRadius, int& outR);
     GImg pyr_down(const GImg& in);
     void pyr_up_sub(const GImg& coarse, GImg& fine, float s);
-    GImg demosaic_rcd(const GImg& cfa, int cfaType);
-    void correct_lca(const Meta& m, const float lcaR[2], const float lcaB[2]);
-    void chroma_denoise(float strength);
+    void demosaic_rcd_and_color(const GImg& cfa, const Meta& m, const float lcaR[2], const float lcaB[2]);
+    void chroma_and_prepare(float strength, bool writeTone, Buf& keySub, int s8w, GImg& Ys, int sw, int sh);
     void upscale(int W, int H);
     void crop_aspect(float aspect);
-    ToneInfo local_tonemap(const LookParams& p);
+    ToneInfo local_tonemap_and_look(const LookParams& p, Buf& keySub, int s8w, int s8h, GImg& Ys, int sw, int sh);
     GImg fuse_exposures(const GImg& Y, float gS, float gL);
-    void local_contrast(float amount, float radiusFrac);
-    void sharpen(float amount, float radius, float core);
-    GImg luma(const GImg& rgb, float floorv);
 
     Gpu& g_;
     std::unique_lock<std::mutex> lock_;
-    int n_ = 0, W_ = 0, H_ = 0, qw_ = 0, qh_ = 0;
-    Buf frames_, mean3_, win_, odx_, ody_, oetf_, eotf_;
+    int n_ = 0, W_ = 0, H_ = 0, qw_ = 0, qh_ = 0, outW_ = 0, outH_ = 0;
+    Buf frames_, mean3_, win_, odx_, ody_;
     int nt_ = 0, tnx_ = 0, tny_ = 0;
     GImg grayRef_;
-    bool aligned_ = false, kr_ = false;
+    bool aligned_ = false, offsOnGpu_ = false;
     GImg merged_, rgb_;
+    Buf rgb8_;
+    const uint8_t* rgb8Ptr_ = nullptr;
     std::vector<GImg> refPyr_;
     GImg sOut_, sWsum_, sRob_, sTmp_;
-    Buf sRows_;
-    double sWeight_ = 0;
-    int sAdded_ = 0;
+    Buf sRows_, sOdx_, sOdy_;
+    int sAdded_ = 0, sCurSlot_ = 1, sCurOff_ = 0;
 };

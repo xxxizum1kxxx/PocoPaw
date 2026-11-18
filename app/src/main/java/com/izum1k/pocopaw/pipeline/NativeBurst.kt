@@ -1,6 +1,8 @@
 package com.izum1k.pocopaw.pipeline
 
 import android.graphics.Bitmap
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.params.ColorSpaceTransform
 import com.izum1k.pocopaw.camera.CfaPattern
 import java.io.Closeable
 import java.nio.ByteBuffer
@@ -14,16 +16,16 @@ import kotlin.math.roundToInt
  * A [style] other than "default" ("pixel", "night") replaces every other field with that preset.
  */
 data class BurstLook(
-    val style: String = "default",
+    val style: String = "indigo",
     val lscLumaStrength: Float = 0.85f,
     val chromaDenoise: Float = -1f,
-    val compression: Float = 0f,
-    val targetKey: Float = 0.23f,
-    val contrast: Float = 0.22f,
-    val saturation: Float = 1.12f,
-    val sharpen: Float = 0.8f,
-    val sharpenRadius: Float = 1f,
-    val localContrast: Float = 0.3f,
+    val compression: Float = 5.0f,
+    val targetKey: Float = 0.20f,
+    val contrast: Float = 0.20f,
+    val saturation: Float = 1.08f,
+    val sharpen: Float = 0.35f,
+    val sharpenRadius: Float = 0.85f,
+    val localContrast: Float = 0f,
 ) {
     internal fun toArray() =
         floatArrayOf(lscLumaStrength, chromaDenoise, compression, targetKey, contrast, saturation, sharpen, sharpenRadius, localContrast)
@@ -197,7 +199,39 @@ class NativeBurst private constructor(private var handle: Long) : Closeable {
             val buffers = Array<ByteBuffer>(frames.size) { frames[it].data }
             val exposures = LongArray(exposed.size) { exposed[it].exposureNs ?: 0L }
             val isos = IntArray(exposed.size) { exposed[it].iso ?: 100 }
-            return nativeCreate(array, lscGains, buffers, ref, exposures, isos)
+            return nativeCreate(array, lscGains, dualColorCal(meta), buffers, ref, exposures, isos)
+        }
+
+        private fun dualColorCal(meta: RawMetadata): FloatArray? {
+            val ch = meta.characteristics
+            val il1 = ch.get(CameraCharacteristics.SENSOR_REFERENCE_ILLUMINANT1) ?: return null
+            if (il1 <= 0) return null
+            val cm1 = ch.get(CameraCharacteristics.SENSOR_COLOR_TRANSFORM1)
+            val fm1 = ch.get(CameraCharacteristics.SENSOR_FORWARD_MATRIX1)
+            if (cm1 == null && fm1 == null) return null
+            val il2 = ch.get(CameraCharacteristics.SENSOR_REFERENCE_ILLUMINANT2)?.toInt()?.and(0xFF) ?: 0
+            val cm2 = if (il2 > 0) ch.get(CameraCharacteristics.SENSOR_COLOR_TRANSFORM2) else null
+            val fm2 = if (il2 > 0) ch.get(CameraCharacteristics.SENSOR_FORWARD_MATRIX2) else null
+            val hasSecond = il2 > 0 && (cm2 != null || fm2 != null)
+            fun copyMat(t: ColorSpaceTransform?, dst: FloatArray, offset: Int) {
+                if (t == null) return
+                for (i in 0 until 9) dst[offset + i] = t.getElement(i % 3, i / 3).toFloat()
+            }
+            return FloatArray(42).apply {
+                this[0] = if (hasSecond) 2f else 1f
+                this[1] = il1.toFloat()
+                this[2] = if (hasSecond) il2.toFloat() else 0f
+                copyMat(cm1, this, 3)
+                if (hasSecond) copyMat(cm2, this, 12)
+                copyMat(fm1, this, 21)
+                if (hasSecond) copyMat(fm2, this, 30)
+                val np = meta.neutralPoint
+                if (np != null && np.size >= 3) {
+                    this[39] = np[0].toFloat()
+                    this[40] = np[1].toFloat()
+                    this[41] = np[2].toFloat()
+                }
+            }
         }
 
         /**
@@ -222,7 +256,8 @@ class NativeBurst private constructor(private var handle: Long) : Closeable {
         }
 
         @JvmStatic private external fun nativeCreate(
-            meta: FloatArray, lsc: FloatArray?, frames: Array<ByteBuffer>, ref: Int, exposureNs: LongArray, iso: IntArray,
+            meta: FloatArray, lsc: FloatArray?, cal: FloatArray?, frames: Array<ByteBuffer>, ref: Int,
+            exposureNs: LongArray, iso: IntArray,
         ): Long
         @JvmStatic private external fun nativeCrop(handle: Long, zoom: Float)
         @JvmStatic private external fun nativeSetAspect(handle: Long, aspect: Float)

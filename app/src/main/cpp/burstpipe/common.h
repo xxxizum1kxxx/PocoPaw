@@ -2,24 +2,84 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <climits>
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
+#if defined(__linux__)
+#include <sched.h>
+#include <unistd.h>
+#endif
 
 extern int g_threads;
+
+// Pins ONLY the calling host/OpenCL dispatch thread to big+prime cores (CPUs 4..7 on SM7475:
+// 3x Cortex-A710 + 1x Cortex-X2), keeping OpenCL host enqueue and median/key reductions off slow
+// in-order Cortex-A510 cores while ThreadPool workers keep all 8 cores for dynamic work-stealing.
+class ScopedBigCoreAffinity {
+public:
+    ScopedBigCoreAffinity() {
+#if defined(__linux__)
+        static const cpu_set_t kBigMask = detect_big_mask();
+        if (CPU_COUNT(&kBigMask) > 0 && sched_getaffinity(0, sizeof(prev_), &prev_) == 0) {
+            if (sched_setaffinity(0, sizeof(kBigMask), &kBigMask) == 0) active_ = true;
+        }
+#endif
+    }
+    ~ScopedBigCoreAffinity() {
+#if defined(__linux__)
+        if (active_) sched_setaffinity(0, sizeof(prev_), &prev_);
+#endif
+    }
+    ScopedBigCoreAffinity(const ScopedBigCoreAffinity&) = delete;
+    ScopedBigCoreAffinity& operator=(const ScopedBigCoreAffinity&) = delete;
+
+private:
+#if defined(__linux__)
+    static cpu_set_t detect_big_mask() {
+        cpu_set_t mask;
+        CPU_ZERO(&mask);
+        long minFreq = LONG_MAX, maxFreq = 0;
+        long freqs[64] = {};
+        for (int i = 0; i < 64; i++) {
+            char p[96];
+            snprintf(p, sizeof p, "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", i);
+            long f = 0;
+            if (std::ifstream(p) >> f && f > 0) {
+                freqs[i] = f;
+                minFreq = std::min(minFreq, f);
+                maxFreq = std::max(maxFreq, f);
+            }
+        }
+        if (maxFreq > minFreq * 115 / 100) {
+            long cutoff = minFreq + (maxFreq - minFreq) / 4;
+            for (int i = 0; i < 64; i++) if (freqs[i] >= cutoff) CPU_SET(i, &mask);
+        }
+        return mask;
+    }
+    cpu_set_t prev_{};
+    bool active_ = false;
+#endif
+};
 
 // Persistent workers: spawning threads for every parallel region cost several ms per stage on the
 // phone. The caller participates; nested regions run inline.
 class ThreadPool {
 public:
     static ThreadPool& get() { static ThreadPool p; return p; }
+    ThreadPool() {
+#if defined(__linux__)
+        hasDefaultMask_ = (sched_getaffinity(0, sizeof(defaultMask_), &defaultMask_) == 0);
+#endif
+    }
     ~ThreadPool() { resize(0); }
 
     void run(int n, int nt, const std::function<void(int)>& f) {
@@ -28,11 +88,12 @@ public:
         resize(nt - 1);
         {
             std::lock_guard<std::mutex> lk(mu_);
-            job_ = &f; n_ = n; next_ = 0; busy_ = (int)workers_.size(); gen_++;
+            job_ = &f; n_ = n; next_.store(0, std::memory_order_relaxed);
+            busy_ = (int)workers_.size(); gen_++;
         }
         cv_.notify_all();
         inside_ = true;
-        for (int i; (i = next_.fetch_add(1)) < n;) f(i);
+        for (int i; (i = next_.fetch_add(1, std::memory_order_relaxed)) < n;) f(i);
         inside_ = false;
         std::unique_lock<std::mutex> lk(mu_);
         doneCv_.wait(lk, [&] { return busy_ == 0; });
@@ -49,6 +110,9 @@ private:
         for (int t = 0; t < count; t++) workers_.emplace_back([this, g = gen_] { loop(g); });
     }
     void loop(uint64_t seen) {
+#if defined(__linux__)
+        if (hasDefaultMask_) sched_setaffinity(0, sizeof(defaultMask_), &defaultMask_);
+#endif
         inside_ = true;
         for (;;) {
             std::unique_lock<std::mutex> lk(mu_);
@@ -58,7 +122,7 @@ private:
             const std::function<void(int)>* f = job_;
             int n = n_;
             lk.unlock();
-            for (int i; (i = next_.fetch_add(1)) < n;) (*f)(i);
+            for (int i; (i = next_.fetch_add(1, std::memory_order_relaxed)) < n;) (*f)(i);
             lk.lock();
             if (--busy_ == 0) doneCv_.notify_one();
         }
@@ -68,6 +132,10 @@ private:
     std::condition_variable cv_, doneCv_;
     const std::function<void(int)>* job_ = nullptr;
     int n_ = 0, busy_ = 0;
+#if defined(__linux__)
+    cpu_set_t defaultMask_{};
+    bool hasDefaultMask_ = false;
+#endif
     std::atomic<int> next_{0};
     uint64_t gen_ = 0;
     bool stop_ = false;
@@ -94,8 +162,9 @@ inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi 
 // kernel concurrent faults serialise on mmap_lock. Storage is left uninitialised.
 float* pool_alloc(size_t n, size_t& cap);
 void pool_free(float* p, size_t cap);
-// Returns every pooled buffer to the system; the app calls it when a capture is done.
+// Returns every pooled buffer to the system; pool_trim_excess keeps up to maxBytes warm between shots.
 void pool_trim();
+void pool_trim_excess(size_t maxBytes);
 
 struct FloatBuf {
     float* p = nullptr;

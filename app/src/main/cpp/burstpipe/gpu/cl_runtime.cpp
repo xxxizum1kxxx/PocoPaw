@@ -12,11 +12,14 @@ namespace {
 
 #define CL_FUNCS(X)                                                                                                    \
     X(clGetPlatformIDs) X(clGetPlatformInfo) X(clGetDeviceIDs) X(clGetDeviceInfo) X(clCreateContext)                  \
-    X(clReleaseContext) X(clCreateCommandQueue) X(clReleaseCommandQueue) X(clCreateBuffer) X(clReleaseMemObject)       \
-    X(clCreateProgramWithSource) X(clCreateProgramWithBinary) X(clBuildProgram) X(clGetProgramBuildInfo)               \
-    X(clGetProgramInfo) X(clReleaseProgram) X(clCreateKernel) X(clReleaseKernel) X(clSetKernelArg)                     \
-    X(clEnqueueNDRangeKernel) X(clEnqueueReadBuffer) X(clEnqueueWriteBuffer) X(clEnqueueReadBufferRect)                \
-    X(clEnqueueFillBuffer) X(clFinish) X(clGetEventProfilingInfo) X(clReleaseEvent)
+    X(clReleaseContext) X(clCreateCommandQueue) X(clReleaseCommandQueue) X(clCreateBuffer) X(clCreateImage)           \
+    X(clReleaseMemObject) X(clCreateProgramWithSource) X(clCreateProgramWithBinary) X(clBuildProgram)                 \
+    X(clGetProgramBuildInfo) X(clGetProgramInfo) X(clReleaseProgram) X(clCreateKernel) X(clCreateKernelsInProgram)    \
+    X(clGetKernelInfo) X(clGetKernelWorkGroupInfo) X(clReleaseKernel) X(clSetKernelArg) X(clEnqueueNDRangeKernel)     \
+    X(clEnqueueReadBuffer) X(clEnqueueWriteBuffer) X(clEnqueueReadBufferRect) X(clEnqueueMapBuffer)                   \
+    X(clEnqueueUnmapMemObject) X(clEnqueueFillBuffer) X(clFlush) X(clFinish) X(clGetEventProfilingInfo)               \
+    X(clReleaseEvent)
+
 struct Api {
 #define X(f) decltype(&::f) f = nullptr;
     CL_FUNCS(X)
@@ -48,8 +51,6 @@ const char* const kSource[] = {
 #include "kernels/align.cl.inc"
     ,
 #include "kernels/merge.cl.inc"
-    ,
-#include "kernels/kr.cl.inc"
     ,
 #include "kernels/finish.cl.inc"
     ,
@@ -99,10 +100,12 @@ Buf::Block::~Block() {
     if (gpu && mem) gpu->release_(this);
 }
 
-void Gpu::set_cache_dir(const std::string& dir) { g_cacheDir = dir; }
-void Gpu::set_profiling(bool on) {
-    g_profiling = on;
+Img2D::Block::~Block() {
+    if (gpu && mem) gpu->release_img_(this);
 }
+
+void Gpu::set_cache_dir(const std::string& dir) { g_cacheDir = dir; }
+void Gpu::set_profiling(bool on) { g_profiling = on; }
 
 void Gpu::release_memory() {
     Gpu* g;
@@ -111,6 +114,15 @@ void Gpu::release_memory() {
         g = g_gpu;
     }
     if (g) g->trim();
+}
+
+void Gpu::trim_excess(size_t maxBytes) {
+    Gpu* g;
+    {
+        std::lock_guard<std::mutex> lk(g_initMu);
+        g = g_gpu;
+    }
+    if (g) g->trim_to(maxBytes);
 }
 
 Gpu* Gpu::get() {
@@ -137,7 +149,7 @@ std::string Gpu::describe() {
     o << "local memory KB: " << dev_val<cl_ulong>(d, CL_DEVICE_LOCAL_MEM_SIZE) / 1024 << "\n";
     o << "global memory MB: " << dev_val<cl_ulong>(d, CL_DEVICE_GLOBAL_MEM_SIZE) / (1 << 20) << "\n";
     o << "max allocation MB: " << g->maxAlloc_ / (1 << 20) << "\n";
-    o << "image support: " << (dev_val<cl_bool>(d, CL_DEVICE_IMAGE_SUPPORT) ? "yes" : "no") << "\n";
+    o << "image support: " << (g->imageSupport_ ? "yes" : "no") << "\n";
     std::string ext = dev_str(d, CL_DEVICE_EXTENSIONS), qcom;
     std::istringstream es(ext);
     for (std::string e; es >> e;) if (e.rfind("cl_qcom_", 0) == 0) qcom += (qcom.empty() ? "" : " ") + e;
@@ -161,20 +173,53 @@ bool Gpu::init(std::string& why) {
     name_ = dev_str(dev_, CL_DEVICE_NAME);
     driver_ = dev_str(dev_, CL_DRIVER_VERSION);
     maxAlloc_ = (size_t)dev_val<cl_ulong>(dev_, CL_DEVICE_MAX_MEM_ALLOC_SIZE);
+    imageSupport_ = dev_val<cl_bool>(dev_, CL_DEVICE_IMAGE_SUPPORT) == CL_TRUE;
     if (dev_val<size_t>(dev_, CL_DEVICE_MAX_WORK_GROUP_SIZE) < 256) { why = "work groups smaller than 256"; return false; }
+
     cl_int err = 0;
-    // cl_qcom_perf_hint: without it the Adreno governor keeps the clock low for short bursts of work
+    // cl_qcom_perf_hint + cl_qcom_priority_hint: request highest Adreno clock & priority immediately
     const cl_context_properties kPerfHint = 0x40C2, kPerfHigh = 0x40C3;
+    const cl_context_properties kPrioHint = 0x40C9, kPrioHigh = 0x40CA;
     std::string ext = dev_str(dev_, CL_DEVICE_EXTENSIONS);
-    cl_context_properties props[] = {kPerfHint, kPerfHigh, 0};
-    bool hint = ext.find("cl_qcom_perf_hint") != std::string::npos;
-    ctx_ = cl.clCreateContext(hint ? props : nullptr, 1, &dev_, nullptr, nullptr, &err);
-    if (hint && err != CL_SUCCESS) ctx_ = cl.clCreateContext(nullptr, 1, &dev_, nullptr, nullptr, &err);
+    bool hasPerf = ext.find("cl_qcom_perf_hint") != std::string::npos;
+    bool hasPrio = ext.find("cl_qcom_priority_hint") != std::string::npos;
+    std::vector<cl_context_properties> props;
+    if (hasPerf) { props.push_back(kPerfHint); props.push_back(kPerfHigh); }
+    if (hasPrio) { props.push_back(kPrioHint); props.push_back(kPrioHigh); }
+    props.push_back(0);
+
+    ctx_ = cl.clCreateContext(props.size() > 1 ? props.data() : nullptr, 1, &dev_, nullptr, nullptr, &err);
+    if (err != CL_SUCCESS && hasPerf) {
+        cl_context_properties perfOnly[] = {kPerfHint, kPerfHigh, 0};
+        ctx_ = cl.clCreateContext(perfOnly, 1, &dev_, nullptr, nullptr, &err);
+    }
+    if (err != CL_SUCCESS) ctx_ = cl.clCreateContext(nullptr, 1, &dev_, nullptr, nullptr, &err);
     if (err != CL_SUCCESS) { why = "clCreateContext failed " + std::to_string(err); return false; }
+
     profiling_ = g_profiling;
     q_ = cl.clCreateCommandQueue(ctx_, dev_, profiling_ ? CL_QUEUE_PROFILING_ENABLE : 0, &err);
     if (err != CL_SUCCESS) { why = "clCreateCommandQueue failed " + std::to_string(err); return false; }
     return build(why);
+}
+
+void Gpu::precreate_kernels_() {
+    cl_uint nk = 0;
+    if (cl.clCreateKernelsInProgram(prog_, 0, nullptr, &nk) != CL_SUCCESS || nk == 0) return;
+    std::vector<cl_kernel> ks(nk);
+    if (cl.clCreateKernelsInProgram(prog_, nk, ks.data(), nullptr) != CL_SUCCESS) return;
+    for (cl_kernel k : ks) {
+        size_t n = 0;
+        if (cl.clGetKernelInfo(k, CL_KERNEL_FUNCTION_NAME, 0, nullptr, &n) == CL_SUCCESS && n > 0) {
+            std::string name(n, '\0');
+            cl.clGetKernelInfo(k, CL_KERNEL_FUNCTION_NAME, n, name.data(), nullptr);
+            while (!name.empty() && name.back() == '\0') name.pop_back();
+            size_t maxWg = 0;
+            cl.clGetKernelWorkGroupInfo(k, dev_, CL_KERNEL_WORK_GROUP_SIZE, sizeof maxWg, &maxWg, nullptr);
+            kernels_[name] = {k, maxWg};
+        } else {
+            cl.clReleaseKernel(k);
+        }
+    }
 }
 
 bool Gpu::build(std::string& why) {
@@ -195,8 +240,10 @@ bool Gpu::build(std::string& why) {
             size_t n = bin.size();
             cl_int st = 0;
             prog_ = cl.clCreateProgramWithBinary(ctx_, 1, &dev_, &n, &p, &st, &err);
-            if (err == CL_SUCCESS && st == CL_SUCCESS && cl.clBuildProgram(prog_, 1, &dev_, kBuildOptions, nullptr, nullptr) == CL_SUCCESS)
+            if (err == CL_SUCCESS && st == CL_SUCCESS && cl.clBuildProgram(prog_, 1, &dev_, kBuildOptions, nullptr, nullptr) == CL_SUCCESS) {
+                precreate_kernels_();
                 return true;
+            }
             if (prog_) cl.clReleaseProgram(prog_);
             prog_ = nullptr;
         }
@@ -227,25 +274,29 @@ bool Gpu::build(std::string& why) {
             }
         }
     }
+    precreate_kernels_();
     return true;
 }
 
 Gpu::~Gpu() {
     trim();
-    for (auto& k : kernels_) cl.clReleaseKernel(k.second);
+    for (auto& k : kernels_) cl.clReleaseKernel(k.second.k);
     if (prog_) cl.clReleaseProgram(prog_);
     if (q_) cl.clReleaseCommandQueue(q_);
     if (ctx_) cl.clReleaseContext(ctx_);
 }
 
-cl_kernel Gpu::kernel_(const char* name) {
+Gpu::KernelInfo Gpu::kernel_(const char* name) {
     auto it = kernels_.find(name);
     if (it != kernels_.end()) return it->second;
     cl_int err = 0;
     cl_kernel k = cl.clCreateKernel(prog_, name, &err);
     check_cl(err, name);
-    kernels_[name] = k;
-    return k;
+    size_t maxWg = 0;
+    cl.clGetKernelWorkGroupInfo(k, dev_, CL_KERNEL_WORK_GROUP_SIZE, sizeof maxWg, &maxWg, nullptr);
+    KernelInfo ki{k, maxWg};
+    kernels_[name] = ki;
+    return ki;
 }
 
 void Gpu::setv_(cl_kernel k, cl_uint i, size_t n, const void* v) { check_cl(cl.clSetKernelArg(k, i, n, v), "clSetKernelArg"); }
@@ -253,6 +304,11 @@ void Gpu::setv_(cl_kernel k, cl_uint i, size_t n, const void* v) { check_cl(cl.c
 void Gpu::set_(cl_kernel k, cl_uint i, const Buf& b) {
     cl_mem m = b.mem();
     check_cl(cl.clSetKernelArg(k, i, sizeof m, &m), "clSetKernelArg(buffer)");
+}
+
+void Gpu::set_(cl_kernel k, cl_uint i, const Img2D& im) {
+    cl_mem m = im.mem();
+    check_cl(cl.clSetKernelArg(k, i, sizeof m, &m), "clSetKernelArg(image2d)");
 }
 
 void Gpu::set_(cl_kernel k, cl_uint i, const LocalMem& l) { check_cl(cl.clSetKernelArg(k, i, l.bytes, nullptr), "clSetKernelArg(local)"); }
@@ -264,28 +320,32 @@ void Gpu::enqueue_(cl_kernel k, const char* name, cl_uint dims, const size_t* g,
     if (ev) events_.emplace_back(name, ev);
 }
 
-Buf Gpu::alloc(size_t bytes) {
+Buf Gpu::alloc_impl_(size_t bytes, bool hostAlloc) {
     bytes = std::max<size_t>(bytes, 4);
     if (bytes > maxAlloc_) throw GpuError("allocation of " + std::to_string(bytes >> 20) + " MB exceeds the device limit");
     Buf b;
     b.p_ = std::make_shared<Buf::Block>();
     b.p_->gpu = this;
     b.p_->bytes = bytes;
+    b.p_->hostAlloc = hostAlloc;
     {
         std::lock_guard<std::mutex> lk(poolMu_);
-        auto it = pool_.lower_bound(bytes);
-        if (it != pool_.end() && it->first <= bytes + bytes / 4) {
+        auto& pl = hostAlloc ? hostPool_ : pool_;
+        auto it = pl.lower_bound(bytes);
+        if (it != pl.end() && it->first <= bytes + bytes / 4) {
             b.p_->cap = it->first;
             b.p_->mem = it->second;
-            pool_.erase(it);
+            poolBytes_ -= it->first;
+            pl.erase(it);
             return b;
         }
     }
     cl_int err = 0;
-    b.p_->mem = cl.clCreateBuffer(ctx_, CL_MEM_READ_WRITE, bytes, nullptr, &err);
+    cl_mem_flags flags = CL_MEM_READ_WRITE | (hostAlloc ? CL_MEM_ALLOC_HOST_PTR : 0);
+    b.p_->mem = cl.clCreateBuffer(ctx_, flags, bytes, nullptr, &err);
     if (err != CL_SUCCESS) {
         trim();
-        b.p_->mem = cl.clCreateBuffer(ctx_, CL_MEM_READ_WRITE, bytes, nullptr, &err);
+        b.p_->mem = cl.clCreateBuffer(ctx_, flags, bytes, nullptr, &err);
     }
     if (err != CL_SUCCESS) b.p_->mem = nullptr;
     check_cl(err, "clCreateBuffer");
@@ -293,16 +353,92 @@ Buf Gpu::alloc(size_t bytes) {
     return b;
 }
 
+Buf Gpu::alloc(size_t bytes) { return alloc_impl_(bytes, false); }
+Buf Gpu::alloc_host(size_t bytes) { return alloc_impl_(bytes, true); }
+
+Img2D Gpu::image2d(int w, int h) {
+    if (!imageSupport_ || w <= 0 || h <= 0) throw GpuError("OpenCL 2D images unsupported");
+    uint64_t key = ((uint64_t)(uint32_t)w << 32) | (uint32_t)h;
+    Img2D im;
+    im.p_ = std::make_shared<Img2D::Block>();
+    im.p_->gpu = this;
+    im.p_->w = w;
+    im.p_->h = h;
+    {
+        std::lock_guard<std::mutex> lk(poolMu_);
+        auto it = imgPool_.find(key);
+        if (it != imgPool_.end()) {
+            im.p_->mem = it->second;
+            poolBytes_ -= (size_t)w * h * 16;
+            imgPool_.erase(it);
+            return im;
+        }
+    }
+    cl_image_format fmt{CL_RGBA, CL_FLOAT};
+    cl_image_desc desc{};
+    desc.image_type = CL_MEM_OBJECT_IMAGE2D;
+    desc.image_width = (size_t)w;
+    desc.image_height = (size_t)h;
+    cl_int err = 0;
+    im.p_->mem = cl.clCreateImage(ctx_, CL_MEM_READ_WRITE, &fmt, &desc, nullptr, &err);
+    if (err != CL_SUCCESS) {
+        trim();
+        im.p_->mem = cl.clCreateImage(ctx_, CL_MEM_READ_WRITE, &fmt, &desc, nullptr, &err);
+    }
+    if (err != CL_SUCCESS) im.p_->mem = nullptr;
+    check_cl(err, "clCreateImage");
+    return im;
+}
+
 void Gpu::release_(Buf::Block* b) {
+    if (b->mapped) {
+        cl.clEnqueueUnmapMemObject(q_, b->mem, b->mapped, 0, nullptr, nullptr);
+        b->mapped = nullptr;
+    }
     std::lock_guard<std::mutex> lk(poolMu_);
-    pool_.emplace(b->cap, b->mem);
+    (b->hostAlloc ? hostPool_ : pool_).emplace(b->cap, b->mem);
+    poolBytes_ += b->cap;
     b->mem = nullptr;
 }
 
-void Gpu::trim() {
+void Gpu::release_img_(Img2D::Block* b) {
+    uint64_t key = ((uint64_t)(uint32_t)b->w << 32) | (uint32_t)b->h;
     std::lock_guard<std::mutex> lk(poolMu_);
-    for (auto& e : pool_) cl.clReleaseMemObject(e.second);
-    pool_.clear();
+    imgPool_.emplace(key, b->mem);
+    poolBytes_ += (size_t)b->w * b->h * 16;
+    b->mem = nullptr;
+}
+
+void Gpu::trim() { trim_to(0); }
+
+void Gpu::trim_to(size_t maxBytes) {
+    std::lock_guard<std::mutex> lk(poolMu_);
+    if (maxBytes == 0) {
+        for (auto& e : pool_) cl.clReleaseMemObject(e.second);
+        for (auto& e : hostPool_) cl.clReleaseMemObject(e.second);
+        for (auto& e : imgPool_) cl.clReleaseMemObject(e.second);
+        pool_.clear();
+        hostPool_.clear();
+        imgPool_.clear();
+        poolBytes_ = 0;
+        return;
+    }
+    while (poolBytes_ > maxBytes && (!pool_.empty() || !hostPool_.empty())) {
+        bool useHost = pool_.empty() || (!hostPool_.empty() && std::prev(hostPool_.end())->first > std::prev(pool_.end())->first);
+        auto& pl = useHost ? hostPool_ : pool_;
+        auto it = std::prev(pl.end());
+        cl.clReleaseMemObject(it->second);
+        poolBytes_ -= it->first;
+        pl.erase(it);
+    }
+    while (poolBytes_ > maxBytes && !imgPool_.empty()) {
+        auto it = std::prev(imgPool_.end());
+        int w = (int)(it->first >> 32), h = (int)(uint32_t)it->first;
+        cl.clReleaseMemObject(it->second);
+        size_t sz = (size_t)w * h * 16;
+        poolBytes_ = poolBytes_ > sz ? poolBytes_ - sz : 0;
+        imgPool_.erase(it);
+    }
 }
 
 void Gpu::write(const Buf& b, const void* src, size_t bytes, size_t offset) {
@@ -311,6 +447,27 @@ void Gpu::write(const Buf& b, const void* src, size_t bytes, size_t offset) {
 
 void Gpu::read(const Buf& b, void* dst, size_t bytes, size_t offset) {
     check_cl(cl.clEnqueueReadBuffer(q_, b.mem(), CL_TRUE, offset, bytes, dst, 0, nullptr, nullptr), "clEnqueueReadBuffer");
+}
+
+void Gpu::read_async(const Buf& b, void* dst, size_t bytes, size_t offset) {
+    check_cl(cl.clEnqueueReadBuffer(q_, b.mem(), CL_FALSE, offset, bytes, dst, 0, nullptr, nullptr), "clEnqueueReadBuffer(async)");
+}
+
+void* Gpu::map_read(const Buf& b) {
+    if (!b) return nullptr;
+    if (b.p_->mapped) return b.p_->mapped;
+    cl_int err = 0;
+    void* p = cl.clEnqueueMapBuffer(q_, b.mem(), CL_TRUE, CL_MAP_READ, 0, b.bytes(), 0, nullptr, nullptr, &err);
+    check_cl(err, "clEnqueueMapBuffer");
+    b.p_->mapped = p;
+    if (profiling_) collect_();
+    return p;
+}
+
+void Gpu::unmap(const Buf& b) {
+    if (!b || !b.p_->mapped) return;
+    check_cl(cl.clEnqueueUnmapMemObject(q_, b.mem(), b.p_->mapped, 0, nullptr, nullptr), "clEnqueueUnmapMemObject");
+    b.p_->mapped = nullptr;
 }
 
 void Gpu::read_rows(const Buf& b, void* dst, size_t rowBytes, size_t rows, size_t dstStride) {
@@ -323,6 +480,10 @@ void Gpu::read_rows(const Buf& b, void* dst, size_t rowBytes, size_t rows, size_
 void Gpu::zero(const Buf& b) {
     float z = 0;
     check_cl(cl.clEnqueueFillBuffer(q_, b.mem(), &z, sizeof z, 0, b.bytes() / 4 * 4, 0, nullptr, nullptr), "clEnqueueFillBuffer");
+}
+
+void Gpu::flush() {
+    check_cl(cl.clFlush(q_), "clFlush");
 }
 
 void Gpu::finish() {

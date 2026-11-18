@@ -1,5 +1,11 @@
 R"CL(
-// Shared helpers. Every kernel guards its own range: global sizes are not rounded to a work-group size.
+// Shared helpers. Every kernel guards its own range so global sizes may be rounded up to Wave128 work-groups.
+#ifdef cl_khr_fp16
+#pragma OPENCL EXTENSION cl_khr_fp16 : enable
+#endif
+
+__constant sampler_t kLinearClamp = CLK_NORMALIZED_COORDS_FALSE | CLK_ADDRESS_CLAMP_TO_EDGE | CLK_FILTER_LINEAR;
+__constant sampler_t kNearestClamp = CLK_NORMALIZED_COORDS_FALSE | CLK_ADDRESS_CLAMP_TO_EDGE | CLK_FILTER_NEAREST;
 
 __constant int kCfaLayout[16] = {0, 1, 2, 3, 1, 0, 3, 2, 1, 3, 0, 2, 3, 1, 2, 0};
 
@@ -26,22 +32,17 @@ inline void tile_taps(int q, int n, __constant float* win, int* i0, int* i1, flo
     *w1 = win[u];
 }
 
-// sRGB tables of finish.cpp: OETF indexed in sqrt space, EOTF linear, both 4097 entries
-inline float lut_interp(__global const float* T, float t) {
-    float f = clamp(t, 0.f, 1.f) * 4096.f;
-    int i = min((int)f, 4095);
-    return T[i] + (f - i) * (T[i + 1] - T[i]);
+// Hardware SFU sRGB OETF / EOTF (replaces random global LUT gathers while staying within < 1e-6 of exact pow)
+inline float srgb_oetf_cl(float x) {
+    x = clamp(x, 0.f, 1.f);
+    return x <= 0.0031308f ? 12.92f * x : 1.055f * native_powr(x, 1.f / 2.4f) - 0.055f;
 }
-inline float srgb_oetf(__global const float* T, float x) { return lut_interp(T, sqrt(clamp(x, 0.f, 1.f))); }
-
-__kernel void scale_buffer(__global float* a, int n, float s) {
-    int i = get_global_id(0);
-    if (i < n) a[i] *= s;
+inline float srgb_eotf_cl(float y) {
+    y = clamp(y, 0.f, 1.f);
+    return y <= 0.04045f ? y * (1.f / 12.92f) : native_powr((y + 0.055f) * (1.f / 1.055f), 2.4f);
 }
 
-// Sum over a 1D work group (every item must call it). The statistics kernels below are launched as
-// (columns, rows) with 64-wide groups and write one partial sum per (row, group) for the host to add up:
-// one work item per row would leave the GPU nearly idle and read rows far apart.
+// Sum over a 1D work group (every item must call it).
 inline float2 group_sum2(__local float2* red, float2 v) {
     int l = get_local_id(0);
     red[l] = v;
@@ -53,29 +54,45 @@ inline float2 group_sum2(__local float2* red, float2 v) {
     return red[0];
 }
 
-// partial sums of min(v, cap) over a w x h image, for weights read back by the host
+// partial sums over a w x h float image (when cap > 0, clamps each sample to <= cap)
 __kernel void row_sums(__global const float* im, int ioff, int w, int h, float cap, __global float* out, int ooff,
                        __local float2* red) {
     int x = get_global_id(0), y = get_global_id(1);
-    float v = x < w ? min(im[ioff + y * w + x], cap) : 0.f;
+    float v = 0.f;
+    if (x < w && y < h) {
+        v = im[ioff + y * w + x];
+        if (cap > 0.f) v = min(v, cap);
+    }
     float s = group_sum2(red, (float2)(v, 0)).x;
-    if (get_local_id(0) == 0) out[ooff + y * get_num_groups(0) + get_group_id(0)] = s;
+    if (get_local_id(0) == 0 && y < h) out[ooff + y * get_num_groups(0) + get_group_id(0)] = s;
 }
 
-// separable running minimum over a (2r+1) window, clamped at the edges
-__kernel void min_filter_h(__global const float* in, int ioff, __global float* out, int w, int h, int r) {
+__kernel void row_sums_half(__global const half* im, int ioff, int w, int h, float cap, __global float* out, int ooff,
+                            __local float2* red) {
     int x = get_global_id(0), y = get_global_id(1);
-    if (x >= w || y >= h) return;
-    __global const float* s = in + ioff + y * w;
-    float v = s[x];
-    for (int u = max(0, x - r); u <= min(w - 1, x + r); u++) v = min(v, s[u]);
-    out[y * w + x] = v;
+    float v = 0.f;
+    if (x < w && y < h) {
+        v = vload_half(ioff + y * w + x, im);
+        if (cap > 0.f) v = min(v, cap);
+    }
+    float s = group_sum2(red, (float2)(v, 0)).x;
+    if (get_local_id(0) == 0 && y < h) out[ooff + y * get_num_groups(0) + get_group_id(0)] = s;
 }
-__kernel void min_filter_v(__global const float* in, __global float* out, int ooff, int w, int h, int r) {
+
+// separable running minimum over a (2r+1) window on half-float robustness maps (used when dilate > 1)
+__kernel void min_filter_h_half(__global const half* in, int ioff, __global half* out, int w, int h, int r) {
     int x = get_global_id(0), y = get_global_id(1);
     if (x >= w || y >= h) return;
-    float v = in[y * w + x];
-    for (int t = max(0, y - r); t <= min(h - 1, y + r); t++) v = min(v, in[t * w + x]);
-    out[ooff + y * w + x] = v;
+    int base = ioff + y * w;
+    float v = vload_half(base + x, in);
+    for (int u = max(0, x - r); u <= min(w - 1, x + r); u++) v = min(v, vload_half(base + u, in));
+    vstore_half(v, y * w + x, out);
+}
+__kernel void min_filter_v_half(__global const half* in, __global half* out, int ooff, int w, int h, int r) {
+    int x = get_global_id(0), y = get_global_id(1);
+    if (x >= w || y >= h) return;
+    float v = vload_half(y * w + x, in);
+    for (int t = max(0, y - r); t <= min(h - 1, y + r); t++) v = min(v, vload_half(t * w + x, in));
+    vstore_half(v, ooff + y * w + x, out);
 }
 )CL"

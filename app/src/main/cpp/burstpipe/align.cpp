@@ -86,7 +86,20 @@ ImageF gray_from_raw(const Raw& r) {
         const uint16_t* a = r.row(2 * y);
         const uint16_t* b = a + r.w;
         float* o = g.row(y);
-        for (int x = 0; x < g.w; x++) o[x] = (float)a[2 * x] + a[2 * x + 1] + b[2 * x] + b[2 * x + 1];
+        int x = 0;
+#ifdef ALIGN_NEON
+        for (; x + 8 <= g.w; x += 8) {
+            uint16x8x2_t r0 = vld2q_u16(a + 2 * x);
+            uint16x8x2_t r1 = vld2q_u16(b + 2 * x);
+            uint32x4_t s0 = vaddq_u32(vaddl_u16(vget_low_u16(r0.val[0]), vget_low_u16(r0.val[1])),
+                                      vaddl_u16(vget_low_u16(r1.val[0]), vget_low_u16(r1.val[1])));
+            uint32x4_t s1 = vaddq_u32(vaddl_u16(vget_high_u16(r0.val[0]), vget_high_u16(r0.val[1])),
+                                      vaddl_u16(vget_high_u16(r1.val[0]), vget_high_u16(r1.val[1])));
+            vst1q_f32(o + x, vcvtq_f32_u32(s0));
+            vst1q_f32(o + x + 4, vcvtq_f32_u32(s1));
+        }
+#endif
+        for (; x < g.w; x++) o[x] = (float)a[2 * x] + a[2 * x + 1] + b[2 * x] + b[2 * x + 1];
     });
     return g;
 }
@@ -144,10 +157,32 @@ std::vector<ImageF> build_pyramid(const ImageF& g0) {
 ImageF box3(const ImageF& g) {
     ImageF t(g.w, g.h), o(g.w, g.h);
     parallel_for(g.h, [&](int y) {
-        for (int x = 0; x < g.w; x++) t.at(x, y) = g.atc(x - 1, y) + g.at(x, y) + g.atc(x + 1, y);
+        const float* r = g.row(y);
+        float* d = t.row(y);
+        if (g.w < 2) { if (g.w == 1) d[0] = 3.f * r[0]; return; }
+        d[0] = 2.f * r[0] + r[1];
+        int x = 1;
+#ifdef ALIGN_NEON
+        for (; x + 4 < g.w; x += 4) {
+            vst1q_f32(d + x, vaddq_f32(vaddq_f32(vld1q_f32(r + x - 1), vld1q_f32(r + x)), vld1q_f32(r + x + 1)));
+        }
+#endif
+        for (; x < g.w - 1; x++) d[x] = r[x - 1] + r[x] + r[x + 1];
+        d[g.w - 1] = r[g.w - 2] + 2.f * r[g.w - 1];
     });
     parallel_for(g.h, [&](int y) {
-        for (int x = 0; x < g.w; x++) o.at(x, y) = (t.atc(x, y - 1) + t.at(x, y) + t.atc(x, y + 1)) * (1.f / 9.f);
+        const float* r0 = t.row(std::max(0, y - 1));
+        const float* r1 = t.row(y);
+        const float* r2 = t.row(std::min(g.h - 1, y + 1));
+        float* d = o.row(y);
+        int x = 0;
+#ifdef ALIGN_NEON
+        const float32x4_t inv9 = vdupq_n_f32(1.f / 9.f);
+        for (; x + 4 <= g.w; x += 4) {
+            vst1q_f32(d + x, vmulq_f32(vaddq_f32(vaddq_f32(vld1q_f32(r0 + x), vld1q_f32(r1 + x)), vld1q_f32(r2 + x)), inv9));
+        }
+#endif
+        for (; x < g.w; x++) d[x] = (r0[x] + r1[x] + r2[x]) * (1.f / 9.f);
     });
     return o;
 }

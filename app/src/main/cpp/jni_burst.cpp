@@ -43,16 +43,57 @@ BurstOptions burst_options(JNIEnv* env, jfloatArray jopt) {
     return o;
 }
 
+std::mutex g_rawMu;
+struct RawBlock { void* ptr; size_t bytes; };
+std::vector<RawBlock> g_rawPool;
+constexpr size_t kMaxRawPoolEntries = 4;
+constexpr size_t kMinRawPoolBytes = 1ull << 20;
+constexpr size_t kMaxRawPoolBytes = 48ull << 20;
+
+void* raw_pool_alloc(size_t bytes) {
+    if (bytes >= kMinRawPoolBytes && bytes <= kMaxRawPoolBytes) {
+        std::lock_guard<std::mutex> lk(g_rawMu);
+        for (size_t i = g_rawPool.size(); i > 0; i--) {
+            if (g_rawPool[i - 1].bytes == bytes) {
+                void* p = g_rawPool[i - 1].ptr;
+                g_rawPool.erase(g_rawPool.begin() + (ptrdiff_t)(i - 1));
+                return p;
+            }
+        }
+    }
+    return malloc(bytes);
+}
+
+void raw_pool_free(void* p, size_t bytes) {
+    if (!p) return;
+    if (bytes >= kMinRawPoolBytes && bytes <= kMaxRawPoolBytes) {
+        std::lock_guard<std::mutex> lk(g_rawMu);
+        if (g_rawPool.size() < kMaxRawPoolEntries) {
+            g_rawPool.push_back({p, bytes});
+            return;
+        }
+        auto it = std::find_if(g_rawPool.begin(), g_rawPool.end(), [&](const RawBlock& b) { return b.bytes != bytes; });
+        if (it != g_rawPool.end()) {
+            free(it->ptr);
+            g_rawPool.erase(it);
+            g_rawPool.push_back({p, bytes});
+            return;
+        }
+    }
+    free(p);
+}
+
 }  // namespace
 
 extern "C" {
 
 // meta: width, height, cfa, white, black[4] (R, G_even, G_odd, B), wb[4], ccm[9] (row-major),
-// lscRows, lscCols; lsc: rows*cols*4 gains (R, G_even, G_odd, B) or null; exposureNs / iso per frame (of the
-// first frame only for a session with no frames, which merges frames as they are added).
+// lscRows, lscCols; lsc: rows*cols*4 gains (R, G_even, G_odd, B) or null; cal: optional 42-float DualColorCal;
+// exposureNs / iso per frame (of the first frame only for a session with no frames, which merges frames as added).
 JNIEXPORT jlong JNICALL
 Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeCreate(JNIEnv* env, jclass, jfloatArray jmeta, jfloatArray jlsc,
-                                                         jobjectArray jframes, jint ref, jlongArray jexp, jintArray jiso) {
+                                                         jfloatArray jcal, jobjectArray jframes, jint ref,
+                                                         jlongArray jexp, jintArray jiso) {
     Meta m;
     jfloat* v = env->GetFloatArrayElements(jmeta, nullptr);
     m.width = (int)v[0];
@@ -66,6 +107,22 @@ Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeCreate(JNIEnv* env, jclass, j
     m.lscRows = (int)v[21];
     m.lscCols = (int)v[22];
     env->ReleaseFloatArrayElements(jmeta, v, JNI_ABORT);
+    if (jcal != nullptr && env->GetArrayLength(jcal) >= 42 && !ccm_usable(m.ccm)) {
+        jfloat c[42];
+        env->GetFloatArrayRegion(jcal, 0, 42, c);
+        DualColorCal cal;
+        cal.illuminants = (int)c[0];
+        cal.illuminant[0] = (int)c[1];
+        cal.illuminant[1] = (int)c[2];
+        for (int i = 0; i < 9; i++) {
+            cal.colorMatrix[0][i] = c[3 + i];
+            cal.colorMatrix[1][i] = c[12 + i];
+            cal.forwardMatrix[0][i] = c[21 + i];
+            cal.forwardMatrix[1][i] = c[30 + i];
+        }
+        for (int i = 0; i < 3; i++) cal.neutral[i] = c[39 + i];
+        compute_dual_illuminant_ccm(cal, m.wb, m.ccm);
+    }
     if (jlsc != nullptr && env->GetArrayLength(jlsc) == m.lscRows * m.lscCols * 4) {
         m.lsc.resize((size_t)m.lscRows * m.lscCols * 4);
         env->GetFloatArrayRegion(jlsc, 0, (jsize)m.lsc.size(), m.lsc.data());
@@ -294,8 +351,8 @@ Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeSummary(JNIEnv* env, jclass, 
 JNIEXPORT void JNICALL
 Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeRelease(JNIEnv*, jclass, jlong h) {
     delete session(h);
-    pool_trim();
-    Gpu::release_memory();
+    pool_trim_excess(96ull << 20);
+    Gpu::trim_excess(256ull << 20);
 }
 
 // Sets where compiled OpenCL programs are cached and creates the device (compiling the kernels on the
@@ -315,14 +372,39 @@ Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeDspProbe(JNIEnv* env, jclass)
 
 JNIEXPORT jobject JNICALL
 Java_com_izum1k_pocopaw_pipeline_NativeMemory_nativeAllocate(JNIEnv* env, jclass, jlong bytes) {
-    void* p = malloc((size_t)bytes);
+    if (bytes <= 0) return nullptr;
+    void* p = raw_pool_alloc((size_t)bytes);
     if (p == nullptr) return nullptr;
     return env->NewDirectByteBuffer(p, bytes);
 }
 
+JNIEXPORT jobject JNICALL
+Java_com_izum1k_pocopaw_pipeline_NativeMemory_nativeCopyRows(JNIEnv* env, jclass, jobject srcBuf, jint srcStride,
+                                                             jint rowBytes, jint height) {
+    if (rowBytes <= 0 || height <= 0 || srcStride < rowBytes) return nullptr;
+    const auto* src = static_cast<const uint8_t*>(env->GetDirectBufferAddress(srcBuf));
+    jlong srcCap = env->GetDirectBufferCapacity(srcBuf);
+    size_t total = (size_t)rowBytes * (size_t)height;
+    size_t required = (size_t)(height - 1) * (size_t)srcStride + (size_t)rowBytes;
+    if (src == nullptr || srcCap < (jlong)required) return nullptr;
+    auto* dst = static_cast<uint8_t*>(raw_pool_alloc(total));
+    if (dst == nullptr) return nullptr;
+    if (srcStride == rowBytes) {
+        memcpy(dst, src, total);
+    } else {
+        for (int y = 0; y < height; y++) {
+            memcpy(dst + (size_t)y * rowBytes, src + (size_t)y * srcStride, (size_t)rowBytes);
+        }
+    }
+    return env->NewDirectByteBuffer(dst, (jlong)total);
+}
+
 JNIEXPORT void JNICALL
 Java_com_izum1k_pocopaw_pipeline_NativeMemory_nativeFree(JNIEnv* env, jclass, jobject buffer) {
-    free(env->GetDirectBufferAddress(buffer));
+    if (!buffer) return;
+    void* p = env->GetDirectBufferAddress(buffer);
+    jlong cap = env->GetDirectBufferCapacity(buffer);
+    raw_pool_free(p, cap > 0 ? (size_t)cap : 0);
 }
 
 }  // extern "C"

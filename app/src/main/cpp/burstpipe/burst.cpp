@@ -9,9 +9,13 @@ double noise_sigma(const ImageF& cfa, int cfaType) {
     int ox = 0, oy = 0;
     for (int y = 0; y < 2; y++) for (int x = 0; x < 2; x++) if (cfa_channel(cfaType, x, y) == 1) { ox = x; oy = y; }
     int w = cfa.w / 2, h = cfa.h / 2;
-    double s = 0;
-    long n = 0;
-    for (int y = 1; y < h - 1; y++)
+    if (w <= 2 || h <= 2) return 0;
+    std::vector<double> rowS(h, 0.0);
+    std::vector<long> rowN(h, 0);
+    parallel_for(h - 2, [&](int yi) {
+        int y = yi + 1;
+        double s = 0;
+        long n = 0;
         for (int x = 1; x < w - 1; x++) {
             auto P = [&](int u, int v) { return cfa.at(2 * (x + u) + ox, 2 * (y + v) + oy); };
             double c = P(0, 0);
@@ -20,36 +24,32 @@ double noise_sigma(const ImageF& cfa, int cfaType) {
             s += std::fabs(l);
             n++;
         }
-    return n ? std::sqrt(M_PI / 2) / (6.0 * n) * s : 0;
-}
-
-// same estimator on the G channel of an RGB image, sampled on a grid matching one Bayer G plane
-double noise_sigma_rgb(const ImageF& rgb, int step) {
-    int w = rgb.w / step, h = rgb.h / step;
+        rowS[y] = s;
+        rowN[y] = n;
+    });
     double s = 0;
     long n = 0;
-    for (int y = 1; y < h - 1; y++)
-        for (int x = 1; x < w - 1; x++) {
-            auto P = [&](int u, int v) { return rgb.at(step * (x + u), step * (y + v), 1); };
-            double c = P(0, 0);
-            if (c > 0.9) continue;
-            double l = 4 * c - 2 * (P(-1, 0) + P(1, 0) + P(0, -1) + P(0, 1)) + (P(-1, -1) + P(1, -1) + P(-1, 1) + P(1, 1));
-            s += std::fabs(l);
-            n++;
-        }
+    for (int y = 1; y < h - 1; y++) { s += rowS[y]; n += rowN[y]; }
     return n ? std::sqrt(M_PI / 2) / (6.0 * n) * s : 0;
 }
 
 // exposure gain the tone mapper will apply to reach the target key (log-average luma)
 float display_gain(const ImageF& rgb, float targetKey) {
-    double s = 0;
-    long n = 0;
-    for (int y = 0; y < rgb.h; y += 8)
+    int rows = (rgb.h + 7) / 8;
+    if (rows <= 0 || rgb.w <= 0) return 1.f;
+    std::vector<double> rowS(rows, 0.0);
+    parallel_for(rows, [&](int r) {
+        int y = r * 8;
+        double ls = 0;
         for (int x = 0; x < rgb.w; x += 8) {
             const float* p = rgb.row(y) + (size_t)x * 3;
-            s += std::log(1e-4 + std::max(0.0, 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2]));
-            n++;
+            ls += std::log(1e-4 + std::max(0.0, 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2]));
         }
+        rowS[r] = ls;
+    });
+    double s = 0;
+    for (double v : rowS) s += v;
+    long n = (long)rows * ((rgb.w + 7) / 8);
     return clampf(targetKey / (float)std::exp(s / std::max(1L, n)), 1.f, 64.f);
 }
 
@@ -60,6 +60,7 @@ BurstSession::BurstSession(const Meta& m, std::vector<Raw> frames, int ref)
 
 void BurstSession::crop(float zoom) {
     if (zoom <= 1.f) return;
+    ScopedBigCoreAffinity bigPin;
     Timer t;
     const int W = m_.width, H = m_.height;
     const int cw = (int)std::lround(W / zoom) & ~1, ch = (int)std::lround(H / zoom) & ~1;
@@ -77,21 +78,21 @@ void BurstSession::crop(float zoom) {
     tCrop_ = t.ms();
 }
 
-// a private copy of the crop() window of a full-sensor frame
 Raw BurstSession::cropped(const Raw& r) const {
     Raw c;
     c.w = m_.width;
     c.h = m_.height;
     c.own = std::make_shared<std::vector<uint16_t>>((size_t)c.w * c.h);
-    for (int y = 0; y < c.h; y++) {
+    parallel_for(c.h, [&](int y) {
         const uint16_t* s = r.d + (size_t)(cropY0_ + y) * r.w + cropX0_;
         std::copy(s, s + c.w, c.own->data() + (size_t)y * c.w);
-    }
+    });
     c.d = c.own->data();
     return c;
 }
 
 void BurstSession::align() {
+    ScopedBigCoreAffinity bigPin;
     Timer t;
     int n = (int)frames_.size();
     refScale_ = 1.f;
@@ -108,9 +109,9 @@ void BurstSession::align() {
             bracket_ = true;
         }
     }
-    // a frame with the reference's exposure, so the noise fit's residual is noise only
+    calibrated_ = !curve_.empty() && (int)m_.iso.size() > ref_;
     int alt = -1;
-    if (n > 1) {
+    if (n > 1 && !calibrated_) {
         alt = ref_ == 0 ? 1 : 0;
         for (int k = 0; k < n; k++) if (k != ref_ && std::fabs(mo_.g(k) - 1.f) < 0.05f) { alt = k; break; }
     }
@@ -163,14 +164,15 @@ void BurstSession::align() {
 
     t = Timer();
     float black = (m_.black[0] + m_.black[1] + m_.black[2] + m_.black[3]) / 4;
-    calibrated_ = !curve_.empty() && (int)m_.iso.size() > ref_;
     if (calibrated_) nm_ = curve_.at((float)m_.iso[ref_], refScale_);
-    else if (n > 1) nm_ = estimate_noise(gray_[ref_], gray_[alt], offs_[alt], black);
+    else if (n > 1) {
+        if (alt < 0) alt = ref_ == 0 ? 1 : 0;
+        if (gray_[alt].w == 0) gray_[alt] = gray_from_raw(frames_[alt]);
+        nm_ = estimate_noise(gray_[ref_], gray_[alt], offs_[alt], black);
+    }
     tNoise_ = t.ms();
 }
 
-// gray images and 3x3 means of every frame on the host, for the CPU align and merges (also after a GPU
-// align, which keeps them on the device)
 void BurstSession::cpu_align_state() {
     int n = (int)frames_.size();
     gray_.resize(n);
@@ -187,8 +189,9 @@ void BurstSession::gpu_failed(const char* step, const std::exception& e) {
 }
 
 void BurstSession::merge(const BurstOptions& o) {
+    ScopedBigCoreAffinity bigPin;
     if (streamed_) {
-        opt_.demosaic = o.demosaic;
+        opt_.demosaic = Demosaic::RCD;
         for (int i = 0; i < 2; i++) { opt_.lcaR[i] = o.lcaR[i]; opt_.lcaB[i] = o.lcaB[i]; }
         return;
     }
@@ -196,56 +199,43 @@ void BurstSession::merge(const BurstOptions& o) {
     int n = (int)frames_.size();
     float black = (m_.black[0] + m_.black[1] + m_.black[2] + m_.black[3]) / 4;
     opt_ = o;
-    // the frequency merge has no exposure weighting
-    if (bracket_) opt_.freqMerge = false;
+    opt_.kernelRegression = false;
+    opt_.freqMerge = false;
+    opt_.demosaic = Demosaic::RCD;
     mo_.robustLo = o.robustLo > 0 ? o.robustLo : (calibrated_ ? kRobustCalibrated[0] : kRobustEstimated[0]);
     mo_.robustHi = o.robustHi > 0 ? o.robustHi : (calibrated_ ? kRobustCalibrated[1] : kRobustEstimated[1]);
     mo_.dilate = o.dilate;
-    kr_ = o.kernelRegression;
-    KrParams kp;
-    for (int i = 0; i < 2; i++) { kp.lcaR[i] = o.lcaR[i]; kp.lcaB[i] = o.lcaB[i]; }
-    const char* step = kr_ ? "kr" : opt_.freqMerge && n > 1 ? "freq" : "merge";
+
     bool onGpu = false;
-    if (gpu_ && GpuBurst::enabled(step)) {
+    if (gpu_ && GpuBurst::enabled("merge")) {
         try {
             if (!gpu_->aligned()) {
                 cpu_align_state();
                 gpu_->set_aligned(mean3_, gray_[ref_]);
             }
-            if (kr_) {
-                gpu_->merge_kr(frames_[ref_], ref_, offs_, m_, nm_, mo_, kp, &ks_);
-                meanWeight_ = ks_.meanWeight;
-            } else if (opt_.freqMerge && n > 1) {
-                meanWeight_ = gpu_->merge_freq(ref_, offs_, m_, nm_, o.freqC, o.freqSpatial);
-            } else {
-                meanWeight_ = gpu_->merge_spatial(ref_, offs_, nm_, black, mo_);
-            }
+            meanWeight_ = gpu_->merge_spatial(ref_, offs_, nm_, black, mo_);
             gpu_->drop_frames();
             onGpu = true;
-            gpuSteps_ += std::string(" ") + step;
+            gpuSteps_ += " merge";
         } catch (const std::exception& e) {
-            gpu_failed(step, e);
+            gpu_failed("merge", e);
         }
     }
-    if (onGpu) {
-    } else if (kr_) {
-        cpu_align_state();
-        std::vector<Flow> flows(n);
-        LkGrad lkg = lk_gradients(mean3_[ref_]);
-        for (int k = 0; k < n; k++)
-            flows[k] = k == ref_ ? zero_flow(offs_[k]) : refine_flow(mean3_[ref_], mean3_[k], offs_[k], 3, lkg, nm_, black);
-        rgb_ = kr_merge(frames_, ref_, flows, gray_[ref_], mean3_, m_, nm_, mo_, kp, &ks_);
-        meanWeight_ = ks_.meanWeight;
-    } else if (n > 1) {
-        if (!opt_.freqMerge) cpu_align_state();
-        MergeStats ms;
-        mosaic_ = opt_.freqMerge ? merge_frames_freq(frames_, ref_, offs_, m_, nm_, o.freqC, o.freqSpatial, &ms)
-                                 : merge_frames(frames_, ref_, offs_, mean3_, nm_, black, mo_, &ms);
-        meanWeight_ = ms.meanWeight;
-    } else {
-        mosaic_ = ImageF(m_.width, m_.height);
-        const uint16_t* src = frames_[ref_].d;
-        for (size_t i = 0; i < mosaic_.d.size(); i++) mosaic_.d[i] = src[i];
+    if (!onGpu) {
+        if (n > 1) {
+            cpu_align_state();
+            MergeStats ms;
+            mosaic_ = merge_frames(frames_, ref_, offs_, mean3_, nm_, black, mo_, &ms);
+            meanWeight_ = ms.meanWeight;
+        } else {
+            mosaic_ = ImageF(m_.width, m_.height);
+            const uint16_t* src = frames_[ref_].d;
+            parallel_for(m_.height, [&](int y) {
+                const uint16_t* sr = src + (size_t)y * m_.width;
+                float* dr = mosaic_.row(y);
+                for (int x = 0; x < m_.width; x++) dr[x] = sr[x];
+            });
+        }
     }
     frames_.clear();
     gray_.clear();
@@ -255,11 +245,12 @@ void BurstSession::merge(const BurstOptions& o) {
 }
 
 void BurstSession::begin_stream(const BurstOptions& o) {
+    ScopedBigCoreAffinity bigPin;
     streaming_ = true;
     opt_ = o;
     opt_.kernelRegression = false;
     opt_.freqMerge = false;
-    kr_ = false;
+    opt_.demosaic = Demosaic::RCD;
     ref_ = -1;
     calibrated_ = !curve_.empty() && !m_.iso.empty();
     if (calibrated_) {
@@ -278,6 +269,7 @@ void BurstSession::begin_stream(const BurstOptions& o) {
 }
 
 int BurstSession::add_frame(Raw f) {
+    ScopedBigCoreAffinity bigPin;
     if (!streaming_ || streamed_) throw std::runtime_error("add_frame outside begin_stream / end_frames");
     if (zoom_ > 1.f) {
         Timer t;
@@ -346,16 +338,25 @@ void BurstSession::stream_frame(const Raw& f) {
     ImageF gray;
     if (streamGpu_) {
         try {
-            Offsets of = gpu_->stream_align(f, noiseReady_ ? nullptr : &gray);
-            tAlign_ += t.ms();
-            fitNoise(gray, of);
-            t = Timer();
-            gpu_->stream_merge(of, nm_, black, mo_);
-            tMerge_ += t.ms();
-            note(of);
+            if (noiseReady_) {
+                gpu_->stream_align(f, nullptr, nullptr);
+                tAlign_ += t.ms();
+                t = Timer();
+                gpu_->stream_merge(nm_, black, mo_);
+                tMerge_ += t.ms();
+                streamMerged_++;
+            } else {
+                Offsets of;
+                gpu_->stream_align(f, &of, &gray);
+                tAlign_ += t.ms();
+                fitNoise(gray, of);
+                t = Timer();
+                gpu_->stream_merge(nm_, black, mo_);
+                tMerge_ += t.ms();
+                note(of);
+            }
             return;
         } catch (const std::exception& e) {
-            // the frames merged on the device are lost; the CPU starts again from the reference
             gpu_failed("stream", e);
             streamGpu_ = false;
             stream_cpu_start();
@@ -373,6 +374,7 @@ void BurstSession::stream_frame(const Raw& f) {
 }
 
 int BurstSession::end_frames() {
+    ScopedBigCoreAffinity bigPin;
     if (!streaming_ || streamed_) throw std::runtime_error("end_frames outside begin_stream");
     if (ref_ < 0) {
         if (frames_.empty()) throw std::runtime_error("no frames added");
@@ -382,7 +384,7 @@ int BurstSession::end_frames() {
     const float black = (m_.black[0] + m_.black[1] + m_.black[2] + m_.black[3]) / 4;
     if (streamGpu_) {
         try {
-            meanWeight_ = gpu_->stream_end(black);
+            meanWeight_ = gpu_->stream_end(black, &maxShift_);
         } catch (const std::exception& e) {
             gpu_failed("stream", e);
             streamGpu_ = false;
@@ -405,7 +407,7 @@ int BurstSession::end_frames() {
 }
 
 std::vector<uint8_t> BurstSession::encode_dng(const DngColor& c, const DngExtras& x) {
-    if (kr_) return {};
+    ScopedBigCoreAffinity bigPin;
     Timer t;
     ImageF fromGpu;
     const ImageF* mosaic = &mosaic_;
@@ -422,15 +424,16 @@ std::vector<uint8_t> BurstSession::encode_dng(const DngColor& c, const DngExtras
 }
 
 void BurstSession::finish(const LookParams& lp, bool keepHdr) {
+    ScopedBigCoreAffinity bigPin;
     if (gpu_ && GpuBurst::enabled("finish")) {
         try {
-            if (!gpu_->merged()) gpu_->set_merged(kr_ ? rgb_ : mosaic_, kr_);
+            if (!gpu_->merged()) gpu_->set_merged(mosaic_);
             GpuBurst::FinishOut o;
-            gpu_->finish(m_, lp, opt_.demosaic, zoom_, keepHdr, o, aspect_, opt_.lcaR, opt_.lcaB);
+            gpu_->finish(m_, lp, Demosaic::RCD, zoom_, keepHdr, o, aspect_, opt_.lcaR, opt_.lcaB);
             sigma_ = o.sigma;
             visibleSigma_ = o.visibleSigma;
             chroma_ = o.chroma;
-            localContrast_ = o.localContrast;
+            localContrast_ = 0.0;
             targetKey_ = o.targetKey;
             sharpenCore_ = o.sharpenCore;
             tUpscale_ = o.tUpscale;
@@ -443,12 +446,12 @@ void BurstSession::finish(const LookParams& lp, bool keepHdr) {
             outH_ = gpu_->height();
             gpuFinished_ = true;
             gpuSteps_ += " finish";
-            gpuProfile_ = gpu_->profile();
+            if (Gpu::get() && Gpu::get()->profiling()) gpuProfile_ = gpu_->profile();
             return;
         } catch (const std::exception& e) {
-            if (mosaic_.w == 0 && rgb_.w == 0) {
+            if (mosaic_.w == 0) {
                 try {
-                    (kr_ ? rgb_ : mosaic_) = gpu_->download_merged();
+                    mosaic_ = gpu_->download_merged();
                 } catch (const std::exception&) {
                     gpu_.reset();
                     throw;
@@ -457,9 +460,9 @@ void BurstSession::finish(const LookParams& lp, bool keepHdr) {
             gpu_failed("finish", e);
         }
     } else if (gpu_ && gpu_->merged()) {
-        (kr_ ? rgb_ : mosaic_) = gpu_->download_merged();
+        mosaic_ = gpu_->download_merged();
     }
-    if (gpu_) gpuProfile_ = gpu_->profile();
+    if (gpu_ && Gpu::get() && Gpu::get()->profiling()) gpuProfile_ = gpu_->profile();
     gpu_.reset();
     finish_cpu(lp, keepHdr);
     outW_ = rgb_.w;
@@ -469,25 +472,21 @@ void BurstSession::finish(const LookParams& lp, bool keepHdr) {
 void BurstSession::finish_cpu(const LookParams& look, bool keepHdr) {
     Timer t;
     LookParams lp = look;
-    if (kr_) {
-        normalize_rgb(rgb_, m_, lp, 1.f);
-        ft_.lscwb = t.ms();
-        sigma_ = noise_sigma_rgb(rgb_, 2);
-    } else {
-        ImageF cfa = normalize_mosaic(mosaic_, m_, lp);
-        ft_.lscwb = t.ms();
-        sigma_ = noise_sigma(cfa, m_.cfa);
-        mosaic_ = ImageF();
-        t = Timer();
-        rgb_ = demosaic(cfa, m_.cfa, opt_.demosaic);
-        correct_lca(rgb_, m_, opt_.lcaR, opt_.lcaB);
-        ft_.demosaic = t.ms();
-    }
-    t = Timer(); apply_ccm(rgb_, m_.ccm); wb_shift(rgb_, lp.wbCool); ft_.color = t.ms();
+    ImageF cfa = normalize_mosaic(mosaic_, m_, lp);
+    ft_.lscwb = t.ms();
+    sigma_ = noise_sigma(cfa, m_.cfa);
+    mosaic_ = ImageF();
+    t = Timer();
+    rgb_ = demosaic(cfa, m_.cfa, Demosaic::RCD);
+    cfa = ImageF();
+    correct_lca(rgb_, m_, opt_.lcaR, opt_.lcaB);
+    ft_.demosaic = t.ms();
+    t = Timer(); apply_ccm(rgb_, m_.ccm); ft_.color = t.ms();
     float chroma = lp.chromaDenoise;
-    lp.targetKey = noise_limited_key(lp.targetKey, (float)(sigma_ * display_gain(rgb_, lp.targetKey)));
+    float dgain0 = display_gain(rgb_, lp.targetKey);
+    lp.targetKey = noise_limited_key(lp.targetKey, (float)(sigma_ * dgain0));
     targetKey_ = lp.targetKey;
-    visibleSigma_ = sigma_ * display_gain(rgb_, lp.targetKey);
+    visibleSigma_ = sigma_ * clampf(dgain0 * (lp.targetKey / std::max(1e-6f, look.targetKey)), 1.f, 64.f);
     if (chroma < 0) chroma = clampf((float)visibleSigma_ / 0.01f, 1.f, 6.f);
     chroma *= lp.chromaDenoiseScale;
     chroma_ = chroma;
@@ -496,31 +495,42 @@ void BurstSession::finish_cpu(const LookParams& look, bool keepHdr) {
     if (aspect_ > 0.f) crop_aspect(rgb_, aspect_);
     hdr_ = keepHdr ? hdr_luma(rgb_, 1) : HdrLuma();
     t = Timer(); tone_ = local_tonemap(rgb_, lp); ft_.tonemap = t.ms();
-    localContrast_ = noise_scaled_local_contrast(lp.localContrast, (float)visibleSigma_);
-    t = Timer(); pixel_look(rgb_, lp); local_contrast(rgb_, localContrast_, lp.localRadius); hue_tune(rgb_, lp); ft_.look = t.ms();
+    localContrast_ = 0.0;
+    t = Timer(); pixel_look(rgb_, lp); ft_.look = t.ms();
     sharpenCore_ = sharpen_core((float)visibleSigma_);
     t = Timer(); sharpen_luma(rgb_, lp.sharpen, lp.sharpenRadius, (float)sharpenCore_); ft_.sharpen = t.ms();
 }
 
 void BurstSession::render(uint8_t* rgba, size_t stride) const {
+    ScopedBigCoreAffinity bigPin;
     if (gpuFinished_ && gpu_) gpu_->render(rgba, stride);
     else to_rgba8888(rgb_, rgba, stride);
 }
 
 void BurstSession::render_thumb(uint8_t* rgba, size_t stride, int outW, int outH) const {
+    ScopedBigCoreAffinity bigPin;
     if (gpuFinished_ && gpu_) gpu_->render_thumb(rgba, stride, outW, outH);
     else to_rgba8888_thumb(rgb_, rgba, stride, outW, outH);
 }
 
 std::vector<uint8_t> BurstSession::encode_photo(int quality, bool wantUltraHdr, float headroom, bool* isUltraHdr) {
+    ScopedBigCoreAffinity bigPin;
     if (isUltraHdr) *isUltraHdr = false;
     int w = outW_, h = outH_;
-    std::vector<uint8_t> px = (gpuFinished_ && gpu_) ? gpu_->render_rgb8() : to_rgb8(rgb_, 1, w, h);
-    if (px.empty() || w <= 0 || h <= 0) return {};
-    std::vector<uint8_t> base = ::encode_jpeg(px.data(), w, h, 3, quality, true);
+    if (w <= 0 || h <= 0) return {};
+    const uint8_t* px = nullptr;
+    std::vector<uint8_t> cpuPx;
+    if (gpuFinished_ && gpu_ && gpu_->rgb8_ptr() != nullptr) {
+        px = gpu_->rgb8_ptr();
+    } else {
+        cpuPx = to_rgb8(rgb_, 1, w, h);
+        px = cpuPx.empty() ? nullptr : cpuPx.data();
+    }
+    if (!px) return {};
+    std::vector<uint8_t> base = ::encode_jpeg(px, w, h, 3, quality, true);
     if (wantUltraHdr && hdr_.y.w > 0 && !base.empty()) {
         Timer t;
-        std::vector<uint8_t> uhdr = encode_ultrahdr_rgb8(px.data(), w, h, base, hdr_, tone_.gainLong, headroom, &us_);
+        std::vector<uint8_t> uhdr = encode_ultrahdr_rgb8(px, w, h, base, hdr_, tone_.gainLong, headroom, &us_);
         tUhdr_ = t.ms();
         if (!uhdr.empty()) {
             if (isUltraHdr) *isUltraHdr = true;
@@ -531,6 +541,7 @@ std::vector<uint8_t> BurstSession::encode_photo(int quality, bool wantUltraHdr, 
 }
 
 std::vector<uint8_t> BurstSession::encode_ultrahdr(int quality, float headroom) {
+    ScopedBigCoreAffinity bigPin;
     if (hdr_.y.w == 0) return {};
     Timer t;
     if (gpuFinished_ && gpu_ && rgb_.w == 0) rgb_ = gpu_->download_rgb();
@@ -541,7 +552,7 @@ std::vector<uint8_t> BurstSession::encode_ultrahdr(int quality, float headroom) 
 
 std::string BurstSession::summary() const {
     char buf[1024];
-    std::string mode = kr_ ? "kr" : std::string("classic/") + (opt_.freqMerge ? "freq" : "spatial") + "/" + demosaic_name(opt_.demosaic);
+    std::string mode = "indigo/spatial/rcd";
     if (bracket_) {
         mode += " bracket gains";
         for (float g : mo_.gain) { char b[16]; snprintf(b, sizeof b, " %.2f", g); mode += b; }

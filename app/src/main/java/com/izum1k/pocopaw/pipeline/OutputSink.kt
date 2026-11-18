@@ -29,18 +29,26 @@ interface OutputSink {
     suspend fun write(kind: OutputKind, baseName: String, takenAtMillis: Long, writer: (OutputStream) -> Unit): SavedOutput
 }
 
-/** Writes into `DCIM/PocoPaw` through MediaStore; a file stays pending until it is complete. */
+/** Writes into `DCIM/PocoPaw` (or `DCIM/PocoPawOpt` for the side-by-side `.opt` package) through MediaStore. */
 class MediaStoreWriter(context: Context) : OutputSink {
-    private val resolver = context.applicationContext.contentResolver
+    private val appContext = context.applicationContext
+    private val resolver = appContext.contentResolver
     private val collection = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+    private val isOpt = appContext.packageName.endsWith(".opt")
+    private val relativePath = if (isOpt) RELATIVE_PATH_OPT else RELATIVE_PATH
 
     override suspend fun write(kind: OutputKind, baseName: String, takenAtMillis: Long, writer: (OutputStream) -> Unit): SavedOutput =
         withContext(Dispatchers.IO) {
-            val name = "$baseName.${kind.extension}"
+            val resolvedBase = if (isOpt && baseName.startsWith("PocoPaw_")) {
+                "PocoPawOpt_" + baseName.removePrefix("PocoPaw_")
+            } else {
+                baseName
+            }
+            val name = "$resolvedBase.${kind.extension}"
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, name)
                 put(MediaStore.MediaColumns.MIME_TYPE, kind.mimeType)
-                put(MediaStore.MediaColumns.RELATIVE_PATH, RELATIVE_PATH)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
                 put(MediaStore.MediaColumns.DATE_TAKEN, takenAtMillis)
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
@@ -62,7 +70,7 @@ class MediaStoreWriter(context: Context) : OutputSink {
                 collection,
                 arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.MIME_TYPE),
                 "${MediaStore.MediaColumns.RELATIVE_PATH} = ?",
-                arrayOf(RELATIVE_PATH),
+                arrayOf(relativePath),
                 "${MediaStore.MediaColumns.DATE_TAKEN} DESC, ${MediaStore.MediaColumns.MIME_TYPE} ASC, ${MediaStore.MediaColumns._ID} DESC",
             )?.use { c ->
                 if (!c.moveToFirst()) null
@@ -80,6 +88,7 @@ class MediaStoreWriter(context: Context) : OutputSink {
 
     companion object {
         const val RELATIVE_PATH = "DCIM/PocoPaw/"
+        const val RELATIVE_PATH_OPT = "DCIM/PocoPawOpt/"
         private const val THUMB_SIZE = 256
 
         fun baseName(takenAtMillis: Long): String =

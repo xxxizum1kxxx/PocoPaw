@@ -16,9 +16,16 @@ object NativeMemory {
     fun allocate(bytes: Int): ByteBuffer = nativeAllocate(bytes.toLong())?.order(ByteOrder.nativeOrder())
         ?: throw OutOfMemoryError("native allocation of $bytes bytes failed")
 
+    /** Copies [height] rows of [rowBytes] from [src] (strided by [srcRowStride]) into a pooled native buffer in one JNI call. */
+    fun copyRows(src: ByteBuffer, srcRowStride: Int, rowBytes: Int, height: Int): ByteBuffer =
+        nativeCopyRows(src, srcRowStride, rowBytes, height)?.order(ByteOrder.nativeOrder())
+            ?: throw OutOfMemoryError("native row copy of ${rowBytes.toLong() * height} bytes failed")
+
     fun free(buffer: ByteBuffer) = nativeFree(buffer)
 
     @JvmStatic private external fun nativeAllocate(bytes: Long): ByteBuffer?
+
+    @JvmStatic private external fun nativeCopyRows(src: ByteBuffer, srcRowStride: Int, rowBytes: Int, height: Int): ByteBuffer?
 
     @JvmStatic private external fun nativeFree(buffer: ByteBuffer)
 }

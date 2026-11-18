@@ -64,13 +64,15 @@ bool rob_quads4(ImageF& rob, int qx, int qy, const Offsets& of, const ImageF& m3
         }
     const float a = (float)nm.a, bb = (float)nm.b;
     float32x4_t mu0 = vld1q_f32(m3ref.row(qy) + qx);
-    float32x4_t sig = vmaxq_f32(vdupq_n_f32(0.f), vsubq_f32(vmulq_n_f32(mu0, 0.25f), vdupq_n_f32(black)));
+    float32x4_t s0 = vmaxq_f32(vdupq_n_f32(0.f), vsubq_f32(vmulq_n_f32(mu0, 0.25f), vdupq_n_f32(black)));
+    float32x4_t sig = vmaxq_f32(vdupq_n_f32(0.f), vsubq_f32(vmulq_n_f32(vaddq_f32(mu0, mu), 0.125f), vdupq_n_f32(black)));
     float32x4_t vRef = vfmaq_n_f32(vdupq_n_f32(bb), sig, a), vAlt = vfmaq_n_f32(vdupq_n_f32(g * g * bb), sig, g * a);
     float32x4_t varMu = vmulq_n_f32(vaddq_f32(vRef, vAlt), 4.f / 9.f);
     float32x4_t z = vdivq_f32(vabdq_f32(mu, mu0), vsqrtq_f32(vmaxq_f32(varMu, vdupq_n_f32(1e-3f))));
     float32x4_t ramp = vmulq_n_f32(vsubq_f32(vdupq_n_f32(o.robustHi), z), 1.f / (o.robustHi - o.robustLo));
     ramp = vminq_f32(vmaxq_f32(ramp, vdupq_n_f32(0.f)), vdupq_n_f32(1.f));
-    vst1q_f32(rob.row(qy) + qx, vmulq_f32(ramp, vdivq_f32(vRef, vAlt)));
+    float32x4_t vRef0 = vfmaq_n_f32(vdupq_n_f32(bb), s0, a), vAlt0 = vfmaq_n_f32(vdupq_n_f32(g * g * bb), s0, g * a);
+    vst1q_f32(rob.row(qy) + qx, vmulq_f32(ramp, vdivq_f32(vRef0, vAlt0)));
     return true;
 }
 #endif
