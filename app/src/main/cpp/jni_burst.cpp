@@ -48,11 +48,12 @@ BurstOptions burst_options(JNIEnv* env, jfloatArray jopt) {
 extern "C" {
 
 // meta: width, height, cfa, white, black[4] (R, G_even, G_odd, B), wb[4], ccm[9] (row-major),
-// lscRows, lscCols; lsc: rows*cols*4 gains (R, G_even, G_odd, B) or null; exposureNs / iso per frame (of the
-// first frame only for a session with no frames, which merges frames as they are added).
+// lscRows, lscCols; lsc: rows*cols*4 gains (R, G_even, G_odd, B) or null; cal: optional 42-float DualColorCal;
+// exposureNs / iso per frame (of the first frame only for a session with no frames, which merges frames as added).
 JNIEXPORT jlong JNICALL
 Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeCreate(JNIEnv* env, jclass, jfloatArray jmeta, jfloatArray jlsc,
-                                                         jobjectArray jframes, jint ref, jlongArray jexp, jintArray jiso) {
+                                                         jfloatArray jcal, jobjectArray jframes, jint ref,
+                                                         jlongArray jexp, jintArray jiso) {
     Meta m;
     jfloat* v = env->GetFloatArrayElements(jmeta, nullptr);
     m.width = (int)v[0];
@@ -66,6 +67,22 @@ Java_com_izum1k_pocopaw_pipeline_NativeBurst_nativeCreate(JNIEnv* env, jclass, j
     m.lscRows = (int)v[21];
     m.lscCols = (int)v[22];
     env->ReleaseFloatArrayElements(jmeta, v, JNI_ABORT);
+    if (jcal != nullptr && env->GetArrayLength(jcal) >= 42 && !ccm_usable(m.ccm)) {
+        jfloat c[42];
+        env->GetFloatArrayRegion(jcal, 0, 42, c);
+        DualColorCal cal;
+        cal.illuminants = (int)c[0];
+        cal.illuminant[0] = (int)c[1];
+        cal.illuminant[1] = (int)c[2];
+        for (int i = 0; i < 9; i++) {
+            cal.colorMatrix[0][i] = c[3 + i];
+            cal.colorMatrix[1][i] = c[12 + i];
+            cal.forwardMatrix[0][i] = c[21 + i];
+            cal.forwardMatrix[1][i] = c[30 + i];
+        }
+        for (int i = 0; i < 3; i++) cal.neutral[i] = c[39 + i];
+        compute_dual_illuminant_ccm(cal, m.wb, m.ccm);
+    }
     if (jlsc != nullptr && env->GetArrayLength(jlsc) == m.lscRows * m.lscCols * 4) {
         m.lsc.resize((size_t)m.lscRows * m.lscCols * 4);
         env->GetFloatArrayRegion(jlsc, 0, (jsize)m.lsc.size(), m.lsc.data());

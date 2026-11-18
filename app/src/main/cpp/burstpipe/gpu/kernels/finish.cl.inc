@@ -443,48 +443,200 @@ __kernel void tm_whitepoint(__global float* rgb, int n, float lo, float invSpan,
 
 inline float smooth01_cl(float t) { t = clamp(t, 0.f, 1.f); return t * t * (3.f - 2.f * t); }
 
+inline float srgb_oetf_exact_cl(float x) {
+    x = clamp(x, 0.f, 1.f);
+    return x <= 0.0031308f ? 12.92f * x : 1.055f * pow(x, 1.f / 2.4f) - 0.055f;
+}
+
+inline float srgb_eotf_unclamped_cl(float y) {
+    return y <= 0.04045f ? y / 12.92f : pow((y + 0.055f) / 1.055f, 2.4f);
+}
+
+inline float sgn_cbrt_cl(float x) {
+    float a = cbrt(fabs(x));
+    return x < 0.f ? -a : a;
+}
+
+inline float3 linear_srgb_to_oklab_cl(float r, float g, float b) {
+    float l = 0.4122214708f * r + 0.5363325363f * g + 0.0514459929f * b;
+    float m = 0.2119034982f * r + 0.6806995451f * g + 0.1073969566f * b;
+    float s = 0.0883024619f * r + 0.2817188376f * g + 0.6299787005f * b;
+    float l_ = sgn_cbrt_cl(l), m_ = sgn_cbrt_cl(m), s_ = sgn_cbrt_cl(s);
+    return (float3)(
+        0.2104542553f * l_ + 0.7936177850f * m_ - 0.0040720468f * s_,
+        1.9779984951f * l_ - 2.4285922050f * m_ + 0.4505937099f * s_,
+        0.0259040371f * l_ + 0.7827717662f * m_ - 0.8086757660f * s_
+    );
+}
+
+inline float3 oklab_to_linear_srgb_cl(float L, float a, float ob) {
+    float l_ = L + 0.3963377774f * a + 0.2158037573f * ob;
+    float m_ = L - 0.1055613458f * a - 0.0638541728f * ob;
+    float s_ = L - 0.0894841775f * a - 1.2914855480f * ob;
+    float l = l_ * l_ * l_, m = m_ * m_ * m_, s = s_ * s_ * s_;
+    return (float3)(
+        +4.0767416621f * l - 3.3077115913f * m + 0.2309699292f * s,
+        -1.2684380046f * l + 2.6097574011f * m - 0.3413193965f * s,
+        -0.0041960863f * l - 0.7034186147f * m + 1.7076147010f * s
+    );
+}
+
+inline float oklab_max_saturation_cl(float a, float b) {
+    float c1 = -1.88170328f * a - 0.80936493f * b;
+    float c2 = +1.81444104f * a - 1.19445276f * b;
+    float c3 = +0.13110758f * a + 1.81333944f * b;
+    float k0, k1, k2, k3, k4, wl, wm, ws;
+    if (c1 >= c2 && c1 >= c3) {
+        k0 = +1.19086277f; k1 = +1.76576728f; k2 = +0.59662641f; k3 = +0.75515197f; k4 = +0.56771245f;
+        wl = +4.0767416621f; wm = -3.3077115913f; ws = +0.2309699292f;
+    } else if (c2 >= c3) {
+        k0 = +0.73956515f; k1 = -0.45954404f; k2 = +0.08285427f; k3 = +0.12541070f; k4 = +0.14503204f;
+        wl = -1.2684380046f; wm = +2.6097574011f; ws = -0.3413193965f;
+    } else {
+        k0 = +1.35733652f; k1 = -0.00915799f; k2 = -1.15130210f; k3 = -0.50559606f; k4 = +0.00692167f;
+        wl = -0.0041960863f; wm = -0.7034186147f; ws = +1.7076147010f;
+    }
+    float S = k0 + k1 * a + k2 * b + k3 * a * a + k4 * a * b;
+    float kl = +0.3963377774f * a + 0.2158037573f * b;
+    float km = -0.1055613458f * a - 0.0638541728f * b;
+    float ks = -0.0894841775f * a - 1.2914855480f * b;
+    for (int it = 0; it < 2; it++) {
+        float l_ = 1.f + S * kl, m_ = 1.f + S * km, s_ = 1.f + S * ks;
+        float l = l_ * l_ * l_, m = m_ * m_ * m_, s = s_ * s_ * s_;
+        float l1 = 3.f * kl * l_ * l_, m1 = 3.f * km * m_ * m_, s1 = 3.f * ks * s_ * s_;
+        float l2 = 6.f * kl * kl * l_, m2 = 6.f * km * km * m_, s2 = 6.f * ks * ks * s_;
+        float f = wl * l + wm * m + ws * s;
+        float f1 = wl * l1 + wm * m1 + ws * s1;
+        float f2 = wl * l2 + wm * m2 + ws * s2;
+        float den = f1 * f1 - 0.5f * f * f2;
+        if (fabs(den) > 1e-12f) S -= f * f1 / den;
+    }
+    return S;
+}
+
+inline float oklab_max_chroma_cl(float L, float a_, float b_) {
+    if (L <= 0.f || L >= 1.f) return 0.f;
+    float Smax = oklab_max_saturation_cl(a_, b_);
+    float kl = +0.3963377774f * a_ + 0.2158037573f * b_;
+    float km = -0.1055613458f * a_ - 0.0638541728f * b_;
+    float ks = -0.0894841775f * a_ - 1.2914855480f * b_;
+    float l_ = 1.f + Smax * kl, m_ = 1.f + Smax * km, s_ = 1.f + Smax * ks;
+    float l = l_ * l_ * l_, m = m_ * m_ * m_, s = s_ * s_ * s_;
+    float r0 = +4.0767416621f * l - 3.3077115913f * m + 0.2309699292f * s;
+    float g0 = -1.2684380046f * l + 2.6097574011f * m - 0.3413193965f * s;
+    float b0 = -0.0041960863f * l - 0.7034186147f * m + 1.7076147010f * s;
+    float Lcusp = cbrt(1.f / max(1e-6f, max(r0, max(g0, b0))));
+    float Ccusp = Lcusp * Smax;
+    if (L <= Lcusp) return max(0.f, L * Smax);
+    float t = Ccusp * (1.f - L) / max(1.f - Lcusp, 1e-6f);
+    for (int it = 0; it < 2; it++) {
+        l_ = L + t * kl; m_ = L + t * km; s_ = L + t * ks;
+        l = l_ * l_ * l_; m = m_ * m_ * m_; s = s_ * s_ * s_;
+        float ldt = 3.f * kl * l_ * l_, mdt = 3.f * km * m_ * m_, sdt = 3.f * ks * s_ * s_;
+        float ldt2 = 6.f * kl * kl * l_, mdt2 = 6.f * km * km * m_, sdt2 = 6.f * ks * ks * s_;
+        float rr = +4.0767416621f * l - 3.3077115913f * m + 0.2309699292f * s;
+        float gg = -1.2684380046f * l + 2.6097574011f * m - 0.3413193965f * s;
+        float bb = -0.0041960863f * l - 0.7034186147f * m + 1.7076147010f * s;
+        float f, f1, f2;
+        if (rr >= gg && rr >= bb) {
+            f = rr - 1.f;
+            f1 = +4.0767416621f * ldt - 3.3077115913f * mdt + 0.2309699292f * sdt;
+            f2 = +4.0767416621f * ldt2 - 3.3077115913f * mdt2 + 0.2309699292f * sdt2;
+        } else if (gg >= bb) {
+            f = gg - 1.f;
+            f1 = -1.2684380046f * ldt + 2.6097574011f * mdt - 0.3413193965f * sdt;
+            f2 = -1.2684380046f * ldt2 + 2.6097574011f * mdt2 - 0.3413193965f * sdt2;
+        } else {
+            f = bb - 1.f;
+            f1 = -0.0041960863f * ldt - 0.7034186147f * mdt + 1.7076147010f * sdt;
+            f2 = -0.0041960863f * ldt2 - 0.7034186147f * mdt2 + 1.7076147010f * sdt2;
+        }
+        float den = f1 * f1 - 0.5f * f * f2;
+        if (fabs(den) > 1e-12f) t -= f * f1 / den;
+    }
+    return max(0.f, t);
+}
+
+inline float oklab_compress_chroma_cl(float C, float Cmax) {
+    float knee = 0.85f * Cmax;
+    if (C <= knee) return C;
+    float cap = 0.996f * Cmax;
+    float span = max(cap - knee, 1e-6f);
+    float ex = (C - knee) / span;
+    return knee + span * (ex / (1.f + ex));
+}
+
+inline float3 oklab_gamut_compress_cl(float r, float g, float b) {
+    float mn = min(r, min(g, b)), mx = max(r, max(g, b));
+    if (mn >= 0.f && mx <= 1.f && mn >= 0.25f * mx && (1.f - mx) >= 0.25f * (1.f - mn)) return (float3)(r, g, b);
+    float3 lab = linear_srgb_to_oklab_cl(r, g, b);
+    if (lab.x <= 0.f) return (float3)(0.f, 0.f, 0.f);
+    if (lab.x >= 1.f) return (float3)(1.f, 1.f, 1.f);
+    float C = sqrt(lab.y * lab.y + lab.z * lab.z);
+    if (C <= 1e-6f) {
+        float v = clamp(lab.x * lab.x * lab.x, 0.f, 1.f);
+        return (float3)(v, v, v);
+    }
+    float a_ = lab.y / C, b_ = lab.z / C;
+    float Cmax = oklab_max_chroma_cl(lab.x, a_, b_);
+    float Cnew = oklab_compress_chroma_cl(C, Cmax);
+    float3 out = (Cnew != C) ? oklab_to_linear_srgb_cl(lab.x, Cnew * a_, Cnew * b_) : (float3)(r, g, b);
+    return clamp(out, 0.f, 1.f);
+}
+
 __kernel void pixel_look(__global float* rgb, int n, __global const float* oetf, float contrast, float saturation) {
     int i = get_global_id(0);
     if (i >= n) return;
     __global float* q = rgb + (size_t)i * 3;
-    float v0 = q[0], v1 = q[1], v2 = q[2];
-    float mx0 = max(v0, max(v1, v2));
+    float r = q[0], g = q[1], b = q[2];
+    float mx0 = max(r, max(g, b));
     const float kKnee = 0.7f;
     if (mx0 > kKnee) {
-        float mn = min(v0, min(v1, v2));
+        float mn = min(r, min(g, b));
         float t = (mx0 - kKnee) / (1.f - kKnee);
         float shoulder = kKnee + (1.f - kKnee) * t / (1.f + t);
         float chroma = clamp(2.f * (mx0 - max(0.f, mn)) / mx0, 0.f, 1.f);
-        float g = (mx0 + (shoulder - mx0) * chroma) / mx0;
+        float sc = (mx0 + (shoulder - mx0) * chroma) / mx0;
         float bleach = smooth01_cl((mx0 - 0.90f) / (3.2f - 0.90f));
-        float mx = mx0 * g;
-        v0 = v0 * g + bleach * (mx - v0 * g);
-        v1 = v1 * g + bleach * (mx - v1 * g);
-        v2 = v2 * g + bleach * (mx - v2 * g);
+        float mx = mx0 * sc;
+        r = r * sc + bleach * (mx - r * sc);
+        g = g * sc + bleach * (mx - g * sc);
+        b = b * sc + bleach * (mx - b * sc);
     }
-    float mx = max(v0, max(v1, v2));
-    float L = min(1.f, max(0.f, luma709(v0, v1, v2)));
-    if (mx > 1.f) {
-        float k = (1.f - L) / max(1e-6f, mx - L);
-        v0 = L + (v0 - L) * k; v1 = L + (v1 - L) * k; v2 = L + (v2 - L) * k;
-    }
-    v0 = srgb_oetf(oetf, v0);
-    v1 = srgb_oetf(oetf, v1);
-    v2 = srgb_oetf(oetf, v2);
-    float Ld = clamp(luma709(v0, v1, v2), 0.f, 1.f);
+    float3 comp = oklab_gamut_compress_cl(r, g, b);
+    float rd = srgb_oetf(oetf, comp.x);
+    float gd = srgb_oetf(oetf, comp.y);
+    float bd = srgb_oetf(oetf, comp.z);
+    float Ld = clamp(luma709(rd, gd, bd), 0.f, 1.f);
     float s = Ld * Ld * (3.f - 2.f * Ld);
     float Lv = Ld + contrast * (s - Ld);
     float cg = Ld > 1e-6f ? Lv / Ld : 1.f;
-    v0 *= cg; v1 *= cg; v2 *= cg;
-    float sat = max(v0, max(v1, v2)) - min(v0, min(v1, v2));
-    float vibW = 1.f - smooth01_cl((Lv - 0.55f) / (0.80f - 0.55f));
-    float hiRoll = 1.f - 0.55f * smooth01_cl((Lv - 0.72f) / (1.0f - 0.72f));
-    float k = (1.f + (saturation - 1.f) * (1.f - clamp(sat, 0.f, 1.f)) * vibW) * hiRoll;
-    float mxd = max(Lv + (v0 - Lv) * k, max(Lv + (v1 - Lv) * k, Lv + (v2 - Lv) * k));
-    if (mxd > 1.f && Lv < 1.f) k *= (1.f - Lv) / max(1e-6f, mxd - Lv);
-    q[0] = clamp(Lv + (v0 - Lv) * k, 0.f, 1.f);
-    q[1] = clamp(Lv + (v1 - Lv) * k, 0.f, 1.f);
-    q[2] = clamp(Lv + (v2 - Lv) * k, 0.f, 1.f);
+    rd *= cg; gd *= cg; bd *= cg;
+    float3 lab = linear_srgb_to_oklab_cl(srgb_eotf_unclamped_cl(rd), srgb_eotf_unclamped_cl(gd), srgb_eotf_unclamped_cl(bd));
+    if (lab.x <= 0.f) {
+        q[0] = 0.f; q[1] = 0.f; q[2] = 0.f;
+    } else if (lab.x >= 1.f) {
+        q[0] = 1.f; q[1] = 1.f; q[2] = 1.f;
+    } else {
+        float C = sqrt(lab.y * lab.y + lab.z * lab.z);
+        if (C > 1e-6f) {
+            float a_ = lab.y / C, b_ = lab.z / C;
+            float Cmax = oklab_max_chroma_cl(lab.x, a_, b_);
+            float sat = clamp(C / max(Cmax, 1e-5f), 0.f, 1.f);
+            float vibW = 1.f - smooth01_cl((Lv - 0.55f) / (0.80f - 0.55f));
+            float hiRoll = 1.f - 0.55f * smooth01_cl((Lv - 0.72f) / (1.0f - 0.72f));
+            float k = (1.f + (saturation - 1.f) * (1.f - sat) * vibW) * hiRoll;
+            float Cnew = oklab_compress_chroma_cl(C * k, Cmax);
+            float3 lin = oklab_to_linear_srgb_cl(lab.x, Cnew * a_, Cnew * b_);
+            q[0] = srgb_oetf(oetf, clamp(lin.x, 0.f, 1.f));
+            q[1] = srgb_oetf(oetf, clamp(lin.y, 0.f, 1.f));
+            q[2] = srgb_oetf(oetf, clamp(lin.z, 0.f, 1.f));
+        } else {
+            q[0] = clamp(rd, 0.f, 1.f);
+            q[1] = clamp(gd, 0.f, 1.f);
+            q[2] = clamp(bd, 0.f, 1.f);
+        }
+    }
 }
 
 // ---- local contrast (fast guided filter on display luma)
@@ -547,25 +699,33 @@ inline float hue_weight(float4 win, float ux, float uy) {
     return t * t * (3 - 2 * t);
 }
 
-// sat4 = (skySat, skinSat, skyRot, skinRot); windows (cx, cy, c0)
+// sky, skin = (cos, sin, cos(half_width), 0) in Oklab; sat4 = (skySat, skinSat, skyRot, skinRot)
 __kernel void hue_tune(__global float* rgb, int n, float4 sky, float4 skin, float4 sat4) {
     int i = get_global_id(0);
     if (i >= n) return;
     __global float* q = rgb + (size_t)i * 3;
-    float Y = luma709(q[0], q[1], q[2]);
-    float cb = (q[2] - Y) / 1.8556f, cr = (q[0] - Y) / 1.5748f;
-    float c2 = cb * cb + cr * cr;
-    if (c2 < 1e-8f) return;
-    float inv = 1.f / sqrt(c2), chroma = c2 * inv;
-    float cw = clamp(chroma / 0.04f, 0.f, 1.f);
-    float ws = hue_weight(sky, cb * inv, cr * inv) * cw, wk = hue_weight(skin, cb * inv, cr * inv) * cw;
+    float rl = srgb_eotf_unclamped_cl(clamp(q[0], 0.f, 1.f));
+    float gl = srgb_eotf_unclamped_cl(clamp(q[1], 0.f, 1.f));
+    float bl = srgb_eotf_unclamped_cl(clamp(q[2], 0.f, 1.f));
+    float3 lab = linear_srgb_to_oklab_cl(rl, gl, bl);
+    if (lab.x <= 0.f || lab.x >= 1.f) return;
+    float c2 = lab.y * lab.y + lab.z * lab.z;
+    if (c2 < 1e-10f) return;
+    float C = sqrt(c2), inv = 1.f / C;
+    float ux = lab.y * inv, uy = lab.z * inv;
+    float cw = clamp(C / 0.025f, 0.f, 1.f);
+    float ws = hue_weight(sky, ux, uy) * cw, wk = hue_weight(skin, ux, uy) * cw;
     if (ws + wk <= 0.f) return;
-    float sat = 1 + ws * (sat4.x - 1) + wk * (sat4.y - 1);
+    float sat = 1.f + ws * (sat4.x - 1.f) + wk * (sat4.y - 1.f);
     float th = ws * sat4.z + wk * sat4.w;
-    float ncb = sat * (cb - th * cr), ncr = sat * (cr + th * cb);
-    float r = Y + 1.5748f * ncr, b = Y + 1.8556f * ncb;
-    float g = (Y - 0.2126f * r - 0.0722f * b) / 0.7152f;
-    q[0] = clamp(r, 0.f, 1.f); q[1] = clamp(g, 0.f, 1.f); q[2] = clamp(b, 0.f, 1.f);
+    float cs = cos(th), sn = sin(th);
+    float nux = ux * cs - uy * sn, nuy = ux * sn + uy * cs;
+    float Cmax = oklab_max_chroma_cl(lab.x, nux, nuy);
+    float Cnew = oklab_compress_chroma_cl(C * sat, Cmax);
+    float3 lin = oklab_to_linear_srgb_cl(lab.x, Cnew * nux, Cnew * nuy);
+    q[0] = srgb_oetf_exact_cl(lin.x);
+    q[1] = srgb_oetf_exact_cl(lin.y);
+    q[2] = srgb_oetf_exact_cl(lin.z);
 }
 
 __kernel void sharpen_apply(__global float* rgb, int n, __global const float* L, __global const float* B, float amount,

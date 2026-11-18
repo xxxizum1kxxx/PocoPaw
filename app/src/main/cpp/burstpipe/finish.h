@@ -34,6 +34,18 @@ void normalize_rgb(ImageF& rgb, const Meta& m, const LookParams& p, float scale)
 ImageF demosaic_mhc(const ImageF& cfa, int cfaType);
 void correct_lca(ImageF& rgb, const Meta& m, const float lcaR[2], const float lcaB[2]);
 void apply_ccm(ImageF& rgb, const float ccm[9]);
+struct DualColorCal {
+    int illuminants = 0;            // 0 = absent, 1 or 2 sets
+    int illuminant[2] = {21, 17};   // EXIF LightSource tags
+    float colorMatrix[2][9] = {};   // XYZ -> camera (SENSOR_COLOR_TRANSFORMn), row-major
+    float forwardMatrix[2][9] = {}; // white-balanced camera -> XYZ D50 (SENSOR_FORWARD_MATRIXn), row-major
+    float neutral[3] = {0, 0, 0};   // AsShotNeutral in camera RGB; <= 0 falls back to 1/wb
+};
+// Adobe DNG Spec section 6 dual-illuminant interpolation -> row-normalized linear camera-WB to linear sRGB D65 CCM.
+// Returns false and leaves outCcm untouched if calibration tags are absent or degenerate.
+bool compute_dual_illuminant_ccm(const DualColorCal& cal, const float wb[4], float outCcm[9]);
+// True if ccm is finite, invertible, and non-identity (i.e. a calibrated HAL CCM rather than an empty default).
+bool ccm_usable(const float ccm[9]);
 void chroma_denoise(ImageF& rgb, float strength);
 // separable Lanczos-3 resize of a linear RGB image to W x H (for the zoom crop back to sensor size)
 void upscale_lanczos(ImageF& rgb, int W, int H);

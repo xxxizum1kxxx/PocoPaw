@@ -795,7 +795,7 @@ void GpuBurst::finish(const Meta& m, const LookParams& look, Demosaic dm, float 
             float rr = centre * (float)M_PI / 180.f;
             return f4(std::cos(rr), std::sin(rr), std::cos(half * (float)M_PI / 180.f), 0);
         };
-        g_.run("hue_tune", gs(rgb_.w * rgb_.h), 1, rgb_, rgb_.w * rgb_.h, win(-30.f, 40.f), win(122.f, 30.f),
+        g_.run("hue_tune", gs(rgb_.w * rgb_.h), 1, rgb_, rgb_.w * rgb_.h, win(-110.f, 38.f), win(52.f, 28.f),
                f4(lp.skySat, lp.skinSat, lp.skyHue * (float)M_PI / 180.f, lp.skinHue * (float)M_PI / 180.f));
     }
     lap(out.ft.look);
