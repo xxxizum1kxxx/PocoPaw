@@ -2,26 +2,26 @@
 
 > 本文复制自研究工作区（`Poco-F5-RAW-Report/`）根目录的同名文档。`../../../` 开头的链接指向研究工作区，只在完整检出研究工作区时可用。
 
-- 测试日期：2026-11-01（RAW 性能与 HAL 限制）、2026-11-03（ISZ）
+- 测试日期：2026-11-01（RAW 性能与 HAL 限制）、2026-11-03（ISZ）、2026-11-18（`dev-exp` ZSL / `RAW10` / 分块早停接入与 `marble` 真机 Debug 验证）
 - 设备：Redmi Note 12 Turbo / Poco F5，23049RAD8C（marble），LineageOS 24.0-20261027-NIGHTLY，Android 17，无 root（`ro.debuggable=0`）
 - 相机 HAL：Qualcomm CamX/CHI + 小米 `camera.xiaomi.so` 扩展，HIDL `device@3.7`
 - 测试对象：主摄（Camera ID 0）、超广角（ID 2）、前置（ID 1）。微距（ID 3）不在本文范围内。
 - 测试工具：自制 Camera2 探针 App [`probe/`](../../../probe/)，ISZ 实验脚本 [`isz/`](../../../isz/)
 - 相关文档：[`PIPELINE.md`](PIPELINE.md)（处理管线）、[`IMPLEMENTATION.md`](IMPLEMENTATION.md)（实现与实测）、[`VALIDATION.md`](VALIDATION.md)（实拍验证）
 
-标注约定（全部文档通用）：**[App 已实现]** 指已在 PocoPaw 中运行，**[仅原型]** 指只在研究原型 `pipeline/` 中实现，**[未实现]** 指尚未实现。
+标注约定（全部文档通用）：**[App 已实现]** 指已合入 PocoPaw（含 `dev-exp` 新增 ZSL / `RAW10` / 分块早停在 `marble` 真机 `848893fa` 上的实测验证），**[仅原型]** 指只在研究原型 `pipeline/` 中实现，**[未实现]** 指尚未实现（物理补拍素材与需改 ROM 的 HAL 层限制）。
 
 ## PocoPaw 实现情况
 
 第 7 节的 App 设计建议已逐条标注，概括如下：
 
-- 预览只出 YUV，按快门才发 RAW 连拍；RAW 额度（65）不足时先重开设备：**[App 已实现]**（`CameraController`、`RawRequestBudget`）。
+- 预览只出 YUV，按快门才发 RAW 连拍；RAW 额度（65）不足时先重开设备：**[App 已实现]**（`CameraController`、`RawRequestBudget`；启用可选 ZSL 时在预览期采集 RAW 进环形缓冲，并在累计 58 个请求时主动重开设备）。
 - 测光用 YUV 预览，RAW 用手动曝光，并换算成低 ISO + 长快门：**[App 已实现]**（`BurstExposure`）。
 - 逻辑摄像头 4、5、6 不打开：**[App 已实现]**（`CameraCatalog.DENYLIST`）。
 - 从 `ERROR_CAMERA_DEVICE` 恢复：**[App 已实现]**（关闭后重开，最多 3 次）。
-- 连拍先放内存再处理：**[App 已实现]**。RAW 拷贝放在原生内存中，避免 256 MB 的 Java 堆上限；P0 起主摄单一曝光改为边拍边合并，内存与帧数无关（见 [`IMPLEMENTATION.md`](IMPLEMENTATION.md#71-边拍边合并)）。
-- 主摄 2x：ISZ 不可用，改为“中心裁切 + 多帧合并 + Lanczos 放大”：**[App 已实现]**（第 6 节）。
-- 长时间分段采集、RAW10：**[未实现]**（当前没有需要它们的功能）。
+- 连拍先放内存再处理：**[App 已实现]**。RAW 拷贝放在原生内存中，避免 256 MB 的 Java 堆上限；主摄单一曝光（含空间域与 `dev-exp` 夜景频域 `FreqStreamMerge`，`Mac 实测` `t_night` RSS `312 MB`）均改为边拍边合并，内存与帧数无关（见 [`IMPLEMENTATION.md`](IMPLEMENTATION.md#71-边拍边合并)）。
+- 主摄 2x：ISZ 不可用，改为“中心裁切 + 多帧合并 + Lanczos 放大”（`dev-exp` 支持 `1.0×–2.0×` 连续变焦、`12–16` 帧自动提升与可选核回归 2x / 自动 2x）：**[App 已实现]**（第 6 节）。
+- 周期分段采集 / ZSL、`RAW10`：**[App 已实现]**（`dev-exp`，**`真机实测`**）：可选 ZSL 环形缓冲（`ZslRingBuffer`，容量 12，`maxAgeNs = 3 s`、`ZSL_POLL_MS = 200 ms`，实测确认 `marble` `SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME` 与 `elapsedRealtimeNanos()` 同源、`zslTick` 显式开启 `STATISTICS_LENS_SHADING_MAP_MODE_ON` 修复四角暗角漏补、高光过曝保护时保留 `-1 EV` 短帧配合批处理 `scale_to_reference`），每到 58 个 RAW 请求主动关闭重开 `CameraDevice` 清零额度（实测 12 s 周期 `proactive ZSL reopen at 58/65 RAW requests`，0 `ERROR_CAMERA_DEVICE`）；切换 `RAW10` 退出设置时加入 `SurfaceTexture.isReleased` 保护避免 `Reason.CONFIGURATION` 竞态；连拍早停按每 4 帧分块提交并精确计入 `RawRequestBudget`；`RAW10` 紧凑采集（`dumpsys media.camera` 实测 `format 0x25`，体积小 37.5%，`RAW10` 与 `RAW16` 对拍 `99.00 dB`）；仍不支持连续 RAW 视频录制。
 
 ## 1. 结论摘要
 
@@ -270,8 +270,8 @@ ISZEnableCameraRole=0xA
 
 1. **预览只出 YUV。** 按下快门时再发一次 `captureBurst`（不超过 65 帧），拍完立刻 `close()` 掉 `CameraDevice`，重新打开后再恢复预览。这样每次连拍都能拿到完整的 65 帧额度。PocoPaw：**[App 已实现]**。预览只出 YUV；额度不足时才重开设备，不是每次拍完都关闭。
 2. **测光用 YUV 预览，RAW 用手动曝光。** 预览阶段让 AE 收敛，读出曝光时间和 ISO 的乘积，再按需要的欠曝量换算成手动参数设进 RAW 连拍请求。优先压低 ISO、延长快门（受手抖限制），不要沿用 AE 被防频闪锁死的 1/100 s。PocoPaw：**[App 已实现]**（`BurstExposure`，−1 EV，OIS 66 ms / 无 OIS 33 ms；夜景按陀螺仪运动测光定快门）。
-3. **长时间采集要分段。** 每段最多 65 个请求，段间重开设备。可以接受约 0.6 秒的断档，换来约 25 fps 的平均帧率。不要指望用这台机器录连续的 RAW 视频。PocoPaw：**[未实现]**（暂无连续采集功能）。
-4. **主摄连拍先存内存。** 主摄 30 fps 的数据率接近 1 GB/s，65 帧约 2 GB，应该先放在内存里，再异步写盘（或转成 DNG）。如果内存吃紧，优先用 `RAW10`（体积小 37.5%，帧率不变）。PocoPaw：**[App 已实现]**，帧拷贝放在原生内存中，主摄单一曝光边拍边合并；RAW10 **[未实现]**。
+3. **长时间采集要分段。** 每段最多 65 个请求，段间重开设备。可以接受约 0.6 秒的断档，换来约 25 fps 的平均帧率。不要指望用这台机器录连续的 RAW 视频。PocoPaw：**[App 已实现]**（`dev-exp`，**`真机实测`**）：可选 ZSL 模式下（`ZSL_POLL_MS = 200 ms`、`maxAgeNs = 3 s`，`zslTick` 启用 `STATISTICS_LENS_SHADING_MAP_MODE_ON` 避免边角暗角；高光余量场景用 `allowZsl` 保留 `-1 EV` 后补短帧并通过批处理 `scale_to_reference` 对齐）累计 58 个 RAW 请求（`RawRequestBudget.PROACTIVE_REOPEN_THRESHOLD`）即主动关闭重开 `CameraDevice` 清零额度；连拍早停按每 4 帧分块提交以节省额度。仍不支持连续 RAW 视频录制。
+4. **主摄连拍先存内存。** 主摄 30 fps 的数据率接近 1 GB/s，65 帧约 2 GB，应该先放在内存里，再异步写盘（或转成 DNG）。如果内存吃紧，优先用 `RAW10`（体积小 37.5%，帧率不变）。PocoPaw：**[App 已实现]**（`dev-exp`，**`真机实测`**），帧拷贝放在原生内存中，单一曝光（空间域与夜景频域）边拍边合并；可选 `RAW10`（`0x25`）采集与位精确解包（`raw10.{h,cpp}`、`Raw10.kt`、`CameraCatalog.supportsRaw10`、`Settings.raw10Enabled`，ZSL 环形缓冲内以 62.5% 体积保存并在取帧时解包，且 `setRaw10Enabled` 与 `openLocked` 守卫 `SurfaceTexture.isReleased` 防止页面切换配置报错）。
 5. **只用物理 ID 0、1、2（和 3）。** 不要打开 4、5、6；要变焦就自己在物理摄像头之间切换，主摄 2x 用软件裁切。PocoPaw：**[App 已实现]**。
 6. **代码要能从 `ERROR_CAMERA_DEVICE` 里恢复。** 收到这个错误后应关闭设备并重新打开，而不是退出。PocoPaw：**[App 已实现]**。
 7. **要彻底修掉 65 帧上限或启用 ISZ**，需要修改 `com.qti.chi.override.so`（厂商闭源）或 LineageOS 的设备树/HAL 配置，App 侧绕不过去。建议把 4.1 节和第 6 节的日志反馈给 marble 设备树的维护者。PocoPaw：App 侧无法处理，**[未实现]**。

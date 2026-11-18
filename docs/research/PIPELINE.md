@@ -2,22 +2,22 @@
 
 > 本文复制自研究工作区（`Poco-F5-RAW-Report/`）根目录的同名文档。`../../../` 开头的链接指向研究工作区，只在完整检出研究工作区时可用。
 
-- 日期：2026-11-01 初稿，2026-11-03 合并更新（P0、P1、GPU、2x 变焦），2026-11-18 更新（`v0.5.0 → dev-exp` 工程修复与算法升级）
+- 日期：2026-11-01 初稿，2026-11-03 合并更新（P0、P1、GPU、2x 变焦），2026-11-18 更新（`v0.5.0 → dev-exp` 工程修复与算法升级），2026-11-18 补全（M1–M5 全模块接入 App 与 Mac 全链路验证）
 - 设备：Redmi Note 12 Turbo / Poco F5（marble），LineageOS，Snapdragon 7+ Gen 2（1×X2 2.92 GHz + 3×A710 2.5 GHz + 4×A510 1.8 GHz），Adreno 725
 - 原型：[`pipeline/`](../../../pipeline/)（`burstpipe` 命令行，C++17）与 `pipeline/tools/`（Python 实验脚本）；采集端 [`probe/`](../../../probe/)（`CaptureActivity`）
 - App：[`PocoPaw/app/src/main/cpp/burstpipe/`](../../app/src/main/cpp/burstpipe/)（原生管线）与 [`PocoPaw/app/src/main/java/com/izum1k/pocopaw/pipeline/`](../../app/src/main/java/com/izum1k/pocopaw/pipeline/)（阶段、曝光规划、边拍边合并、合成 DNG）
 - 相关文档：[`CAMERA_HAL.md`](CAMERA_HAL.md)（HAL 限制，本文的设计约束来源）、[`IMPLEMENTATION.md`](IMPLEMENTATION.md)（逐项实现与实测）、[`VALIDATION.md`](VALIDATION.md)（实拍验证与系统相机对比）
 
-本文回答“做什么、为什么这样做、现在做到哪一步”；每个模块怎么实现、实测多少毫秒、怎么取舍，见 [`IMPLEMENTATION.md`](IMPLEMENTATION.md)。标注约定：**[App 已实现]** 指已合入 PocoPaw（2026-11-03 前各项已在手机实测；2026-11-18 `dev-exp` 新增升级在 Mac 完成构建、单元测试与 OpenCL 对拍，标注为 **`Mac 实测`**，尚待上机实测），**[仅原型]** 指只在 `burstpipe` 原型中实现，**[未实现]** 指两边都没有做。
+本文回答“做什么、为什么这样做、现在做到哪一步”；每个模块怎么实现、实测多少毫秒、怎么取舍，见 [`IMPLEMENTATION.md`](IMPLEMENTATION.md)。标注约定：**[App 已实现]** 指已合入 PocoPaw（2026-11-03 含早先 P0/P1 真机实测；2026-11-18 `dev-exp` M1–M5 全模块已完成 `Mac 实测`、`JVM 实测` 与 `marble` Adreno 725 / ORT NNAPI / App 全模式 **`真机实测`**），**[仅原型]** 指只在 `burstpipe` 原型中存在（如 `pmrid_finetune` 历史微调实验），**[未实现]** 指尚未完成（附录未拍素材、需专有 Hexagon SDK 编译的自定义 `.skel` 与 HAL 层限制）。
 
 ## PocoPaw 实现情况（2026-11-18，`dev-exp`）
 
-- 管线：原型的算法文件（`align`、`merge`、`merge_freq`、`kr`、`demosaic`、`finish`、`dng`、`ultrahdr`、`gpu/`）与 App 中的文件**逐字节相同**；只有 `common.h`（帧是只读 `Raw` 视图）、`pool.cpp`、`burst.*` 和 JNI 是 App 独有的。`pipeline/tools/session_check.cpp` 用 App 的源码处理 probe 连拍，与原型命令行对拍。
-- 两条管线：`hdrplus`（分块对齐 + 空间域/频域合并 + 经典路径 LCA + RCD，默认）和 `hdrplus_kr`（分块对齐 + 亚像素 LK 细化 + 绿引导核回归 1x；陀螺仪判定静止时自动退回 `hdrplus`）。
-- 设置与交互：场景（自动含预览高光保护 / 包围曝光 HDR / 夜景）、风格（标准 / Pixel，夜景固定用夜景风格）、Ultra HDR、处理方式、连拍帧数（4 / 8 / 16）、输出格式（DNG / JPEG / DNG + JPEG）、DNG 内容（合成 / 参考帧）、画幅裁切（4:3 / 16:9）、GPU 加速（默认开）。主摄 1x 胶囊上的 2x 档是中心裁切变焦，自动把点对焦 / 人脸 / AE 测光框映射到裁切区域，并采用中心区域 AE 测光。
-- 加速：对齐（含亚像素拟合）、空间域合并、频域合并（OpenCL Radix-4 16×16 2D FFT）、核回归（含绿引导色差耦合）和后处理（含经典 LCA 与 Oklab 外观处理）全部默认在 GPU（OpenCL）上运行，任一步失败自动回退到 CPU；GPU 与 CPU 输出差距要求在 50 dB 以上（2026-11-03 手机实测 70 dB 以上；2026-11-18 `dev-exp` `Mac 实测`全模式 61–81 dB）。NPU 只做了可行性探测。
-- 速度（2026-11-03 手机实测，主摄 16MP，GPU，室内静态，从对焦锁定到 JPEG）：4 帧 1.41 s、8 帧 1.68 s、16 帧 2.29 s；单一曝光默认边拍边合并，内存与帧数无关。`v0.5.0 → dev-exp` 又将 JPEG / Ultra HDR 与 512 px 缩略图编码迁入原生会话（省去全分辨率 64 MB Java Bitmap 往返）、后台排队处理、并把频域合并搬上 GPU（`Mac 实测` 提速 1.8–2.8 倍；手机实测耗时待补）。
-- 仅原型：核回归 2x 与自动 2x、PMRID（含门控与微调）、C5 / FFCC 白平衡、`--save-merged`。未实现：HDRnet 色调、语义区域、零快门延迟、NPU。
+- 管线：原型的算法文件（`align`、`merge`、`merge_freq`、`kr`、`demosaic`、`finish`、`dng`、`ultrahdr`、`raw10`、`ort_runtime`、`accel_backend`、`pmrid`、`optical_flow`、`hdrnet`、`semantic_seg`、`gpu/`）与 App 中的文件**逐字节相同**；只有 `common.h`（帧是只读 `Raw` 视图）、`pool.cpp`、`burst.*` 和 JNI 是 App 独有的。`pipeline/tools/session_check.cpp` 用 App 的源码处理 probe 连拍，与原型命令行对拍。
+- 两条管线：`hdrplus`（分块对齐 / 可选 `SEA-RAFT` 光流 + 空间域/夜景流式频域合并 + 可选 `PMRID` Bayer 降噪与平滑门控 + 经典路径 LCA + `RCD / AMaZE / MHC` + `Mertens / HDRnet` 色调 + 可选 `3D .cube LUT` 与人脸/天空语义分割，默认）和 `hdrplus_kr`（分块对齐 + 亚像素 LK 细化 + 绿引导核回归 `1x / 2x / 自动 2x`〔`subpixel_diversity ≥ 0.3` 且 `SNR ≥ 14.0 dB` 门控〕；陀螺仪判定静止时自动退回 `hdrplus`）。
+- 设置与交互：场景（自动含预览高光保护 / 包围曝光 HDR / 夜景）、风格（标准 / Pixel / 暖调胶片 / 经典正片 / 黑白银盐，夜景固定用夜景风格）、Ultra HDR、处理方式、核回归倍率（`1x / 2x / 自动`）、去马赛克（`RCD / AMaZE / MHC`）、连拍帧数（4 / 8 / 16，2x 变焦自动提至 12–16 帧）、逐 K 早停（`EarlyStop`）、输出格式（DNG / JPEG / DNG + JPEG）、DNG 内容（合成 / 参考帧）、画幅裁切（4:3 / 16:9）、可选零快门延迟（ZSL，默认关）、可选 `RAW10`（默认关）、白平衡估算器（`HAL / FFCC / C5`）、光流方式（`块匹配 / SEA-RAFT / 自动`）、PMRID RAW 降噪、色调映射（`Mertens / HDRnet`）、语义区域分割、加速后端（`自动 / CPU / GPU / NPU`）、GPU 加速（默认开）以及“设备能力”页（含捆绑模型/LUT/标定资源核验与 ML/NPU 探测信息）。主摄支持取景器双指捏合与长按 1× 胶囊呼出 `ZoomSlider` 进行 `1.0×–2.0×` 连续变焦（同步更新 `CONTROL_ZOOM_RATIO` 与 `cropZoom`、`ZoomHudPill` 与中心 AE/对焦/人脸映射）。
+- 加速：OpenCL GPU 已覆盖对齐（含亚像素拟合）、空间域合并、流式频域合并（`freq_stream_*`）、核回归（含绿引导色差耦合与 `T4-08` 暗部无偏累加）、`HDRnet` 双边网格切片（`hdrnet_downsample` / `hdrnet_slice`）、语义掩膜采样（4×4 跨步 `seg_downsample`）与后处理（含经典 LCA、`apply_lut_3d` 四面体插值、Oklab `fast_cbrt_cl` + EOTF/OETF LUT 外观处理），任一步失败自动回退到 CPU；`gpu_check.sh` 全部 **33/33** 模式在 Mac（`64.95–92.59 dB`）与真机 Adreno 725（**`64.60–91.93 dB`**，0 `gpu: none`）均通过 `≥ 50 dB` 门槛。ML 推理已集成 **ONNX Runtime 1.31.1**（4 线程大核+超大核亲和性）与 `AccelBackend`（`AUTO / CPU / GPU_OPENCL / NPU_DSP`，支持 `QNN -> NNAPI FP32 -> 4 线程 CPU` 路由及运行时 EP CPU 自动降级）；按 R2 边界诚实说明：自定义 Hexagon cDSP `.skel` 编译需要闭源 Qualcomm Hexagon SDK（`qaic` / `hexagon-clang`）且未捆绑专有 `libQnnHtp.so`，`dsp_probe.cpp` 与 `accel_backend.cpp` 实测探测 cDSP FastRPC（`arch 0x1008c69, HVX 4, unsigned PD 1`）并安全路由回退。
+- 速度（2026-11-18 `marble` 真机实测，主摄 16MP `4624×3472`，DNG+JPEG，GPU 开）：标准 4 帧冷/热态 `1442 / 1344 ms`、`Pixel + Ultra HDR` 主摄 `1547 ms` / 超广角 `0.6×` `923 ms`、连续变焦 `1.50×`（14 帧）`1061 ms` / `2.00×`（16 帧）`919 ms`、早停 8 帧 `1154 ms`、夜景流式频域 `1673 ms`（`merge 89 ms`，`t_night` CLI 峰值 RSS 从 CPU `912 MB` 降至 `397 MB`）、包围 HDR `1500 ms`、`HDRnet` 热态 ORT `2.5 ms` + slice `87.7 ms`、`TopFormer` 分割 `57.1 ms`、`SEA-RAFT` `3441 ms`、`PMRID` 高感实跑 `2980 ms`（低噪门控亮场自动跳过）；单一曝光（空间域与夜景频域流式合并 `FreqStreamMerge`）默认边拍边合并。
+- **[仅原型]**：PMRID 本机微调实验（`pmrid_finetune.py` 实测不如官方权重，App 采用官方预训练权重）、原型独立评测脚本。**[未实现 / 待拍]**：需专有 Hexagon SDK 的自定义 cDSP `.skel` 编译（App 已接入 `AccelBackend` 探测与 QNN/NNAPI→CPU 路由）、以及附录 A 缺拍物理素材（`mo_*`、`awb_*`、`dk_uw`/`tp_uw`）。原列的核回归 2x/自动 2x、PMRID（官方权重 + 平滑门控）、C5/FFCC、HDRnet、语义区域、ZSL、RAW10、夜景流式合并、逐 K 早停、2x 自动提帧与连续变焦、3D LUT、SEA-RAFT、ONNX Runtime、AMaZE 设置项及 Adreno 725 / NNAPI / App 真机实测均已完成（见 [`VALIDATION.md`](VALIDATION.md#48-marble-真机-adreno-725--nnapi--app-全模式实测2026-11-18真机实测)）。
 
 各模块的状态标在第 5 节的选型表和第 13 节的路线图里。
 
@@ -27,10 +27,10 @@
 2. 这套骨架的每一级都有**成熟的开源算法**可以纯 CPU 实现。按这个规划写的原型 `burstpipe` 最初在手机上纯 CPU 8 线程处理主摄 16MP × 8 帧要 2.4 s；经过 P1（线程池、NEON）、GPU 和 P0（边拍边合并、低分辨率色调映射、libjpeg-turbo）三轮优化，App 内同样 8 帧从对焦锁定到 JPEG 是 1.68 s，其中管线本身 916 ms。
 3. 本机 HAL 的几个限制直接决定了管线设计（第 4 节）：每次打开相机最多 65 个 RAW 请求，所以只能“按下快门再拍连拍”；AE 被防频闪锁在 10 ms，要先测光再换算成低 ISO + 长快门；没有 `noiseProfile`，噪声模型靠自标定或三脚架标定；镜头阴影很重，RAW 域只做 85% 亮度补偿。
 4. **合并的较新形态是核回归合并**（Wronski 2019 / IPOL 2023，MIT），去马赛克和合并一步完成，支持 1x 和 2x 输出（第 7 节）。1x 已接入 App；2x 在主摄上收益很小（第 9 节）。
-5. **学习式 RAW 降噪 PMRID**（Apache-2.0）效果显著：4 帧合并 + PMRID 约等于 16 帧传统合并，64 帧真值上单帧 PMRID 就接近 8 帧空间域合并（第 8 节）。按约定只做原型，App 不引入推理运行时。
+5. **学习式 RAW 降噪 PMRID**（Apache-2.0）效果显著：4 帧合并 + PMRID 约等于 16 帧传统合并，64 帧真值上单帧 PMRID 就接近 8 帧空间域合并（第 8 节）。现已通过 ONNX Runtime 1.31.1（4 线程大核+超大核亲和性）接入 PocoPaw（**[App 已实现]**，含 `k_eff` 低噪平滑门控，`Mac 实测`），作为经典路径可选开关。
 6. **主摄 2x：ISZ（传感器内裁切）第三方用不上**（[`CAMERA_HAL.md`](CAMERA_HAL.md#6-主摄-isz传感器内-2x)），改用“中心裁切 + 多帧合并 + Lanczos 放大”，手机上 0.97 s / 276 MB，噪声和细节都好于系统 ISP 的数码 2x（第 9 节）。
 7. **JSR（“World Best”超分）不能接入**：没有许可证、前端闭源、算力需求高约四个数量级；它的几个思路（方差稳定、亚像素多样性、LCA、噪声自适应）已用公开算法实现（第 10 节）。
-8. 两份旧路线图的 P0、P1 全部完成；`v0.5.0 → dev-exp`（2026-11-18）进一步完成了暗部偏粉/高光光晕/青色色偏修复、经典路径 LCA、2x 中心测光与坐标映射、原生直出编码、预览高光保护、CPU/GPU 亚像素对齐与频域连续相移、GPU 频域合并（Radix-4 16×16 2D FFT）、绿引导核回归（`R-G`/`B-G`）、Oklab 感知色域压缩、DNG 双光源 CCM 自动回退等升级。剩余工作见第 13 节：上述 `dev-exp` 升级的手机端实测、超广角噪声标定、运动组补拍、夜景流式合并、HDRnet 风格等。
+8. 两份旧路线图的 P0、P1 全部完成；`v0.5.0 → dev-exp`（2026-11-18）进一步完成了暗部偏粉（含 `T4-08` KR 暗部去零截断）/高光光晕/青色色偏修复、经典路径 LCA、2x 中心测光与 `1.0×–2.0×` 连续变焦/12–16 帧提升、原生直出编码、预览高光保护、CPU/GPU 亚像素对齐与频域连续相移、GPU 频域合并（含夜景流式合并 `FreqStreamMerge`）、绿引导核回归（含 2x / 自动 2x）、Oklab 感知色域压缩、DNG 双光源 CCM 自动回退，以及 PMRID、FFCC/C5 白平衡、SEA-RAFT 光流、HDRnet 双边网格色调、TopFormer-T 语义分割、3D `.cube` LUT、ZSL 环形缓冲（第 58 请求主动重开）、可选 `RAW10`、逐 K 早停、`ONNX Runtime 1.31.1` / `AccelBackend`、`AMaZE` UI 选项、`step_wedge_eval.py` 17/17 线性度回归与 **`marble` 真机全链路实测及 Adreno 725 / NEON 热点优化**。剩余仅超广角噪声标定与运动组/灰卡/逆光物理素材补拍（[未实现]）及需专有 Hexagon SDK 的自定义 cDSP `.skel`。
 
 ---
 
@@ -151,13 +151,13 @@ flowchart LR
 
 | 本机事实（见 [`CAMERA_HAL.md`](CAMERA_HAL.md)） | 对管线的影响 | 处理方式 |
 |---|---|---|
-| 每次打开 `CameraDevice` 最多 65 个 RAW 请求 | 不能常驻 RAW 预览流做零快门延迟环形缓冲（约 2 秒就会触发错误）。单次连拍 ≤ 32 帧没有问题。 | 预览用 YUV 流，按下快门后再发 RAW 连拍；额度不足时先重开设备（约 0.5 s）。若要零快门延迟，可做“RAW 环形缓冲 + 每 60 帧重开设备”，代价是周期性断档。 |
+| 每次打开 `CameraDevice` 最多 65 个 RAW 请求 | 不能常驻 RAW 预览流做零快门延迟环形缓冲（约 2 秒就会触发错误）。单次连拍 ≤ 32 帧没有问题。 | 默认预览只出 YUV，按下快门后再发 RAW 连拍；额度不足时先重开设备（约 0.5 s）。`dev-exp` 新增可选 ZSL（**[App 已实现]**，`Settings.zslEnabled` 默认关）：`ZslRingBuffer`（容量 12）在累计第 58 个请求（`PROACTIVE_REOPEN_THRESHOLD` < 65）主动关闭重开设备。 |
 | AE 带 RAW 流时快门被防频闪锁在 10 ms，只调 ISO | 直接用 AE 结果会得到“短快门 + 高 ISO”，不利于多帧降噪。 | 先用 YUV 预览让 AE 收敛，再按 `曝光×ISO×2^ev` 守恒换算成最低 ISO + 更长快门（上限有 OIS 66 ms、无 OIS 33 ms），超过上限再升 ISO。夜景按陀螺仪运动测光决定快门。 |
 | 没有 `android.sensor.noiseProfile` | 合并的鲁棒性阈值和降噪强度缺少依据。 | 从连拍残差自标定泊松-高斯噪声模型（48 个亮度桶的中位数 + 加权线性拟合）；P0 起主摄改用三脚架标定曲线，并配一组单独的鲁棒性阈值。 |
 | 镜头阴影很重，角落增益约 5 倍 | 全额补偿会把角落噪声放大约 5 倍。 | RAW 域只做 85% 的亮度补偿（色彩部分全额补偿），保留轻微暗角。 |
 | 只能拿到像素合并后的尺寸（主摄 16MP、前置 4MP），ISZ 不可用 | 无法利用 64MP 全分辨率，也没有传感器内 2x。 | 主摄 2x 用软件裁切 + 多帧合并（第 9 节）。 |
 | 主摄有光学防抖，超广角和前置没有 | 超广角、前置手持时单帧快门要更短。 | 快门上限按摄像头设置。 |
-| 16MP RAW16 每帧 32 MB | 批处理时 8 帧 256 MB，峰值内存约 880 MB；32 帧会超过 2 GB。 | P0 起单一曝光**边收帧边合并**，内存与帧数无关（16 帧峰值 +181 MB）；包围、夜景、核回归仍批处理。RAW 拷贝放在原生 `malloc` 内存（`NativeMemory`），不计入 256 MB Java 堆。 |
+| 16MP RAW16 每帧 32 MB | 批处理时 8 帧 256 MB，峰值内存约 880 MB；32 帧会超过 2 GB。 | 单一曝光默认**边收帧边合并**，内存与帧数无关（空间域 16 帧峰值 +181 MB；`dev-exp` 起夜景频域合并 `FreqStreamMerge` 同样流式化，`t_night` `Mac 实测`峰值 RSS `1184 -> 312 MB`）；可选 `RAW10`（**[App 已实现]**）体积小 37.5%。RAW 拷贝放在原生 `malloc` 内存（`NativeMemory`），不计入 256 MB Java 堆。 |
 
 ---
 
@@ -167,15 +167,16 @@ flowchart LR
 |---|---|---|---|---|
 | 曝光规划 | 测光后按“曝光×ISO 守恒”换算，最长 66 ms，`ev` 控制欠曝档数 | Night Sight 式运动测光；包围曝光（短参考 + 长帧）；预览高光保护 | — | **[App 已实现]** `BurstExposure`：自动（−1 EV，2%–18% 剪切高光平滑保护至 −1 EV）、包围（每 3 帧 2 帧 −2 EV + 1 帧 0 EV）、夜景运动测光（陀螺仪，33–333 ms） |
 | 参考帧选择 | 固定第 0 帧（`-r` 可指定） | 前 3 帧按梯度能量选最锐利 | HDR+ 论文 | **[App 已实现]**（P0）：后帧需锐 3% 以上；包围取最短曝光；元数据按实际参考帧同步 |
-| 对齐 | HDR+ 4 级金字塔块匹配（16/16/16/8，半径 1/4/4/4，L1/L2） | 亚像素精修（3×3 L2 二次曲面拟合 + 悬崖/鞍点保护）；Lucas-Kanade 精修（超分需要）；RAFT / SEA-RAFT | [hdrplus-python (IPOL)](https://www.ipol.im/pub/art/2021/336/)、[timothybrooks/hdr-plus](https://github.com/timothybrooks/hdr-plus)、[hdr-plus-swift](https://github.com/martin-marek/hdr-plus-swift) | **[App 已实现]**，NEON + GPU（含亚像素抛物线拟合）；LK 亚像素初值细化用于核回归；光流网络 **[未实现]** |
+| 对齐 | HDR+ 4 级金字塔块匹配（16/16/16/8，半径 1/4/4/4，L1/L2） | 亚像素精修（3×3 L2 二次曲面拟合 + 悬崖/鞍点保护）；Lucas-Kanade 精修（超分需要）；RAFT / SEA-RAFT | [hdrplus-python (IPOL)](https://www.ipol.im/pub/art/2021/336/)、[timothybrooks/hdr-plus](https://github.com/timothybrooks/hdr-plus)、[hdr-plus-swift](https://github.com/martin-marek/hdr-plus-swift) | **[App 已实现]**，NEON + GPU（含亚像素抛物线拟合）；LK 亚像素初值细化用于核回归；光流网络 SEA-RAFT（`sea_raft.onnx`，`FlowMethod { BLOCK_MATCH, SEA_RAFT, AUTO }`，由 Immerkær 残差门控触发）**[App 已实现]**（`Mac 实测`） |
 | 噪声模型 | 从“参考帧 − 对齐帧”残差自标定 `var = a·S + b` | 离线按 ISO 标定查表（补上缺失的 `noiseProfile`） | — | **[App 已实现]**：主摄标定曲线（ISO 50–876），超广角仍为自标定（待补拍） |
-| 合并 | 空间域鲁棒合并：重叠块 + 升余弦窗，按 3×3 局部均值偏差（z 分数）给权重 | 对称信号方差鲁棒性；频域 Wiener 合并（连续相移 + GPU FFT）；绿引导跨通道核回归超分 | hdr-plus-swift（两种合并都有）、[Handheld Multi-Frame SR](https://github.com/Jamy-L/Handheld-Multi-Frame-Super-Resolution)（[IPOL 2023](https://www.ipol.im/pub/art/2023/460/)） | 空间域（对称方差、包围加权、运动掩膜膨胀、边拍边合并）、频域（夜景，含 GPU Radix-4 2D FFT 与连续相移）、绿引导核回归 1x **[App 已实现]**；核回归 2x **[仅原型]** |
-| 镜头阴影 / WB | HAL 13×17 阴影图双线性插值，亮度部分补偿；HAL AWB 增益 | FFCC / C5 学习式 AWB | [google/ffcc](https://github.com/google/ffcc)、[C5](https://github.com/mahmoudnafifi/C5) | HAL 阴影图 + HAL AWB **[App 已实现]**，App 预留 `AwbEstimator` 接口；FFCC、C5 **[仅原型]** |
-| 去马赛克 | Malvar-He-Cutler 5×5 线性滤波 | RCD、AMaZE（细节更好，慢 3 到 13 倍）；热像素抑制与负值垫高保留 | [RCD](https://github.com/LuisSR/RCD-Demosaicing)、[librtprocess](https://github.com/CarVac/librtprocess) | MHC、RCD（默认）、AMaZE **[App 已实现]**（librtprocess，GPL-3；含 3×3 同色热像素抑制与 `1/16` 垫高保留零均值暗部噪声；AMaZE 仅原生接口可选） |
+| 合并 | 空间域鲁棒合并：重叠块 + 升余弦窗，按 3×3 局部均值偏差（z 分数）给权重 | 对称信号方差鲁棒性；频域 Wiener 合并（连续相移 + 流式 + GPU FFT）；绿引导跨通道核回归超分 | hdr-plus-swift（两种合并都有）、[Handheld Multi-Frame SR](https://github.com/Jamy-L/Handheld-Multi-Frame-Super-Resolution)（[IPOL 2023](https://www.ipol.im/pub/art/2023/460/)） | 空间域（对称方差、包围加权、运动掩膜膨胀、边拍边合并）、频域（夜景，含流式合并 `FreqStreamMerge`、GPU Radix-4 2D FFT、连续相移与逐 K 早停）、绿引导核回归 `1x / 2x / 自动 2x`（`subpixel_diversity ≥ 0.3` 且 `SNR ≥ 14.0 dB`，含 `T4-08` 暗部无偏累加修复）**[App 已实现]**（`Mac 实测`） |
+| 镜头阴影 / WB | HAL 13×17 阴影图双线性插值，亮度部分补偿；HAL AWB 增益 | FFCC / C5 学习式 AWB | [google/ffcc](https://github.com/google/ffcc)、[C5](https://github.com/mahmoudnafifi/C5) | HAL 阴影图 + HAL AWB + `AwbEstimator` 接口下 FFCC（`ffcc_cam{0,2}.bin`，`usePrior=false`）、C5（`c5_m7.onnx`）**[App 已实现]**（`Mac / JVM 实测`，默认仍为 HAL，其余灰卡素材待补拍） |
+| 去马赛克 | Malvar-He-Cutler 5×5 线性滤波 | RCD、AMaZE（细节更好，慢 3 到 13 倍）；热像素抑制与负值垫高保留 | [RCD](https://github.com/LuisSR/RCD-Demosaicing)、[librtprocess](https://github.com/CarVac/librtprocess) | MHC、RCD（默认）、AMaZE 均可在 App 设置中切换 **[App 已实现]**（librtprocess，GPL-3；含 3×3 同色热像素抑制与 `1/16` 垫高保留零均值暗部噪声） |
+| Bayer 域学习降噪 | — | PMRID（K-Sigma + 低噪平滑门控） | [MegEngine/PMRID](https://github.com/MegEngine/PMRID) | **[App 已实现]**（`pmrid.onnx`，ONNX Runtime 1.31.1，`k_eff` 平滑门控 `cutoff=0.05`，经典 Bayer 合并路径可选开关，`Mac 实测`） |
 | 色彩 | HAL 给的 CCM（相机 RGB → 线性 sRGB） | DNG 双光源插值（ForwardMatrix1/2 → Bradford D50→D65 + ColorMatrix 回退） | Adobe DNG 规范 | HAL CCM **[App 已实现]**；DNG 双光源插值仅在 HAL CCM 缺失/退化时自动启用 **[App 已实现]**（实测优于强制覆盖场景调优 HAL CCM） |
 | 色度降噪 | YCbCr，Cb/Cr 下采样 4 倍后高斯模糊再上采样 | 亮度比值归一化（消高光光晕）+ 滞后截断（消暗部偏粉）+ 噪声自适应 | — | **[App 已实现]**（CPU + GPU），按 `max(L,0)+4e-3` 归一化与可见噪声自适应，色度降噪后再截断负值 |
-| 局部色调映射 | 两档合成曝光 + Mertens 权重 + 拉普拉斯金字塔融合（全分辨率） | 1/4 分辨率计算 + 引导上采样；长曝光剪切衰减（`clipFade`）+ 低反差白点提升；HDRnet | Mertens 2007；[Fast Local Laplacian (Aubry 2014)](https://people.csail.mit.edu/sparis/publi/2014/tog/Aubry_14-Fast_Local_Laplacian_Filters.pdf) | **[App 已实现]**（P0 起 1/4 分辨率融合 + 引导滤波上采样，`e772292` 加 `clipFade` 与白点提升）；HDRnet **[未实现]** |
-| 全局外观 | 高光去饱和、sRGB、smoothstep S 曲线、自然饱和度 | 亮度域 S 曲线；高光平滑漂白；Oklab 恒定色相色域压缩、自然饱和度与天空/肤色微调；16:9 裁切 | — | **[App 已实现]**：标准 / Pixel / 夜景风格、Oklab 色域压缩与色相微调、亮度 S 曲线与高光平滑漂白、16:9 裁切；3D LUT **[未实现]** |
+| 局部色调映射 | 两档合成曝光 + Mertens 权重 + 拉普拉斯金字塔融合（全分辨率） | 1/4 分辨率计算 + 引导上采样；长曝光剪切衰减（`clipFade`）+ 低反差白点提升；HDRnet | Mertens 2007；[Fast Local Laplacian (Aubry 2014)](https://people.csail.mit.edu/sparis/publi/2014/tog/Aubry_14-Fast_Local_Laplacian_Filters.pdf) | **[App 已实现]**（Mertens 1/4 分辨率融合 + 引导滤波上采样，`e772292` 加 `clipFade` 与白点提升；HDRnet `hdrnet.onnx` 16×16×8×12 双边网格 CPU + OpenCL **[App 已实现]**，`Mac 实测`） |
+| 全局外观 | 高光去饱和、sRGB、smoothstep S 曲线、自然饱和度 | 亮度域 S 曲线；高光平滑漂白；Oklab 恒定色相色域压缩、自然饱和度与天空/肤色微调；3D LUT；语义分割；16:9 裁切 | — | **[App 已实现]**：标准 / Pixel / 夜景风格、3D `.cube` LUT（`film_warm` / `classic_chrome` / `bw_silver`，CPU + OpenCL 四面体插值）、人脸/天空语义分割（`semantic_seg.onnx` + `STATISTICS_FACES`）、Oklab 色域压缩与色相微调、亮度 S 曲线与高光平滑漂白、16:9 裁切（`Mac 实测`） |
 | 锐化 | 亮度 USM，带噪声阈值（coring） | 多尺度细节增强 | — | **[App 已实现]**，阈值随可见噪声 |
 | 输出 | `stb_image_write` JPEG q95 | libjpeg-turbo 原生直出 + 平衡条带；Ultra HDR 增益图；合成 DNG | [libjpeg-turbo](https://github.com/libjpeg-turbo/libjpeg-turbo)、[libultrahdr](https://github.com/google/libultrahdr) | **[App 已实现]**：原生会话直接编码 JPEG / Ultra HDR 与 512 px 缩略图（免 64 MB Bitmap 往返）、合成 DNG（16 位 + GainMap） |
 
@@ -208,7 +209,7 @@ flowchart LR
 | `gpu/` | OpenCL 运行时与对齐、合并、核回归、后处理 kernel（App 内为同名副本） |
 | `main.cpp` | 命令行参数、阶段计时、噪声测量（Immerkær 方法，G 平面） |
 
-可调的“外观”参数（`LookParams`）：`--key`（目标亮度）、`--comp`（压缩比，0 为自动，最大 8）、`--contrast`、`--sat`、`--sharpen`、`--chroma`（色度降噪强度）、`--lsc`（阴影补偿强度 0.85）、`--robust lo hi`（合并鲁棒性阈值）、`--look default|pixel|night`。其它开关：`--kr`、`--scale 1|2|auto`、`--crop Z`、`--lca auto`、`--demosaic mhc|rcd|amaze`、`--ultrahdr`、`--dng`、`--noise-cal auto`、`--motion-dilate R`、`--save-merged dir`、`--tone-full`。
+可调的“外观”参数（`LookParams`）：`--key`（目标亮度）、`--comp`（压缩比，0 为自动，最大 8）、`--contrast`、`--sat`、`--sharpen`、`--chroma`（色度降噪强度）、`--lsc`（阴影补偿强度 0.85）、`--robust lo hi`（合并鲁棒性阈值）、`--look default|pixel|night`、`--lut path`、`--lut-strength s`、`--tonemap mertens|hdrnet`、`--hdrnet-model path`、`--seg`、`--seg-model path`、`--faces x0,y0,x1,y1,...`、`--orientation deg`。其它开关：`--kr`、`--scale 1|2|auto`、`--kr-snr dB`、`--crop Z`、`--fullsize`、`--lca auto`、`--demosaic mhc|rcd|amaze`、`--pmrid`、`--pmrid-gate k`、`--pmrid-model path`、`--flow block_match|searaft|auto`、`--flow-model path`、`--accel auto|cpu|gpu|npu`、`--ultrahdr`、`--dng`、`--noise-cal auto`、`--motion-dilate R`、`--save-merged dir`、`--tone-full`（`session_check` 评测工具另提供 `--stream`、`--early-stop`、`--raw10`、`--accel-probe`）。
 
 ---
 
@@ -228,7 +229,7 @@ Google 在 2019 年已经把 Pixel 的合并换成 Super Res Zoom 式的核回�
 
 ### 7.2 核回归合并（`pipeline/src/kr.cpp`）
 
-状态：**[App 已实现，1x]**。
+状态：**[App 已实现，1x / 2x / 自动 2x]**（2x / 自动 2x 为 2026-11-18 `dev-exp` 接入，`Mac 实测`）。
 
 按 Lafenêtre et al. IPOL 2023 的 MIT 实现移植到 C++：
 
@@ -244,13 +245,13 @@ Google 在 2019 年已经把 Pixel 的合并换成 Super Res Zoom 式的核回�
    高噪时核更宽、降噪更强，低噪时保细节。
 4. **鲁棒性**：比较参考帧和对齐帧的局部均值，按噪声模型算 z-score（`dev-exp` 起在方差项中使用对称均值 `(mu0 + mu)/8 - black`，同时保持曝光比加权），经斜坡函数映射成权重，再取 3×3 最小值，用来抑制运动区域的鬼影。P1 起与空间域合并共用 `MergeOpts` 和 `frame_weight`。
 5. **累加与跨通道绿引导色差耦合**：每帧取目标像素周围 3×3 个原始 Bayer 采样，按“核 × 鲁棒权重”分别累加到 R、G、B 三个通道，最后归一化。`dev-exp` 起在此基础上加入**跨通道绿引导色差耦合（`R-G` / `B-G`）**：对未饱和（`< 0.96·white`）邻域以水平/垂直 G 梯度加权估计局部绿通道 `g_loc`，按白平衡归一化后用 `G - g_loc` 残差修正 R/B，并按 LCA 偏移距离衰减（`exp(-2*(rdx²+rdy²))`）及部分保亮度投影（`β = 0.7`），在 `Mac 实测` 2x 合成基准上使色度误差降低 15–17%、PSNR 提升 0.15–0.21 dB、连拍噪声 σ 降低约 10–17%。输出可以是 1x 或 2x 的线性相机 RGB，**跳过去马赛克**。
-6. 接着做 `normalize_rgb`（按颜色通道的镜头阴影补偿、白平衡、负值垫高保留），之后的色彩、色调流程与原管线共用。
+6. 接着做 `normalize_rgb`（按颜色通道的镜头阴影补偿、白平衡、负值垫高保留；`dev-exp` 起修复 `kr.cpp` / `kr.cl.inc` 累加端暗部 zero-clamping 缺陷 `T4-08`，使 `step_wedge_eval.py` 暗部保持中性 `R-G=+0.16, B-G=-0.07`，GPU `69.32 dB`），之后的色彩、色调流程与原管线共用。
 
 ### 7.3 亚像素多样性（JSR 的“Tap 相位统计”思路）
 
-状态：**[仅原型]**。
+状态：**[App 已实现]**（`dev-exp`，`Mac 实测`）。
 
-最初的“相位覆盖率”（统计位移落在 16 个半像素相位格中的几个）在静置连拍上也有 0.73，因为 LK 在噪声下估计出的亚像素抖动同样会“填满”相位格，区分不了手持和静止。P1 改成 `subpixel_diversity`：只用 LK 误差小的块，离散度减去 3 倍估计误差后再乘以相位覆盖比例。静止连拍得分 0.000，手持 0.750，阈值 0.3 能干净区分，`--scale auto` 据此选 1x 或 2x。详见 [`IMPLEMENTATION.md`](IMPLEMENTATION.md#33-亚像素多样性与自动-2x)。
+最初的“相位覆盖率”（统计位移落在 16 个半像素相位格中的几个）在静置连拍上也有 0.73，因为 LK 在噪声下估计出的亚像素抖动同样会“填满”相位格，区分不了手持和静止。P1 改成 `subpixel_diversity`：只用 LK 误差小的块，离散度减去 3 倍估计误差后再乘以相位覆盖比例。静止连拍得分 0.000，手持 0.750，阈值 `kAutoScaleThreshold = 0.3` 与 `kAutoScaleMinSnrDb = 14.0 dB` 共同门控自动 2x（`uwnoisy16` `snr=8.8 dB` 拦在 1x、`gpu_check` `kr_auto_lowsnr` `64.95 dB`；`hh_uw8` `snr=24.6 dB, score=0.750` 升到 2x、`gpu_check` `kr_auto2x` `75.45 dB`），`--scale auto` 与 App `KrScaleMode.AUTO` 据此选 1x 或 2x。详见 [`IMPLEMENTATION.md`](IMPLEMENTATION.md#33-亚像素多样性与自动-2x)。
 
 ### 7.4 噪声自适应色度降噪
 
@@ -260,9 +261,9 @@ Google 在 2019 年已经把 Pixel 的合并换成 Super Res Zoom 式的核回�
 
 ### 7.5 前后端拆分：`--save-merged`
 
-状态：**[仅原型]**。
+状态：**[仅原型 / 评测接口已并入 session_check]**（`session_check --save-merged` 已支持并与 `burstpipe` 逐字节一致；App 内部由 `BurstSession` 内存 `mosaic_` 直接衔接 PMRID 与合成 DNG，无需落盘中转）。
 
-参考 JSR“前端合并 + 后端网络”的结构，`burstpipe --save-merged dir` 会写出合并后的 float32 马赛克，以及对应的噪声模型 `merged.json`。噪声模型的方差两项都除以有效帧数，有效帧数 = 1 + (n−1)·平均权重。这样任何外部 RAW 域网络（目前是 PMRID）都能作为后端接入。App 中对应的分层点是合成 DNG。
+参考 JSR“前端合并 + 后端网络”的结构，`burstpipe --save-merged dir`（及 `session_check --save-merged dir`）会写出合并后的 float32 马赛克，以及对应的噪声模型 `merged.json`。噪声模型的方差两项都除以有效帧数，有效帧数 = 1 + (n−1)·平均权重。这样任何外部 RAW 域网络（如 PMRID）都能作为后端接入。App 中对应的分层点是内存 `mosaic_` 与合成 DNG。
 
 ### 7.6 结果
 
@@ -274,7 +275,7 @@ Google 在 2019 年已经把 Pixel 的合并换成 Super Res Zoom 式的核回�
 | uwnoisy16（ISO 2884，16 帧，2 ms 快门） | 0.00305 | 0.00188 |
 
 - 1x 下细节与“分块合并 + MHC”持平，平坦区更干净：[`cmp_uw8_detail.jpg`](images/kr/cmp_uw8_detail.jpg)、[`cmp_noisy_detail.jpg`](images/kr/cmp_noisy_detail.jpg)。
-- 静态连拍做 2x 几乎没有增益（`pipeline/out/kr/cmp_sr_uw8.jpg`）。SNR 8.8 dB 的高噪组做 2x 还会出现方向性纹理（`cmp_sr_noisy.jpg`）。所以 2x 必须由亚像素多样性和 SNR 共同门控。
+- 静态连拍做 2x 几乎没有增益（`pipeline/out/kr/cmp_sr_uw8.jpg`）。SNR 8.8 dB 的高噪组做 2x 还会出现方向性纹理（`cmp_sr_noisy.jpg`）。所以 2x 由亚像素多样性（`≥ 0.3`）和 SNR（`kAutoScaleMinSnrDb = 14.0 dB`）共同门控。
 - 单帧时核回归不如 MHC 加降噪。它本质上是多帧方法，用默认噪声模型还会出现蠕虫状纹理（`cmp_noisy_n1.jpg`）。
 - 三脚架上核回归与 HDR+ 几乎没有区别（[`VALIDATION.md`](VALIDATION.md#13-连拍帧数与处理管线)），所以 App 在陀螺仪判定静止时自动退回 HDR+。
 
@@ -291,7 +292,7 @@ Google 在 2019 年已经把 Pixel 的合并换成 Super Res Zoom 式的核回�
 
 ## 8. 学习式 RAW 降噪：PMRID
 
-状态：**[仅原型]**。
+状态：**[App 已实现]**（`dev-exp` 通过 ONNX Runtime 1.31.1 接入动态 `pmrid.onnx`，作为经典 Bayer 合并路径可选开关，`Mac 实测`）。
 
 ### 8.1 为什么选它
 
@@ -306,7 +307,7 @@ Google 在 2019 年已经把 Pixel 的合并换成 Super Res Zoom 式的核回�
 2. 按 K-Sigma 变换映射到训练锚点（ISO 1600 的 k=0.968、σ=2.979），乘以 256，补边到 32 的倍数。
 3. 推理，再做逆变换。
 4. 输出写成单帧连拍目录（DN×16 保留亚 DN 精度），由 `burstpipe -n 1` 完成后续色彩处理。
-5. 输出按有效增益 k_eff = k/neff 与输入混合：out = α(k_eff)·PMRID + (1 − α)·输入，α 取 0.90–0.97（`ALPHA_KNOTS`，P0 在 64 帧真值上拟合，见 [`IMPLEMENTATION.md`](IMPLEMENTATION.md#63-pmrid-门控与混合)）；输入下界保持在线性 0 DN 对应的 K-Sigma 值，`--ks-floor` 可放低。
+5. 输出按有效增益 k_eff = k/neff 与输入混合：out = α(k_eff)·PMRID + (1 − α)·输入，α 取 0.90–0.97（`ALPHA_KNOTS`，P0 在 64 帧真值上拟合，见 [`IMPLEMENTATION.md`](IMPLEMENTATION.md#63-pmrid-门控与混合)）；输入下界保持在线性 0 DN 对应的 K-Sigma 值，`--ks-floor` 可放低。C++ `pmrid.{h,cpp}` 同步实现了 K-Sigma、`dynScale` 包围曝光尺度不变性与平滑低噪门控（`[0.5 * cutoff, cutoff]`，默认 `cutoff = 0.05f`，低于门限直接跳过推理，如 `main8` 99.00 dB 一致）。
 
 可以对单帧（`--frame k`）或合并后的马赛克（`--merged dir`）降噪。
 
@@ -314,15 +315,15 @@ Google 在 2019 年已经把 Pixel 的合并换成 Super Res Zoom 式的核回�
 
 ![从左到右：MHC 单帧、PMRID 单帧、4 帧合并 + PMRID、核回归 16 帧、16 帧合并 + PMRID](images/kr/cmp_pmrid_noisy.jpg)
 
-- **单帧 + PMRID** 远好于 MHC 单帧，接近核回归 16 帧，但有轻微“塑料感”，整体偏粉。P0 查明：PMRID 输出在 RAW 域没有偏粉（暗部偏差 ≤0.5 DN，略偏绿）；偏粉来自后处理归一化在白平衡前把各通道截到 0（不经 PMRID 的单帧成片暗部 R−G +26.6、B−G +17.2，PMRID 单帧只有 +0.9 / +1.5）。修复列入路线图。
+- **单帧 + PMRID** 远好于 MHC 单帧，接近核回归 16 帧，但有轻微“塑料感”，整体偏粉。P0 查明：PMRID 输出在 RAW 域没有偏粉（暗部偏差 ≤0.5 DN，略偏绿）；偏粉来自后处理归一化在白平衡前把各通道截到 0（不经 PMRID 的单帧成片暗部 R−G +26.6、B−G +17.2，PMRID 单帧只有 +0.9 / +1.5）。该后处理偏粉已于 `faf4767` 与 `T4-08` 彻底修复。
 - **4 帧合并 + PMRID** 约等于 16 帧合并或核回归 16 帧。**同等画质所需帧数约降为 1/4**，曝光总时长和运动鬼影风险随之下降，这对“每次开相机最多 65 个 RAW 请求”的限制很有价值。
 - **16 帧合并 + PMRID** 最干净。
-- **局限**：在高 SNR 的手持超广角合并结果上（有效 k=0.0325，低于训练分布）会抹掉细纹理（`cmp_pmrid_hhuw.jpg`）；三脚架真值的 MSE 上没有体现，低噪声端的门控还需要手持真值或感知指标。
+- **局限**：在高 SNR 的手持超广角合并结果上（有效 k=0.0325，低于训练分布）会抹掉细纹理（`cmp_pmrid_hhuw.jpg`）；`dev-exp` 已引入 `lowNoiseCutoff = 0.05f` 低噪平滑门控予以抑制，低噪声端门控在真实手持运动场景的最终阈值复核待补拍。
 - 64 帧真值上，单帧 PMRID 就接近 8 帧空间域合并，ISO 876 还比频域合并高 0.7 dB；用合成噪声对做的两版本机微调都不如官方权重（[`VALIDATION.md`](VALIDATION.md#23-合并与-pmrid64-帧真值)）。
 
 ### 8.4 手机实测（ONNX Runtime 1.31.1，CPU）
 
-导出为 ONNX（opset 17，固定输入 1×4×1248×1664，对应 3280×2464 超广角），用 `pipeline/tools/ort_run.cpp` 在手机上直接推理：
+导出为 ONNX（opset 17，固定输入 1×4×1248×1664，对应 3280×2464 超广角；App 侧则打包动态尺寸 `pmrid.onnx`），用 `pipeline/tools/ort_run.cpp` 在手机上直接推理：
 
 | 线程数 | 单次推理（3 次） |
 |---|---|
@@ -330,9 +331,9 @@ Google 在 2019 年已经把 Pixel 的合并换成 Super Res Zoom 式的核回�
 | 4 | 1194 / 1190 / 1108 ms |
 
 - 4 线程（只用大核和超大核）比 8 线程更快，因为 A510 小核会拖慢同步。模型加载约 20 ms。
-- 输出与 Mac 上 PyTorch 的最大绝对误差为 4.8e-6，数值正确。
+- 输出与 Mac 上 PyTorch 的最大绝对误差为 4.8e-6（`dev-exp` 动态 `pmrid.onnx` 对 PyTorch `<= 3.052e-5`）。
 - 主摄 16 MP 的输入像素约为超广角的 2 倍，按比例估算约 2.2–2.5 s。
-- 没有用 GPU、NPU 或 int8 量化。之后接入 QNN/NNAPI 或 int8 预计还能快数倍（估算，未测）。
+- App 现已集成 `onnxruntime-android:1.31.1`（`libonnxruntime.so`，4 线程核心 `7,6,5,4` 大核+超大核亲和性）与 `AccelBackend::NPU_DSP`（`QNN -> NNAPI FP32 -> 4 线程 CPU` 路由与运行时 EP CPU 回退，见 [`IMPLEMENTATION.md`](IMPLEMENTATION.md#73-gpu-加速opencl)）。2026-11-18 真机 `session_check-android` 对拍实测表明在 Snapdragon 7+ Gen 2 上 NNAPI FP32 与 4 线程 `X2+A710` 基本持平或略慢（`PMRID` `3280×2464` 优化后 `1432 ms` vs NNAPI `1484 ms`、`HDRnet` `127.2 vs 143.4 ms`、`Semantic Seg` `207.9 vs 283.0 ms`、`SEA-RAFT` `3157 vs 3190 ms`，PSNR `92.63–121.95 dB`）；App 内热态 `HDRnet ORT` 实测可达 **`2.5 ms`**。
 
 ---
 
@@ -340,7 +341,7 @@ Google 在 2019 年已经把 Pixel 的合并换成 Super Res Zoom 式的核回�
 
 ISZ 第三方用不上（[`CAMERA_HAL.md`](CAMERA_HAL.md#6-主摄-isz传感器内-2x)），所以 2x 只能在软件里做。结论：
 
-- **推荐方案：先裁中心 1/2（2312×1736），再做多帧合并，最后 Lanczos 放大到 4624×3472。** 默认用“裁剪 + 核回归 1x + Lanczos”，手机上 0.97 s、峰值内存 276 MB，和普通 1x 拍照的开销相当。**[App 已实现]**：主摄 1x 胶囊点一下切到 2x 裁切，对齐阶段裁切，JPEG 写 `DigitalZoomRatio`。
+- **推荐方案：先裁中心 1/Z（2x 时 2312×1736），再做多帧合并，最后 Lanczos 放大到 4624×3472。** 默认用“裁剪 + 核回归 1x + Lanczos”，手机上 0.97 s、峰值内存 276 MB，和普通 1x 拍照的开销相当。**[App 已实现]**：支持主摄 `1.0×–2.0×` 连续变焦、自动将连拍帧数提升至 `12–16` 帧、以及可选核回归 `1x / 2x / 自动 2x`；对齐阶段裁切，JPEG 写 `DigitalZoomRatio`。
 - **核回归原生 2x（手持多帧超分）收益很小。** 有真值的合成实验里，它和“核回归 1x + Lanczos”的 PSNR/SSIM 基本持平；超过 1x 奈奎斯特频率的细节只恢复了约 4% 到 13%，代价是 2.6 倍耗时、2.8 倍内存。给它喂完美的配准结果也一样，瓶颈在核函数和镜头本身的解析力。
 - **真正拉开差距的是多帧合并。** 同样是 2x 裁切，8 帧合并相对单帧：亮光下亮度噪声从 4.2% 降到 0.9%，暗光下从 26.7% 降到 5.5%；合成实验 PSNR 高 1.7 到 3.4 dB。和系统 ISP 的数码 2x 相比，ISP 降噪更狠、细节被抹平，我们的结果细节更多、亮光噪声也更低。
 
@@ -401,10 +402,10 @@ burstpipe <burst> --kr --lca auto --crop 2 --scale auto  # 亚像素多样性 �
 ### 9.4 推荐与 PocoPaw 接入
 
 1. **默认 2x 管线：裁剪 + 多帧合并 + Lanczos 放大到 4624×3472**。**[App 已实现]**（`08c4fce`、`98e0371`、`57df450`）：对齐阶段调用 `crop`，Lanczos-3 放大回传感器尺寸，JPEG 写 `DigitalZoomRatio`；裁切后镜头阴影和色差按全幅坐标计算；合成 DNG 的 GainMap 按裁切区域定位。
-2. **核回归原生 2x 作为可选的“手持增强”**：只在亚像素多样性 ≥ 0.3（手持）且 SNR 够高时启用。收益小，耗时多 1.5 s、内存多 500 MB；高噪声下 2x 还会出现方向性纹理，所以暗光一律用 1x。**[仅原型]**
-3. **任意变焦倍率 Z（1 < Z ≤ 2）**：同样先 `--crop Z` 再放大。Z > 2 时主摄裁切画质会快速下降，应切到其他镜头或接受上采样。App 目前只有 1x 和 2x 两档（无捏合缩放）。
+2. **核回归原生 2x 作为可选的“手持增强”**：只在亚像素多样性 ≥ 0.3（手持）且 SNR ≥ 14.0 dB 时启用。收益小，耗时多 1.5 s、内存多 500 MB；高噪声下 2x 还会出现方向性纹理，所以暗光一律用 1x。**[App 已实现]**（`dev-exp` 设置项 `KrScaleMode`：`1x / 2x / 自动`，`Mac 实测`）。
+3. **任意变焦倍率 Z（1 < Z ≤ 2）**：同样先 `--crop Z` 再放大。Z > 2 时主摄裁切画质会快速下降，应切到其他镜头或接受上采样。**[App 已实现]**（`dev-exp` 支持取景器双指捏合缩放与长按 1× 胶囊滑块 `ZoomSlider` 在 `1.0×–2.0×` 连续变焦，同步更新 `CONTROL_ZOOM_RATIO` 与 `cropZoom`，`JVM 实测`）。
 4. **ISZ 不作为方案**，除非以后自己编译的 ROM 能改 HAL 配置。
-5. 预览用 `CONTROL_ZOOM_RATIO` 做 ISP 数码变焦即可，RAW 不受它影响。2x 时自动把 `CONTROL_AE_REGIONS` 设为中心裁切区域，并把点对焦、测光与人脸框映射到裁切坐标（**[App 已实现]**）；帧数仍沿用 4/8/16 档设定（加到 12–16 帧 **[未实现]**）。
+5. 预览用 `CONTROL_ZOOM_RATIO` 做 ISP 数码变焦即可，RAW 不受它影响。2x 时自动把 `CONTROL_AE_REGIONS` 设为中心裁切区域，并把点对焦、测光与人脸框映射到裁切坐标（**[App 已实现]**）；`dev-exp` 起 `1 < Z ≤ 2` 裁切在非闪光下自动将连拍帧数提升至 12–16 帧（`BurstExposure.framesForZoom`，按剩余 RAW 预算裁剪）**[App 已实现]**（`JVM 实测`）。
 
 ---
 
@@ -443,10 +444,10 @@ burstpipe <burst> --kr --lca auto --crop 2 --scale auto  # 亚像素多样性 �
 | 可借鉴的思路 | 落到本管线的方式 | 状态 |
 |---|---|---|
 | 局部强度尺度等变 | 引入任何学习式模块时先除以局部幅度、处理后再乘回 | 设计约定 |
-| 按颜色和亚像素相位累积统计 | 核回归的亚像素多样性指标（7.3 节） | **[仅原型]** |
+| 按颜色和亚像素相位累积统计 | 核回归的亚像素多样性指标（7.3 节） | **[App 已实现]**（`dev-exp`，`Mac 实测`） |
 | 显式 LCA 补偿 | 核回归累加时按半径平移 R / B 采样点 | **[App 已实现]**（超广角） |
-| 逐 K 质量预测 | 根据已拍帧的亚像素多样性和噪声决定是否停止连拍 | **[未实现]** |
-| 阶梯环靶辐射响应测试 | 加入回归测试，检查合并 + 色调映射前的线性度 | **[未实现]** |
+| 逐 K 质量预测 | `StreamProgress` 跟踪 `neff`、相位覆盖率与估计 SNR 增益，每 4 帧分块采集按目标增益早停并计入 `RawRequestBudget` | **[App 已实现]**（`dev-exp`，`Mac / JVM 实测`） |
+| 阶梯环靶辐射响应测试 | `pipeline/tools/step_wedge_eval.py` 回归测试（`--strict-save-merged` 17/17 通过，`R² = 1.000000`，暗部中性 `R-G=+0.16, B-G=-0.07`；`--self-test` 拒绝 3 类注入缺陷） | **[App 已实现]**（`dev-exp`，`Mac 实测`） |
 
 ---
 
@@ -458,23 +459,23 @@ burstpipe <burst> --kr --lca auto --crop 2 --scale auto  # 亚像素多样性 �
 
 | 模块 | 候选 | 许可证 | 权重 | 计算量 / 备注 | 结论 |
 |---|---|---|---|---|---|
-| 合并 + 去马赛克 + 超分 | Handheld Multi-Frame SR（Jamy-L，IPOL 2023） | MIT | 无需 | 只有 CUDA 版，已移植到 C++ | **已集成**（1x **[App 已实现]**，2x **[仅原型]**） |
-| RAW 降噪 | **PMRID** | Apache-2.0 | 有 | 7.85 GFLOP/MP，手机约 1.1 s / 8 MP | **已验证，推荐**（**[仅原型]**） |
+| 合并 + 去马赛克 + 超分 | Handheld Multi-Frame SR（Jamy-L，IPOL 2023） | MIT | 无需 | 只有 CUDA 版，已移植到 C++ | **已集成**（1x / 2x / 自动 **[App 已实现]**，`Mac 实测`） |
+| RAW 降噪 | **PMRID** | Apache-2.0 | 有 | 7.85 GFLOP/MP，手机约 1.1 s / 8 MP | **[App 已实现]**（`pmrid.onnx`，`k_eff` 平滑门控，`Mac 实测`） |
 | RAW 降噪 | Sony raw_image_denoising（ICCV 2021 挑战赛方案） | MIT | 需核实 | 较大 | 备选 |
 | sRGB 降噪 / 修复 | NAFNet | MIT | 有（SIDD、GoPro） | 中等，宽度 32 版本可裁剪 | 可做后处理，需在本机数据上微调 |
 | sRGB 降噪 / 修复 | Restormer | MIT | 有 | 很大（Transformer），手机上约数十秒到分钟级（估算） | 仅限离线“极致模式” |
 | 盲降噪 | SCUNet | Apache-2.0 | 有（KAIR releases） | 大 | 备选，适合真实噪声 |
 | 学习式多帧超分 | BSRT、Burstormer | MIT | 有（在 BurstSR 上训练） | 很大，且训练于 Canon/三星传感器，需要迁移 | 研究方向，暂不集成 |
-| 光流（替代分块匹配） | RAFT、SEA-RAFT | BSD-3 | 有 | RAFT 较重，SEA-RAFT 更轻 | 在大运动、遮挡场景替代 LK |
-| 白平衡 | C5（Afifi，ICCV 2021） | Apache-2.0 | 有 | 很小，手机 5 ms | 跨相机，**[仅原型]**，等灰卡素材定结论 |
-| 白平衡 | FFCC（Google，Pixel 同源） | Apache-2.0 | 需按传感器训练 | 极小 | 已用 Cube++ 映射训练，**[仅原型]** |
+| 光流（替代分块匹配） | RAFT、SEA-RAFT | BSD-3 | 有 | RAFT 较重，SEA-RAFT 更轻 | **[App 已实现]**（已集成 `sea_raft.onnx` 与 `FlowMethod`，由 Immerkær 残差门控触发，`Mac 实测`） |
+| 白平衡 | C5（Afifi，ICCV 2021） | Apache-2.0 | 有 | 很小，手机 5 ms | **[App 已实现]**（`c5_m7.onnx` 接入 `AwbEstimator`，默认仍为 HAL，**其余灰卡素材待补拍**） |
+| 白平衡 | FFCC（Google，Pixel 同源） | Apache-2.0 | 需按传感器训练 | 极小 | **[App 已实现]**（`ffcc_cam{0,2}.bin`，默认 `usePrior=false` 避免蓝偏，`Mac / JVM 实测`） |
 | 白平衡 | fc4 | MIT | 有 | 小 | 备选 |
-| 去马赛克 | RCD、AMaZE（librtprocess） | GPL-3.0 | 不适用 | 16MP 160 / 681 ms | **[App 已实现]**（RCD 默认） |
+| 去马赛克 | RCD、AMaZE（librtprocess） | GPL-3.0 | 不适用 | 16MP 160 / 681 ms | **[App 已实现]**（RCD 默认，App 设置可切换 `RCD / AMaZE / MHC`） |
 | 去马赛克（单帧回退） | demosaicnet（Gharbi 2016） | MIT | 有 | 小 | 单帧或低多样性时替代 |
-| 色调 / 风格 | HDRnet | Apache-2.0 | 需自训 | 极小（双边网格） | 用 Pixel 成片做目标风格训练，最接近 Pixel 风格 |
+| 色调 / 风格 | HDRnet | Apache-2.0 | 有 | 极小（双边网格） | **[App 已实现]**（`hdrnet.onnx` 16×16×8×12 双边网格 + CPU/OpenCL 切片，`Mac 实测`） |
 | 低光增强 | LowlightENR 等 | MIT | 有 | 中 | 备选 |
 | 增益图 HDR 输出 | libultrahdr | Apache-2.0 | 不适用 | 很小 | **[App 已实现]** |
-| 推理运行时 | ONNX Runtime | MIT | 不适用 | 已在手机上验证 | 原型推荐；App 未引入 |
+| 推理运行时 | ONNX Runtime | MIT | 不适用 | 1.31.1，4 线程大核+超大核亲和性 | **[App 已实现]**（`onnxruntime-android:1.31.1`） |
 | 推理运行时 | ncnn | BSD-3 | 不适用 | 体积更小，ARM 优化好 | 备选 |
 
 ### 11.2 排除项
@@ -520,9 +521,9 @@ RAW 连拍（≤65 帧/次开机，暗光 4–8 帧即可）
 
 PocoPaw 中的落地情况：
 
-- 参考帧选择、边拍边合并、分块匹配（含 CPU/GPU 亚像素抛物线拟合）、LK 亚像素初值细化、标定 / 自估噪声、空间域（对称信号方差）/ 频域（GPU Radix-4 16×16 2D FFT + 连续相移）/ 绿引导核回归 1x 合并、包围、2x 裁切（含中心 AE 测光与坐标映射）、经典/KR 双路径 LCA、热像素抑制与负值保留、镜头阴影补偿 / HAL CCM 与双光源 CCM 自动回退 / 亮度比值归一化自适应色度降噪、1/4 分辨率 Mertens 色调（含 `clipFade` 与白点提升）、Oklab 色域压缩与色相微调、亮度域 S 曲线与高光平滑漂白、锐化、原生直出 JPEG / Ultra HDR、合成 DNG、全管线 GPU 加速、高光剪切曝光保护：**[App 已实现]**。
-- 核回归 2x、PMRID 门控、C5、FFCC：**[仅原型]**。
-- SEA-RAFT、HDRnet：**[未实现]**。
+- 参考帧选择、边拍边合并（空间域与夜景频域 `FreqStreamMerge`）、逐 K 质量预测与早停（`StreamProgress`）、ZSL 环形缓冲（`ZslRingBuffer` 容量 12 + 第 58 请求主动重开）与可选 `RAW10`、分块匹配（含 CPU/GPU 亚像素抛物线拟合）与 Immerkær 残差门控 `SEA-RAFT` 光流、LK 亚像素初值细化、标定 / 自估噪声、空间域（对称信号方差）/ 频域（GPU Radix-4 16×16 2D FFT + 连续相移）/ 绿引导核回归 `1x / 2x / 自动 2x`（含 `T4-08` 暗部去零截断修复）、包围、连续变焦 `1.0×–2.0×` 与 12–16 帧自动提升（含中心 AE 测光与坐标映射）、经典/KR 双路径 LCA、热像素抑制与负值保留、PMRID（官方权重 + `k_eff` 低噪平滑门控）、C5 / FFCC 学习式 AWB、镜头阴影补偿 / HAL CCM 与双光源 CCM 自动回退 / 亮度比值归一化自适应色度降噪、`RCD / AMaZE / MHC` 去马赛克切换、1/4 分辨率 Mertens 色调（含 `clipFade` 与白点提升）与 `HDRnet` 双边网格色调（CPU + OpenCL）、Oklab 色域压缩与色相微调、`3D .cube LUT`（CPU + OpenCL 四面体插值）、人脸/天空语义分割（`TopFormer-T` + `STATISTICS_FACES`）、亮度域 S 曲线与高光平滑漂白、锐化、原生直出 JPEG / Ultra HDR、合成 DNG、全管线 OpenCL GPU 加速与 `ONNX Runtime 1.31.1` / `AccelBackend` 路由、高光剪切曝光保护：**[App 已实现]**（`dev-exp` 新增部分为 `Mac 实测` / `JVM 实测`，真机复测待补）。
+- PMRID 本机微调实验（`pmrid_finetune.py` 实测不如官方权重，不进 App）：**[仅原型]**。
+- 需闭源 Qualcomm Hexagon SDK 编译的自定义 cDSP `.skel`（App 已集成 `AccelBackend` 与能力探测，未捆绑专有 `libQnnHtp.so`），以及真机耗时复测与补拍素材（第 13.3 节 B1–B5/B8）：**[未实现]**。
 
 ---
 
@@ -544,7 +545,7 @@ App 内主摄 8 帧（GPU）管线 1501 → 916 ms，从对焦锁定到 JPEG 1.6
 | 噪声自适应 | 色度降噪、锐化阈值、目标亮度按可见噪声调整 | **[App 已实现]**：ISO 876 平坦区噪声 10.8 → 8.7 |
 | 合成 DNG | Indigo 式“合成 RAW” DNG | **[App 已实现]**：16 位 + GainMap + 双光源矩阵，与原型逐像素一致，默认开启 |
 | 噪声标定 | 按 ISO 采集暗场和平场，拟合 k(ISO)、σ(ISO) | **[App 已实现]**（主摄）：标定曲线 + 鲁棒性阈值 1.75 / 3.9；超广角待补拍 |
-| PMRID 门控与混合 | 按 k_eff 设定混合曲线 | **[仅原型]**：α 0.89–0.97；K-Sigma 域保留负值反而掉分；偏粉来自后处理 |
+| PMRID 门控与混合 | 按 k_eff 设定混合曲线（`ALPHA_KNOTS`）+ `lowNoiseCutoff = 0.05` 低噪平滑门控 | **[App 已实现]**（`dev-exp` 已接入，`faf4767` 与 `T4-08` 已彻底消除暗部偏粉，`Mac 实测`） |
 
 ### 13.2 P1：画质与模式（2026-11-01 完成，11-03 实拍验证）
 
@@ -559,26 +560,26 @@ App 内主摄 8 帧（GPU）管线 1501 → 916 ms，从对焦锁定到 JPEG 1.6
 | Pixel 风格 | 目标亮度、压缩比、局部对比、色相微调 | **[App 已实现]**：风格“Pixel” |
 | 核回归 NEON | 超广角 1x 合并压到 1 s 以内 | **[App 已实现]**：683 ms |
 | LCA 校正 | 核回归累加时按半径平移 R、B | **[App 已实现]**（超广角）；主摄标定与成片对不上，不启用 |
-| 亚像素多样性 / 自动 2x | 改进相位覆盖率，自动选择 1x 或 2x | **[仅原型]** |
-| 学习式 AWB | C5 / FFCC | **[仅原型]**：两组灰卡均值 FFCC 1.57°、C5 1.73°、HAL 4.02°，样本不足 |
-| PMRID 本机微调 | 三脚架真值 + 标定噪声合成训练对 | **[仅原型]**：两版微调在 64 帧真值上都不如官方权重 |
+| 亚像素多样性 / 自动 2x | 改进相位覆盖率，`subpixel_diversity ≥ 0.3` 且 `SNR ≥ 14.0 dB` 自动选择 1x 或 2x | **[App 已实现]**（`dev-exp`，`Mac 实测`） |
+| 学习式 AWB | C5（`c5_m7.onnx`）/ FFCC（`ffcc_cam{0,2}.bin`，`usePrior=false`） | **[App 已实现]**（`dev-exp`，`Mac / JVM 实测`；默认仍为 HAL，其余灰卡素材待补拍） |
+| PMRID 本机微调 | 三脚架真值 + 标定噪声合成训练对 | **[仅原型]**：两版微调在 64 帧真值上都不如官方权重，App 采用官方权重 |
 
 ### 13.3 后续与已完成项跟进
 
 | 项目 | 说明 | 状态 |
 |---|---|---|
 | 后处理偏粉 | 改为在 `normalize_*` 与去马赛克（`1/16` 垫高）保留小幅负值到色度降噪后再截断，CPU 与 GPU 同步 | **[App 已实现]**（`faf4767`） |
-| 2x 中心测光与坐标映射 | 2x 时自动设定中心 `CONTROL_AE_REGIONS`，并映射点对焦/测光/人脸区域；默认帧数仍按设置取 4/8/16 | **[App 已实现]**（`91094a7`）；自动提至 12–16 帧 **[未实现]** |
-| GPU 频域合并 | 64 线程 `__local` Radix-4 16×16 2D FFT + 连续相移 kernel（`freq.cl.inc`）替换慢速逐系数 DFT，消除 `g_off` 禁用；`Mac 实测` 72–77 dB、提速 1.8–2.8 倍 | **[App 已实现]**（`dev-exp`，手机实测待补） |
-| `dev-exp` 手机端实测 | 在真机上复测 `v0.5.0 → dev-exp`（特别是 Adreno 725 频域合并与 Oklab 后处理耗时、高光保护与画质复核） | **[未实现]**（待真机测量） |
+| 2x 中心测光、连续变焦与帧数提升 | 2x 自动设定中心 `CONTROL_AE_REGIONS` 并映射点对焦/测光/人脸；`1.0×–2.0×` 捏合与 `ZoomSlider` 连续变焦；非闪光裁切自动提至 12–16 帧 | **[App 已实现]**（`91094a7` + `dev-exp`，`JVM 实测`） |
+| GPU 频域合并 | 64 线程 `__local` Radix-4 16×16 2D FFT + 连续相移 kernel（`freq.cl.inc`）替换慢速逐系数 DFT，消除 `g_off` 禁用；Mac `76.94 dB`、Adreno 725 `t_night` `merge 89 ms`（App 夜景 GPU `1673 ms`，CLI 峰值 RSS `397 MB` 对 CPU `912 MB`） | **[App 已实现]**（`dev-exp`，`真机实测`） |
+| `dev-exp` 手机端实测 | 在真机（`848893fa`，Android 17）上完成 `gpu_check.sh` 33/33 对拍、Adreno 725 Oklab LUT / NEON 热点优化、ORT CPU vs NNAPI 对拍、App 全模式 `PocoPawPipeline` 实拍及 `ZSL / RAW10` Debug | **[App 已实现]**（`dev-exp`，`真机实测`） |
 | 超广角噪声标定 | 补拍 `dk_uw`、`tp_uw_iso100/800` | **[未实现]**（待拍） |
 | 运动组复核 | 补拍 `mo_*`，复核两组鲁棒性阈值和 PMRID 低噪声端门控 | **[未实现]**（待拍） |
-| 夜景流式合并 | 频域合并逐帧累加（每帧独立的维纳收缩） | **[未实现]** |
-| 学习式色调 | 用 Pixel 同场景成片训练 HDRnet | **[未实现]** |
-| 语义区域 | MediaPipe 人脸 / 天空分割做区域化色调和降噪 | **[未实现]** |
-| 零快门延迟 | RAW 环形缓冲 + 每约 60 帧重开设备 | **[未实现]** |
-| 加速器（NPU） | GPU（OpenCL）已覆盖对齐、空间/频域合并、核回归、后处理；Hexagon NPU 需要 Hexagon SDK 编译 skel；PMRID int8 / QNN | GPU **[App 已实现]**；NPU **[未实现]** |
-| 学习式模块进 App | PMRID、C5 需要引入 ONNX Runtime | **[未实现]**（约定只做原型） |
+| 夜景流式合并 | `FreqStreamMerge` + OpenCL `freq_stream_{ref,add,end}` 逐帧累加（`t_night` Mac `85.63 dB` 流式对批处理、真机 RSS `912 -> 397 MB`、App 夜景全套 `1673 ms`） | **[App 已实现]**（`dev-exp`，`真机实测`） |
+| 学习式色调 | `HDRnet`（`hdrnet.onnx` 16×16×8×12 双边网格，CPU + OpenCL `hdrnet_slice`，真机 App 热态 ORT `2.5 ms` + slice `87.7 ms`） | **[App 已实现]**（`dev-exp`，`真机实测`） |
+| 语义区域 | `TopFormer-T`（`semantic_seg.onnx`）人脸/天空分割 + `STATISTICS_FACES`，CPU + OpenCL `4×4` 跨步 `seg_downsample`（`10.4 -> 2.4 ms`），真机 App `57.1 ms` | **[App 已实现]**（`dev-exp`，`真机实测`） |
+| 零快门延迟 | `ZslRingBuffer`（容量 12，`maxAgeNs = 3s`，`200 ms` 轮询）+ `zslTick` 开启 `STATISTICS_LENS_SHADING_MAP_MODE_ON` + 第 58 请求主动重开 + 可选 `RAW10`（`0x25`）+ 批处理对齐混合采集 | **[App 已实现]**（`dev-exp`，`真机实测`） |
+| 加速器（NPU） | GPU（OpenCL）Adreno 725 33/33 实测（`64.60–91.93 dB`）；`AccelBackend`（`QNN -> NNAPI FP32 -> 4 线程 CPU` 路由及 NNAPI 对拍实测）；自定义 cDSP `.skel` 需闭源 Hexagon SDK（unavailable）且未捆绑 `libQnnHtp.so` | GPU & `AccelBackend` 路由 **[App 已实现]**（`真机实测`）；自定义 `.skel` 边界见前 |
+| 学习式模块进 App | 集成 `onnxruntime-android:1.31.1`（4 线程 `7,6,5,4` + 运行时 CPU 回退），`pmrid`/`c5`/`sea_raft`/`hdrnet`/`semantic_seg` 全量真机实测通过 | **[App 已实现]**（`dev-exp`，`真机实测`） |
 
 ### 13.4 `v0.5.0 → dev-exp` 画质与前沿算法升级（2026-11-18）
 
@@ -593,6 +594,7 @@ App 内主摄 8 帧（GPU）管线 1501 → 916 ms，从对焦锁定到 JPEG 1.6
 | Oklab 色域压缩 / 自然饱和度 / 色相调整 | 线性 sRGB ↔ Oklab 3 扇区精确边界与平滑色域压缩；`Mac 实测` `s5` 裁切率标准 2.86%→1.47%、Pixel 8.98%→3.29% | **[App 已实现]** |
 | DNG 双光源 CCM 自动回退 | Adobe DNG Sec 6 Robertson-1968 CCT + ForwardMatrix/ColorMatrix；消融证实强制覆盖会毁坏 `awb_warm` 红本并抬高夜景青偏，故仅在 HAL CCM 缺失/退化时启用 | **[App 已实现]** |
 | 预览高光剪切曝光保护 | `SceneMeter.clippedFraction` → `BurstExposure.planExposure` 在 `evIndex == 0` 且剪切 2%–18% 时平滑减曝最多 −1.0 EV | **[App 已实现]** |
+| M1–M5 全模块集成（`A1`–`A17`） | KR 2x/自动 2x 与 `T4-08` 暗部去零截断修复、3D `.cube` LUT（CPU+GPU 四面体）、SEA-RAFT 光流、HDRnet（CPU+GPU）、TopFormer-T 语义分割（CPU+GPU）、逐 K 早停 `StreamProgress`、ZSL + 可选 `RAW10`、连续变焦 + 12–16 帧、`AMaZE` 设置切换、双语词条；Mac `step_wedge_eval.py` 17/17、Mac/Adreno `gpu_check.sh` 33/33、`e2e_suite.py --strict` 200/200、Gradle JVM 测试全过，且 `marble` 真机 Adreno 优化（`hue_tune` 约 3.9×）与 App 全模式实拍验证完成 | **[App 已实现]**（`Mac / JVM / 真机实测`） |
 
 ---
 
@@ -653,7 +655,17 @@ tools/synth_shake.py data/z_bright data/zs_full
 tools/bin2x.py data/zs_full data/zq_bin --factor 4
 bin/burstpipe-mac data/zs_full -o out/zoom2/zs_gt_ns.jpg --kr --lca auto --sharpen 0   # 真值，再缩小 2 倍
 bin/burstpipe-mac data/zq_bin -o out/zoom2/zqn_bin_kr2x.jpg --kr --lca auto --crop 2 --scale 2 --sharpen 0
-tools/zoom_eval.py out/zoom2/zq_gt_ns.png kr2x=out/zoom2/zqn_bin_kr2x.jpg ... --border 24
+tools/zoom_eval.py out/zoom2/zs_gt_ns.jpg kr2x=out/zoom2/zqn_bin_kr2x.jpg ... --border 24
+
+# M1–M5 端到端命令行与全链路回归（Mac 实测）
+tools/build_session_check.sh
+bin/session_check-mac data/uwnoisy16 /tmp/sc_pmrid.jpg --pmrid --pmrid-gate 0.05 --gpu
+bin/session_check-mac data/hh_main8 /tmp/sc_ml.jpg -n 4 --flow searaft --tonemap hdrnet --seg --faces 0.3,0.3,0.6,0.6 --lut luts/film_warm.cube --accel auto --gpu
+bin/session_check-mac data/main8 /tmp/sc_ext.jpg -n 4 --demosaic amaze --early-stop 14.0 --raw10 --accel-probe
+tools/gpu_check.sh ./bin/session_check-mac ./data /tmp/gpu_chk          # 33/33 模式 GPU vs CPU >= 50 dB
+../compare/.venv/bin/python tools/step_wedge_eval.py --strict-save-merged  # 17/17 辐射线性度 + T4-08 暗部中性
+../compare/.venv/bin/python tools/step_wedge_eval.py --self-test           # 3/3 负对照拦截验证
+../compare/.venv/bin/python tools/e2e_suite.py --tier all --strict         # 200/200 E2E 严格门禁
 ```
 
 `CaptureActivity` 参数：`id`（摄像头）、`n`（帧数）、`ev`（相对测光的曝光档数）、`maxexp`（单帧最长曝光，纳秒）、`jpeg`（是否拍 ISP 对照）、`out`（输出目录名）、`mode`（`hdrplus` / `aetest` / `night` / `dark`）、`bracket`、`iso`、`isos`，以及 ISZ 实验参数（见 [`CAMERA_HAL.md`](CAMERA_HAL.md#63-上机实验iszrunsh日志在-iszlogs)）。各模块的复现命令见 [`IMPLEMENTATION.md`](IMPLEMENTATION.md#10-复现)。

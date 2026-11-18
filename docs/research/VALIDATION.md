@@ -2,16 +2,16 @@
 
 > 本文复制自研究工作区（`Poco-F5-RAW-Report/`）根目录的同名文档。`../../../` 开头的链接指向研究工作区，只在完整检出研究工作区时可用。
 
-- 日期：2026-11-01 夜间（全设置组合对比）、2026-11-02（对焦与测量流）、2026-11-03（P1 实拍素材、2x 变焦）、2026-11-18（`dev-exp` Mac 基准回归与 OpenCL 对拍）
-- 设备：Redmi Note 12 Turbo / Poco F5（marble），LineageOS 24.0-20261027-NIGHTLY。第 1–3 节为真机实拍与测量；第 4 节为基于已采集 RAW 素材在 Mac 上跑的 **`Mac 实测`** 对拍基准（尚未上机复测）。
-- 脚本与原始数据：[`compare/`](../../../compare/)（系统相机对比，`compare/out/report/metrics.json`、[`appendix_table.md`](../../../compare/out/report/appendix_table.md)）、[`pipeline/tools/`](../../../pipeline/tools/)（`p1_check.py`、`noise_calib.py`、`p1_truth_eval.py`、`awb_eval.py`、`zoom_eval.py`）、[`isz/`](../../../isz/)（2x 同场景拍摄）；原始数字在 [`pipeline/out/p1/RESULTS.md`](../../../pipeline/out/p1/RESULTS.md) 的 “real P1 captures” 之后几节
+- 日期：2026-11-01 夜间（全设置组合对比）、2026-11-02（对焦与测量流）、2026-11-03（P1 实拍素材、2x 变焦）、2026-11-18（`dev-exp` M1–M5 基准回归、阶梯环靶线性度、OpenCL 33 模式对拍与 `marble` 真机全功能实测）
+- 设备：Redmi Note 12 Turbo / Poco F5（marble），Snapdragon 7+ Gen 2 / Adreno 725，LineageOS 24.0-20261027-NIGHTLY（Android 17）。第 1–3 节为 P0/P1 真机实拍与测量；第 4.1–4.7 节为 Mac 原生与 JVM 回归（**`Mac 实测`** / **`JVM 实测`**），第 4.8 节为 `2026-11-18` 在已解锁连接手机（`848893fa`）上的 **`真机实测`** 全模块与 Adreno 725 / NNAPI / App 实测。
+- 脚本与原始数据：[`compare/`](../../../compare/)（系统相机对比，`compare/out/report/metrics.json`、[`appendix_table.md`](../../../compare/out/report/appendix_table.md)）、[`pipeline/tools/`](../../../pipeline/tools/)（`p1_check.py`、`noise_calib.py`、`p1_truth_eval.py`、`awb_eval.py`、`zoom_eval.py`、`step_wedge_eval.py`、`e2e_suite.py`）、[`isz/`](../../../isz/)（2x 同场景拍摄）；原始数字在 [`pipeline/out/p1/RESULTS.md`](../../../pipeline/out/p1/RESULTS.md) 的 “real P1 captures” 之后几节
 - 相关文档：[`IMPLEMENTATION.md`](IMPLEMENTATION.md)（被验证的实现）、[`PIPELINE.md`](PIPELINE.md)（路线图）、[`CAMERA_HAL.md`](CAMERA_HAL.md)
 
 标注约定同其它文档：**[App 已实现]**、**[仅原型]**、**[未实现]**。
 
 ## 问题跟进（2026-11-18）
 
-第 1 节的对比用的是 PocoPaw 0.3.2；发现的 7 个问题都已在后续版本中处理，状态写在 1.7 节（`v0.5.0 → dev-exp` 又补了高光光晕、青偏、融合剪切衰减、Oklab 色域压缩与预览高光保护）。第 2 节的实拍验证促成了 P0 的噪声标定接入和 P1 拍摄页修复。第 4 节补入 2026-11-18 `dev-exp` 对 `e772292` 基线的 **`Mac 实测`** 回归（含真值、2x 合成、鬼影、实拍高光裁切、双光源 CCM 消融与 OpenCL 全模式对拍；`dev-exp` 真机复测待补）。还缺的素材：运动组 `mo_*`、四组灰卡 `awb_*`、白天逆光包围、超广角暗场与三脚架组（附录 A）。
+第 1 节的对比用的是 PocoPaw 0.3.2；发现的 7 个问题都已在后续版本中处理，状态写在 1.7 节（`v0.5.0 → dev-exp` 又补了高光光晕、青偏、融合剪切衰减、Oklab 色域压缩与预览高光保护）。第 2 节的实拍验证促成了 P0 的噪声标定接入和 P1 拍摄页修复。第 4 节补入 2026-11-18 `dev-exp` M1–M5 全模块集成后的 **`Mac 实测`** / **`JVM 实测`** 回归（含真值、2x 合成、鬼影、实拍高光裁切、双光源 CCM 消融、OpenCL 33 模式全对拍、`step_wedge_eval.py` 17/17 辐射线性度与 `T4-08` KR 暗部去零截断修复、`e2e_suite.py` 200/200 E2E 门禁及 Gradle JVM 单元测试），并在第 4.8 节补齐 **`marble` 真机全功能实测**（Adreno 725 `gpu_check.sh` 33/33 对拍与 kernel 优化前后耗时、ORT `1.31.1` CPU vs NNAPI FP32 对拍、以及 App 内 `PocoPawPipeline` 全模式实测与 `ZSL / RAW10` 实机 Debug）。还缺的物理素材：运动组 `mo_*`、四组灰卡 `awb_*`、白天逆光包围、超广角暗场与三脚架组（附录 A，`[待拍]`）。
 
 ## 0. 结论摘要
 
@@ -20,7 +20,7 @@
 3. **对焦是最大的变量**：两个 App 冷启动后按中心连续对焦都不可靠，HAL 每次锁定的位置散布约 1 D。PocoPaw 改为 App 自己做反差扫描，对焦距离标准差从 0.15–0.20 D 降到 0.04–0.06 D，偏软张数 6 → 0。
 4. **P1 实拍素材（13 组）**：频域合并对 64 帧真值比空间域高 0.7–2.6 dB，确认夜景用频域；PMRID 官方权重单帧接近 8 帧空间域合并，且好于两版本机微调；HAL 噪声自估偏低 5–20%，标定曲线配单独阈值后已接入 App；主摄 LCA 不启用；两组灰卡上 C5 / FFCC 好于 HAL，但样本太少。
 5. **主摄 2x**：8 帧合并 + 裁切相对单帧，亮光亮度噪声 4.2% → 0.9%、暗光 26.7% → 5.5%，细节和噪声都好于系统 ISP 的数码 2x。
-6. **`dev-exp` 回归（2026-11-18，`Mac 实测`）**：相对 `e772292` 基线，亚像素对齐 + 频域连续相移使 `tp_main_iso100` 频域合并提升 +0.20–0.21 dB；绿引导核回归使 2x 合成基准色度误差降 15%–17%、实拍 KR 噪声 σ 降 10%–17%；Oklab 色域压缩使亮高光组 `s5` 裁切从 2.86%→1.47%（Pixel 8.98%→3.29%）；包括新上 GPU 的频域合并在内全部 OpenCL 模式对 CPU 达到 61–81 dB（≥ 50 dB 门槛）。
+6. **`dev-exp` 回归（2026-11-18，`Mac 实测` + `真机实测`）**：相对 `e772292` 基线，亚像素对齐 + 频域连续相移使 `tp_main_iso100` 频域合并提升 +0.20–0.21 dB；绿引导核回归使 2x 合成基准色度误差降 15%–17%、实拍 KR 噪声 σ 降 10%–17%；Oklab 色域压缩使亮高光组 `s5` 裁切从 2.86%→1.47%（Pixel 8.98%→3.29%）；`gpu_check.sh` 覆盖 M1–M5 全部 **33/33** OpenCL 模式在 Mac（`64.95–92.59 dB`）与真机 Adreno 725（**`64.60–91.93 dB`**，0 `gpu: none`）均通过 50 dB 门槛；`step_wedge_eval.py` 17/17 通过、`e2e_suite.py --strict` **200/200** 与 Gradle JVM 测试全过；针对 Adreno 725 优化后，`hue_tune` 提速约 3.9×、`pixel_look` 约 1.7×、`seg_downsample` 约 4.3×，App 内 1× 标准 4 帧 **1344 ms**、2× 16 帧超分 **919 ms**、夜景 GPU 流式频域 **1673 ms**（且 CLI 峰值 RSS 从 912 MB 降至 397 MB）。
 
 ---
 
@@ -173,7 +173,7 @@ notap 组对准的是画面中央九宫格（中心权重最高），不是贴�
 **测量流：场景检测与白平衡框架**（`fbd0440`，**[App 已实现]**）。HAL 的 AE、AWB 用的是 ISP 内部统计，不经过任何输出流，所以“把测光、白平衡挪到测量流”实际是指：App 读 YUV 分析流自己统计，再通过请求参数下发。这次保留 HAL AE（接管它要重做闪光、防频闪，收敛也更慢），测量流只做两件事：
 
 - **场景变化检测**：取景时每 8 帧插入一个带分析流的预览请求（约 4 Hz），`SceneMeter` 在 64×48 格上统计场景亮度（线性亮度 ÷ ISO × 曝光时间，与 AE 无关）和 8×6 网格亮度。手机静止、没有点对焦保持时，如果相对上次扫描后的状态亮度变化超过 1 EV，或者网格相关系数低于 0.9，并持续 0.5 s，就重新完整扫描对焦。
-- **白平衡框架**：同一帧用结果里的色调曲线、CCM 和 AWB 增益反推回白平衡前的线性相机 RGB。新增 `AwbEstimator` 接口，白平衡增益统一由 `applyWhiteBalance` 下发，预览和拍照一致，管线从 RAW 结果读到同一组增益。默认实现返回 null，即继续用 HAL AWB；C5 将来作为它的一个实现接入。
+- **白平衡框架**：同一帧用结果里的色调曲线、CCM 和 AWB 增益反推回白平衡前的线性相机 RGB。新增 `AwbEstimator` 接口，白平衡增益统一由 `applyWhiteBalance` 下发，预览和拍照一致，管线从 RAW 结果读到同一组增益。`dev-exp` 已将 `FFCC`（`usePrior = false`）与 `C5` 接入 `AwbEstimator`（设置 `AwbEstimatorMode`），默认仍保持 `HAL`（`null`）。
 - 带分析流的请求不能放进重复 burst：burst 里已经排队的其余请求会把扫描请求最多推迟 8 帧，导致冷启动扫描收不到样本，所以改为用定时器单独 `capture()`。
 
 反推是否准确（`meter_check.py`，冷启动 10 次，拍照时把最近一帧测量网格和 RAW 第 0 帧网格（扣黑电平、乘 HAL 阴影图）写进日志）：
@@ -378,7 +378,7 @@ s4 会把仅有的纹理抹平，**默认仍是 s2**。手机端夜景频域：�
 
 | 合成运动组 | `classic_mhc`（基线 → `dev-exp`） | `classic_rcd`（基线 → `dev-exp`） | `kr`（基线 → `dev-exp`） |
 |---|---|---|---|
-| `syn_hhmain` | 0.500 → 0.502（p99 1.50, 静止 0.283） | 0.503 → 0.510（p99 1.50, 静止 0.283） | 0.517 → **0.505**（p99 1.50, 静止 0.284） |
+| `syn_hhmain` | 0.500 → 0.502（p99 1.50, 静止 0.283） | 0.503 → 0.502（p99 1.50, 静止 0.283） | 0.517 → **0.504**（p99 1.50, 静止 0.284） |
 | `syn_uw8` | 0.590 → 0.591（p99 1.50, 静止 0.621） | 0.584 → **0.580**（p99 1.50, 静止 0.619） | 0.623 → 0.624（p99 1.50, 静止 0.619） |
 
 ### 4.4 实拍高光裁切、KR 噪声与双光源 CCM 消融（`Mac 实测`）
@@ -389,14 +389,70 @@ s4 会把仅有的纹理抹平，**默认仍是 s2**。手机端夜景频域：�
 - **KR 绿引导降噪改善（残余噪声 σ）**：`main8` **0.00090 → 0.00075**、`hh_main8` **0.00081 → 0.00069**、`uwnoisy16` **0.00189 → 0.00170**。
 - **双光源 CCM 消融**：在 `awb_warm` / `nt_main_hand` 上强制启用静态 `ForwardMatrix1/2` 会破坏场景调优的 HAL CCM（`awb_warm` 红本偏洋红、`nt_main_hand` 夜景高光青偏与饱和度升高 `C* 10.08 → 12.75`）；在 `!ccm_usable(m.ccm)` 自动回退模式下，可用 HAL CCM 原样保留，而将 `s1` 的 `ccm` 置为单位阵时自动回退与显式 `--dual-ccm` 达 **99.00 dB（max diff 0）**。
 
-### 4.5 Mac OpenCL GPU vs CPU 一致性（`session_check-mac --gpu --compare`，`Mac 实测`）
+### 4.5 Mac OpenCL GPU vs CPU 一致性（`gpu_check.sh` 33/33 模式，`Mac 实测`）
 
-全部模式均超过 50 dB 门槛（0 失败）：
+`pipeline/tools/gpu_check.sh` 现已直接包含 33 种组合（含 `calib*` 噪声曲线查找修复与 M1–M5 全部新增模式），Mac（OpenCL 1.2）实测 **33/33 全部超过 50 dB 门槛（`64.95–92.59 dB`，0 失败，0 `gpu: none`）**：
 
-- **16 项 `gpu_check.sh` 模式**（注：`gpu_check.sh` 脚本在 `$D/noise_curve_cam0.json` 查找曲线而非 `pipeline/calib/`，故 3 项 `calib*` 另以 `--noise-cal` 单独验证）：`rcd` **80.23 dB**、`mhc` **80.14 dB**、`amaze` **80.03 dB**、`pixel` **77.57 dB**、`night` **80.59 dB**、**`freq`（`uwnoisy16 --freq`）76.94 dB**（GPU 632 ms vs CPU 1149 ms，`[gpu: align freq finish]`）、`kr` **73.66 dB**、`kr_lca` **75.93 dB**、`bracket` **77.59 dB**、`kr_bracket` **68.10 dB**、`zoom` **78.63 dB**、`kr_zoom` **75.47 dB**、`single` **79.81 dB**、`stream` **80.23 dB**、`stream_zoom` **78.63 dB**、`stream32` **75.49 dB**。
-- **3 项 `--noise-cal` 模式**：`calib` **80.21 dB**、`calib_br` **77.34 dB**、`stream_calib` **80.21 dB**。
-- **新增频域 / Oklab / KR 场景与混跑回退**：`freq_hh` **76.24 dB**（525 vs 1461 ms，`[gpu: align freq finish]`）、`freq_nt` **72.14 dB**（1610 vs 3845 ms）、`night_nt` **73.12 dB**（1608 vs 3405 ms）、`kr_pixel` **71.16 dB**（742 vs 4862 ms）、`kr_lca_pix` **73.84 dB**（351 vs 2427 ms）、`s2_pix` **77.83 dB**、`s5_def` **62.44 dB**（max diff 8，0.0000% >8，269 vs 856 ms）、`s5_pix` **72.39 dB**（max diff 9，0.0000% >8，298 vs 2040 ms）；混合回退 `--gpu-off align` `freq` **76.94 dB**、`kr` **59.49 dB**，`--gpu-off finish` `pixel` **60.97 dB**。
-- **Mac 耗时特征**：16MP 纯 CPU `look` 耗时 ~370–800 ms（基线 `e772292` 为 ~136–224 ms），而 GPU `look` 为 ~24–89 ms，Mac 上全管线 GPU 端到端比 CPU 快 2.4–6.5×。
+| 模式 | CPU ms | GPU ms | PSNR | 最大差值 | GPU 阶段标签 |
+|---|---|---|---|---|---|
+| `rcd` / `mhc` / `amaze` | 1071 / 978 / 1303 | 311 / 242 / 685 | **80.23 / 80.14 / 80.03 dB** | 1 / 1 / 2 | `align merge finish` |
+| `pixel` / `night` / `freq` | 1278 / 565 / 1086 | 322 / 197 / 391 | **77.57 / 80.59 / 76.94 dB** | 1 / 1 / 6 | `align merge/freq finish` |
+| `kr` / `kr2x` / `kr_auto2x` | 2232 / 4138 / 4399 | 429 / 625 / 654 | **73.66 / 75.45 / 75.45 dB** | 12 / 13 / 13 | `align kr finish`（`hh_uw8` 自动选 `2x`） |
+| `kr_auto_lowsnr` / `kr_lca` | 2760 / 1494 | 404 / 258 | **64.95 / 75.90 dB** | 105 / 11 | `align kr finish`（`uwnoisy16` 拦截在 `1x`） |
+| `bracket` / `kr_bracket` | 591 / 1261 | 159 / 205 | **77.59 / 67.92 dB** | 4 / 32 | `align merge/kr finish` |
+| `zoom` / `kr_zoom` / `single` | 851 / 1827 / 858 | 202 / 308 / 185 | **78.63 / 75.47 / 79.81 dB** | 1 / 5 / 5 | `align merge/kr finish` |
+| `calib` / `calib_br` / `stream_calib` | 1586 / 663 / 1458 | 303 / 156 / 360 | **80.21 / 77.34 / 80.21 dB** | 1 / 4 / 1 | `align merge (streamed) finish` |
+| `stream` / `stream_zoom` / `stream32` | 1446 / 933 / 1731 | 337 / 224 / 590 | **80.23 / 78.63 / 75.49 dB** | 1 / 1 / 5 | `align merge (streamed) finish` |
+| `night_stream` (`t_night`) | 2824 | 496 | **81.55 dB** | 2 | `align freq (streamed) finish` |
+| `pmrid_uwnoisy` / `pmrid_night_stream` | 2688 / 2892 | 1733 / 516 | **80.37 / 81.55 dB** | 4 / 2 | `align merge/freq finish` |
+| `lut` (`film_warm`, 0.8) | 2033 | 383 | **77.50 dB** | 1 | `align merge finish` |
+| `hdrnet` / `hdrnet_pixel` / `hdrnet_br` | 2030 / 2457 / 1154 | 517 / 527 / 333 | **92.59 / 89.34 / 91.52 dB** | 1 / 1 / 2 | `align merge finish` |
+| `seg_pixel` / `seg_faces` | 2253 / 2183 | 541 / 547 | **77.57 / 77.59 dB** | 1 / 1 | `align merge finish` |
+| `flow_searaft` / `flow_auto` | 4351 / 1176 | 3153 / 265 | **76.35 / 76.22 dB** | 2 / 2 | `align merge finish` |
+
+此外，混跑回退（`--gpu-off align` `freq` `76.94 dB`、`kr` `59.49 dB`，`--gpu-off finish` `pixel` `60.97 dB`）与高饱和 `s5`（`s5_def` `62.44 dB`、`s5_pix` `72.39 dB`）均在 50 dB 以上。Adreno 725 真机端全 33 模式对拍与优化前后实测见 4.8 节。
+
+### 4.6 阶梯环靶辐射线性度与 `T4-08` 暗部偏粉回归（`step_wedge_eval.py`，`Mac 实测`）
+
+`pipeline/tools/step_wedge_eval.py --strict-save-merged` 在合成 16 阶辐射阶梯标靶（Target A 线性、Target B 中性灰暗部、Target C 暗部 0 DN 粉偏检查）上验证全部 17 种模式（**17/17 PASS**，0 失败）：
+
+- **15 种 `--save-merged` 模式**（`bp_{spatial,freq,single,bracket,target_b_neutral}` 与 `sc_{spatial,freq,stream,bracket,target_b}_{cpu,gpu}`）：**全部 `R² = 1.000000`**，`slope = 0.99995..1.00008`，`|intercept| <= 0.027 DN`，`raw_chroma = 0.035 DN`，`sc_target_b_{cpu,gpu}` 渲染中性差 `R-G = +0.06, B-G = +0.17`，GPU-vs-CPU 线性马赛克 `GPU_PSNR = 134.96–164.68 dB`。
+- **2 种 KR 暗部渲染检查（`T4-08` 修复验证）**：`sc_kr_shadow_cpu` 与 `sc_kr_shadow_gpu` 均为 `render(R-G = +0.16, B-G = -0.07)`（远低于 `<= 3.0` 门槛），`GPU_PSNR = 69.32 dB`。
+- **负对照自检（`--self-test`）**：成功拦截全部 3 类注入缺陷（`pink_cast_zero_clamp` `0.7986 DN > 0.5`、`nonlinear_s_curve` `R² = 0.992478 < 0.9999`、`gain_error_5pct` `slope = 1.050000`），退出码 `0`。
+
+### 4.7 M1–M5 全链路门禁与 App 单元测试汇总（`Mac 实测` / `JVM 实测`）
+
+- **E2E 回归套件（`pipeline/tools/e2e_suite.py --tier all --strict`）**：覆盖 `A1`–`A17` 共 **200/200 PASS**（Tier 1 85 项 + Tier 2 85 项 + Tier 3 20 项 + Tier 4 10 项，`0 FAIL`，`0 SKIP`），含 `RAW10 vs RAW16`（CPU `99.00 dB`、GPU `99.00 dB`）、`A14` `--accel npu` 回退（`>= 50 dB`）、双仓 C++ 同步（7 项预期宿主差异外逐字节一致）与研究文档规范化 SHA-256 同步校验。
+- **Android App 构建与 JVM 单元测试**：`./gradlew :app:assembleDebug :app:testDebugUnitTest --rerun-tasks` 构建成功，全部 JVM 单元测试通过（`0` 失败、`0` 错误），`strings.xml` 与 `values-zh-rCN` 词条对齐，且严格遵守 `YoinSymbols` 图标规范。
+
+### 4.8 `marble` 真机 Adreno 725 / NNAPI / App 全模式实测（2026-11-18，`真机实测`）
+
+2026-11-18 在解锁状态的 Poco F5（`marble`，`848893fa`，Snapdragon 7+ Gen 2：`1×X2 2.92 GHz + 3×A710 2.50 GHz + 4×A510 1.80 GHz`，OpenCL 3.0 Adreno 725：4 CU / 32 KB local / 7577 MB global，Android 17）上完成真机端全套验证：
+
+1. **Adreno 725 `gpu_check.sh` 33/33 与热点优化（`session_check-android`，热态 `--gpu-profile`）**：
+   - **全 33 模式对拍**：优化前后 **33/33 全部 PASS**（`0 gpu: none`），优化后 PSNR 区间 **`64.60–91.93 dB`**（优化前 `64.60–91.82 dB`）。
+   - **Adreno OpenCL / NEON / 多核优化前后对比**：
+     - `hue_tune`（Oklab `fast_cbrt_cl` 替换 `cbrt` + EOTF/OETF 查找表替换 `pow`）：`358.0–392.8 ms → 92.1–100.2 ms`（约 **3.9×** 提速）；
+     - `pixel_look`：`263.1–278.2 ms → 155.2–156.2 ms`（约 **1.7×** 提速）；
+     - `seg_downsample`（4×4 跨步采样替换单像素内联归约，CPU `downsample_rgb256` 同步对齐）：`10.4 ms → 2.4 ms`（约 **4.3×** 提速）；
+     - `hdrnet_slice`：`144.0 ms → 90.1 ms`（`hdrnet_pixel` 端到端 `2520 ms → 2017 ms`）；
+     - `main8 --look pixel`（热态 GPU）：`look 675 ms → 302 ms`，总耗时 `1958 ms → 1564 ms`；
+     - `seg_faces`（热态 GPU）：总耗时 `2508 ms → 1647 ms`；
+     - `hh_uw8` KR：1x CPU `2331 ms` vs GPU `1459 ms`；2x CPU `7859 ms` vs GPU `3370 ms → 3144 ms`；
+     - `t_night`（`--freq --look night --stream 0`）：CPU `2751 ms`（峰值 RSS `912 MB`）vs 热态 GPU `3030 ms`（峰值 RSS **`397 MB`**，流式频域 GPU 内存降至 CPU 的 **43.5%**）；
+     - `pmrid_uwnoisy`（`3280×2464`，多线程 `all_finite_f32` + 池化 `FloatBuf`）：`pmrid 1482 ms → 1432 ms`（`merge 1886 ms → 1818 ms`）。
+
+2. **ONNX Runtime `1.31.1` 4 线程（`7,6,5,4`）vs `--accel npu`（NNAPI FP32）实测**：
+   - 设备能力页实测识别 `OpenCL 3.0 Adreno(TM) 725`、`ONNX Runtime 1.31.1`（`NnapiExecutionProvider / WebGpuExecutionProvider / XnnpackExecutionProvider / CPUExecutionProvider`）、`ML 线程数 4（核心 7,6,5,4）`、cDSP FastRPC（`arch 0x1008c69, HVX 4, unsigned PD 1`，无专有 Hexagon SDK 下 calculator skel 返回 `0x80000442`，QNN EP 未打包并诚实回退），且全部 10 项内置模型/LUT/FFCC 资源均显示 `就绪`。
+   - CLI 对拍显示在 Snapdragon 7+ Gen 2 上 NNAPI FP32 与 4 线程 X2+A710 基本持平或略慢（且输出一致）：`PMRID`（`3280×2464`）`1482 ms`（优化后 `1432 ms`）vs NNAPI `1484 ms`（`99.00 dB`）；`HDRnet` ORT `127.2 ms` vs NNAPI `143.4 ms`（`92.63 dB`）；`Semantic Seg` ORT CPU `207.9 ms` vs NNAPI `283.0 ms`（`121.95 dB`）；`SEA-RAFT`（`hh_main8 -n 4`, 3/3）`3157 ms` vs NNAPI `3190 ms`（`99.00 dB`）。
+
+3. **App 内全模式实拍（`PocoPawPipeline` / `PocoPawCamera` logcat，DNG+JPEG 输出）**：
+   - **标准 HDR+（主摄 1×，`4624×3472`，4 帧 `streamed RCD` GPU）**：冷着陆首次 `1442 ms` / 热态 `1344 ms`（`align 184 ms, merge 97 ms, lsc+wb 121 ms, demosaic 203 ms, finish 919 ms`）；
+   - **Pixel 风格 + Ultra HDR**：主摄 1× `1547 ms`（`look 356 ms`，`ultrahdr max boost 1.19`）；超广角 `0.6×`（`ID 2`，`3280×2464`，`lca`）**`923 ms`**（`finish 604 ms`，`ultrahdr max boost 1.42`）；
+   - **连续变焦超分**：`1.50×`（`14/14` 帧 `3082×2314 → 4624×3472`）`upscale 119 ms`，总耗时 **`1061 ms`**；`2.00×`（`16/16` 帧 `2314×1738 → 4624×3472`）`upscale 116 ms`，总耗时 **`919 ms`**；
+   - **ZSL + 紧凑 `RAW10`（`format 0x25`）与主动重开**：开启两项后在 `dumpsys media.camera` 中确认输出 `4624×3472, format 0x25`（`RAW10`）；第 1 拍（`zsl=2, hal=2`）对焦扫描门控自动剔除 2 帧对焦过渡帧并走批处理 `gpu: align merge finish`（`1280 ms`），第 2 拍（对焦稳定后，`zsl=4, hal=0`）4 帧全中（`1489 ms`，四角/中心亮度比 **`0.692`** 对非 ZSL 基线 `0.719`，确认 `zslTick` 开启 `STATISTICS_LENS_SHADING_MAP_MODE_ON` 后无暗角遗漏）；ZSL 待机每达 58 个请求触发 **`proactive ZSL reopen at 58/65 RAW requests`**（12 s 周期），0 次 `ERROR_CAMERA_DEVICE` 崩溃；同时定位并修复了退出设置切换 `RAW10` 时 `SurfaceTexture.isReleased` 引发的瞬态 `Reason.CONFIGURATION` 竞态；
+   - **早停 / 夜景流式频域 / 包围 / KR**：早停 8 帧 `1154 ms`（亮场 `8/8` `streamed`）；夜景 `FreqStreamMerge` GPU `4/4` `align 401 ms, merge 89 ms, gpu: align freq (streamed) finish`，总计 `1673 ms`；包围曝光 `gains 1.00 1.00 0.25 1.00` `1500 ms`；`HDR+ KR` 在桌面静止（`gyro rms 0.0016–0.0029 rad/s`）自动切回 `HDR+`（`1x 1460 ms`、`2x 998 ms`）；
+   - **App 沙盒内 ML 与高阶 ISP 组合**：`HDRnet + FFCC + film_warm.cube`（`hdrnet ort 18.2 ms slice 88.1 ms`, `total 1460 ms`）；`HDRnet + C5 + classic_chrome.cube`（热态 `hdrnet ort 2.5 ms slice 87.7 ms`, `grey world 1.01°`, `total 1464 ms`）；`SEA-RAFT + AMaZE + TopFormer 语义分割 + PMRID`（低噪声门控跳过 `PMRID`，`flow 3441 ms, demosaic 950 ms, seg 57.1 ms, total 5852 ms`）；专业模式高噪实触发 `PMRID`（`k=0.0319, alpha=0.17, 2980 ms`, `total 4343 ms`）。仍未补拍的物理场景（`mo_*`、`awb_*`、`dk_uw`/`tp_uw`）保留 `[待拍]`。
 
 ---
 
@@ -437,6 +493,21 @@ python3 tools/awb_eval.py data/p1/awb_warm data/p1/awb_cool
 isz/run.sh z_bright 40 --es out z_bright --es n 8 --ez jpeg true
 isz/run.sh z_isp2 25 --es out z_isp2 --es zoom 2 --ez jpeg true --ez noraw true
 isz/run.sh z_dark 40 --es out z_dark --es n 8 --ez jpeg true --es iso 876 --es exp 3000000 --ez pman true
+```
+
+**Mac 全链路自动化回归与 App 单测**（M1–M5 门禁）：
+
+```bash
+cd ~/Documents/Poco-F5-RAW-Report/pipeline
+./build.sh && ./tools/build_session_check.sh
+./tools/gpu_check.sh ./bin/session_check-mac ./data /tmp/gpu_chk         # 33/33 PASS
+../compare/.venv/bin/python tools/step_wedge_eval.py --strict-save-merged  # 17/17 PASS
+../compare/.venv/bin/python tools/step_wedge_eval.py --self-test           # 3/3 负对照拦截
+../compare/.venv/bin/python tools/e2e_suite.py --tier all --strict         # 200/200 PASS
+
+cd ../PocoPaw
+./gradlew :app:assembleDebug :app:testDebugUnitTest --rerun-tasks \
+  -Dorg.gradle.java.home=/opt/homebrew/Cellar/openjdk@25/25.0.5.0.3/libexec/openjdk.jdk/Contents/Home
 ```
 
 ---
