@@ -16,6 +16,9 @@ import com.izum1k.pocopaw.camera.LensFacing
 import com.izum1k.pocopaw.camera.RawRequestBudget
 import com.izum1k.pocopaw.container
 import com.izum1k.pocopaw.feature.camera.CameraFormat
+import com.izum1k.pocopaw.pipeline.AccelCapabilities
+import com.izum1k.pocopaw.pipeline.LutCatalog
+import com.izum1k.pocopaw.pipeline.ModelCatalog
 import com.izum1k.pocopaw.pipeline.NativeBurst
 import com.izum1k.pocopaw.ui.component.PawPage
 import com.izum1k.pocopaw.ui.component.Section
@@ -24,21 +27,115 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
+private data class BundledAssetStatus(
+    val relPath: String,
+    val bytes: Long?,
+)
+
 @Composable
 fun CapabilitiesScreen() {
     val context = LocalContext.current
     var cameras by remember { mutableStateOf<List<CameraInfo>>(emptyList()) }
     var gpu by remember { mutableStateOf<String?>(null) }
     var dsp by remember { mutableStateOf<String?>(null) }
+    var accel by remember { mutableStateOf<String?>(null) }
+    var assets by remember { mutableStateOf<List<BundledAssetStatus>?>(null) }
     LaunchedEffect(Unit) {
         cameras = withContext(Dispatchers.IO) { context.container.catalog.cameras }
         gpu = context.container.gpuInfo.await()
         dsp = withContext(Dispatchers.IO) { NativeBurst.dspProbe() }
+        accel = withContext(Dispatchers.IO) { NativeBurst.accelProbe() }
+        assets = withContext(Dispatchers.IO) {
+            val paths = listOf(
+                "${ModelCatalog.ASSET_DIR}/${ModelCatalog.PMRID_FILE}",
+                "${ModelCatalog.ASSET_DIR}/${ModelCatalog.SEA_RAFT_FILE}",
+                "${ModelCatalog.ASSET_DIR}/${ModelCatalog.HDRNET_FILE}",
+                "${ModelCatalog.ASSET_DIR}/${ModelCatalog.SEG_FILE}",
+                "${ModelCatalog.ASSET_DIR}/c5_m7.onnx",
+            ) + LutCatalog.presets.map { "${LutCatalog.ASSET_DIR}/${it.fileName}" } + listOf(
+                "calib/ffcc_cam0.bin",
+                "calib/ffcc_cam2.bin",
+            )
+            paths.map { BundledAssetStatus(it, context.container.checkAssetBytes(it)) }
+        }
     }
     PawPage(title = stringResource(R.string.capabilities_title)) {
         items(cameras, key = { it.id }) { cam -> CameraSection(cam) }
         item(key = "gpu") { ProbeSection(stringResource(R.string.cap_gpu), gpu) }
         item(key = "dsp") { ProbeSection(stringResource(R.string.cap_dsp), dsp) }
+        item(key = "accel") { AccelSection(accel) }
+        item(key = "assets") { AssetsSection(assets) }
+    }
+}
+
+@Composable
+private fun AccelSection(report: String?) {
+    Section(title = stringResource(R.string.cap_accel)) {
+        if (report == null) {
+            SettingRow(title = stringResource(R.string.cap_probing))
+        } else {
+            val cap = AccelCapabilities.parse(report)
+            val unavailable = stringResource(R.string.cap_accel_unavailable)
+            SettingRow(
+                title = stringResource(R.string.cap_accel_opencl),
+                value = cap.openclDevice.ifEmpty { unavailable },
+            )
+            SettingRow(
+                title = stringResource(R.string.cap_accel_ort),
+                value = if (cap.ortAvailable) cap.ortVersion else unavailable,
+            )
+            SettingRow(
+                title = stringResource(R.string.cap_accel_providers),
+                value = cap.ortProviders.joinToString(", ").ifEmpty { unavailable },
+            )
+            SettingRow(
+                title = stringResource(R.string.cap_accel_nnapi),
+                value = yesNo(cap.nnapiAvailable),
+            )
+            SettingRow(
+                title = stringResource(R.string.cap_accel_qnn),
+                value = cap.qnnNote.ifEmpty { yesNo(cap.qnnAvailable) },
+            )
+            SettingRow(
+                title = stringResource(R.string.cap_accel_threads),
+                value = if (cap.bigPrimeCpuIds.isNotEmpty()) {
+                    stringResource(R.string.cap_accel_threads_cpus, cap.mlThreads, cap.bigPrimeCpuIds.joinToString(","))
+                } else {
+                    cap.mlThreads.toString()
+                },
+            )
+            SettingRow(
+                title = stringResource(R.string.cap_accel_cdsp),
+                value = cap.cdspSummary.ifEmpty { yesNo(cap.cdspFastRpcAvailable) },
+            )
+            if (cap.hexagonSdkBoundary.isNotEmpty()) {
+                SettingRow(
+                    title = stringResource(R.string.cap_accel_boundary),
+                    value = cap.hexagonSdkBoundary,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AssetsSection(items: List<BundledAssetStatus>?) {
+    Section(title = stringResource(R.string.cap_assets)) {
+        if (items == null) {
+            SettingRow(title = stringResource(R.string.cap_probing))
+        } else {
+            for (asset in items) {
+                val status = when (val b = asset.bytes) {
+                    null -> stringResource(R.string.cap_asset_missing)
+                    else -> if (b >= 1_000_000L) {
+                        stringResource(R.string.cap_asset_ready_mb, b / (1024f * 1024f))
+                    } else {
+                        stringResource(R.string.cap_asset_ready_kb, (b / 1024L).coerceAtLeast(1L))
+                    }
+                }
+                SettingRow(title = asset.relPath, value = status)
+            }
+        }
     }
 }
 
@@ -87,6 +184,7 @@ private fun CameraSection(cam: CameraInfo) {
         SettingRow(title = stringResource(R.string.cap_flash), value = yesNo(cam.hasFlash))
         SettingRow(title = stringResource(R.string.cap_af), value = yesNo(cam.hasAutoFocus))
         SettingRow(title = stringResource(R.string.cap_noise_profile), value = yesNo(cam.hasNoiseProfile))
+        SettingRow(title = stringResource(R.string.cap_raw10), value = yesNo(cam.supportsRaw10))
         SettingRow(title = stringResource(R.string.cap_raw_budget), value = RawRequestBudget.DEFAULT_LIMIT.toString())
     }
 }

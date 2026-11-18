@@ -17,14 +17,32 @@ class RawRequestBudget(val limit: Int = DEFAULT_LIMIT, val margin: Int = PIPELIN
     private val _remaining = MutableStateFlow(limit)
     val remaining: StateFlow<Int> = _remaining.asStateFlow()
 
-    fun canAfford(requests: Int): Boolean {
+    val consumed: Int get() = if (limit == Int.MAX_VALUE) 0 else (limit - _remaining.value).coerceAtLeast(0)
+
+    fun maxAffordable(): Int {
         val left = _remaining.value
-        return if (left == limit) requests <= left else requests <= left - margin
+        return if (left == limit) left else (left - margin).coerceAtLeast(0)
+    }
+
+    fun canAfford(requests: Int): Boolean = requests <= maxAffordable()
+
+    fun needsProactiveReopen(threshold: Int = PROACTIVE_REOPEN_THRESHOLD): Boolean =
+        limit != Int.MAX_VALUE && consumed >= threshold
+
+    fun tryConsume(requests: Int): Boolean {
+        if (!canAfford(requests)) return false
+        consume(requests)
+        return true
     }
 
     fun consume(requests: Int) {
         check(canAfford(requests)) { "RAW budget exhausted: ${_remaining.value} left, $requests asked" }
         _remaining.value -= requests
+    }
+
+    fun recordSubmitted(requests: Int) {
+        if (limit == Int.MAX_VALUE || requests <= 0) return
+        _remaining.value = (_remaining.value - requests).coerceAtLeast(0)
     }
 
     fun reset() {
@@ -34,5 +52,6 @@ class RawRequestBudget(val limit: Int = DEFAULT_LIMIT, val margin: Int = PIPELIN
     companion object {
         const val DEFAULT_LIMIT = 65
         const val PIPELINE_DEPTH = 8
+        const val PROACTIVE_REOPEN_THRESHOLD = 58
     }
 }

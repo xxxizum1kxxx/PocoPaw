@@ -25,10 +25,13 @@ Flow refine_flow(const ImageF& mref, const ImageF& malt, const Offsets& o, int i
 struct SubpixelStats { double score = 0, confidentTiles = 0, meanSpread = 0, meanErr = 0, coverage = 0; };
 SubpixelStats subpixel_diversity(const std::vector<Flow>& flows, int ref);
 constexpr double kAutoScaleThreshold = 0.3;
+constexpr float kAutoScaleMinSnrDb = 14.0f;
 Flow zero_flow(const Offsets& o);
+float kr_burst_snr_db(const Raw& refFrame, const Meta& m, const NoiseModel& nm);
 
 struct KrParams {
     float scale = 1;
+    float autoMinSnrDb = kAutoScaleMinSnrDb;
     // < 0: interpolated from the burst SNR like the IPOL reference implementation
     float kDetail = -1, kDenoise = -1, dTh = -1, dTr = -1;
     float kStretch = 4, kShrink = 2;
@@ -38,7 +41,8 @@ struct KrParams {
 };
 
 struct KrStats {
-    double snrDb = 0, meanWeight = 0, phaseCoverage = 0;
+    double snrDb = 0, meanWeight = 0, phaseCoverage = 0, subpixelScore = 0, confidentTiles = 0;
+    float scale = 1.f;
     float kDetail = 0, kDenoise = 0, dTh = 0, dTr = 0;
 };
 

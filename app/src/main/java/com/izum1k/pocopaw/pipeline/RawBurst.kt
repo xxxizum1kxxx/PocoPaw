@@ -3,6 +3,7 @@ package com.izum1k.pocopaw.pipeline
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.params.ColorSpaceTransform
+import android.hardware.camera2.params.Face
 import android.hardware.camera2.params.LensShadingMap
 import android.hardware.camera2.params.RggbChannelVector
 import android.util.Rational
@@ -25,12 +26,15 @@ class RawFrame(
     val height: Int,
     val timestampNs: Long,
     val result: CaptureResult,
-) {
+    private val onRelease: (ByteBuffer) -> Unit = { NativeMemory.free(it) },
+) : Closeable {
     private val released = AtomicBoolean(false)
 
     fun release() {
-        if (released.compareAndSet(false, true)) NativeMemory.free(data)
+        if (released.compareAndSet(false, true)) onRelease(data)
     }
+
+    override fun close() = release()
 
     val iso: Int? get() = result.get(CaptureResult.SENSOR_SENSITIVITY)
     val exposureNs: Long? get() = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
@@ -61,11 +65,62 @@ class RawMetadata(
     /** Digital zoom the processed image is cropped to (the 2x lens step); 1 keeps the full sensor. */
     val cropZoom: Float,
     val captureTimeMillis: Long,
+    /** Normalized sensor-orientation face boxes [x0, y0, x1, y1, ...] from STATISTICS_FACES. */
+    val faceBoxes: FloatArray = FloatArray(0),
 ) {
     fun withResult(result: CaptureResult): RawMetadata =
         from(cameraId, facing, characteristics, cfa, result, orientationDegrees, zoomRatio, cropZoom, captureTimeMillis)
 
+    internal data class FaceBoxInput(val left: Int, val top: Int, val right: Int, val bottom: Int, val score: Int)
+
     companion object {
+        internal const val MIN_FACE_SCORE = 50
+
+        internal fun normalizeFaceBoxes(
+            faces: List<FaceBoxInput>,
+            activeWidth: Int,
+            activeHeight: Int,
+            minScore: Int = MIN_FACE_SCORE,
+            activeLeft: Int = 0,
+            activeTop: Int = 0,
+        ): FloatArray {
+            if (faces.isEmpty() || activeWidth <= 0 || activeHeight <= 0) return FloatArray(0)
+            val w = activeWidth.toFloat()
+            val h = activeHeight.toFloat()
+            val l = activeLeft.toFloat()
+            val t = activeTop.toFloat()
+            val out = ArrayList<Float>(faces.size * 4)
+            for (f in faces) {
+                if (f.score < minScore) continue
+                val x0 = ((minOf(f.left, f.right) - l) / w).coerceIn(0f, 1f)
+                val y0 = ((minOf(f.top, f.bottom) - t) / h).coerceIn(0f, 1f)
+                val x1 = ((maxOf(f.left, f.right) - l) / w).coerceIn(0f, 1f)
+                val y1 = ((maxOf(f.top, f.bottom) - t) / h).coerceIn(0f, 1f)
+                if (x1 - x0 < 1e-4f || y1 - y0 < 1e-4f) continue
+                out.add(x0)
+                out.add(y0)
+                out.add(x1)
+                out.add(y1)
+            }
+            return out.toFloatArray()
+        }
+
+        internal fun normalizeFaceBoxes(
+            faces: Array<Face>?,
+            activeWidth: Int,
+            activeHeight: Int,
+            minScore: Int = MIN_FACE_SCORE,
+            activeLeft: Int = 0,
+            activeTop: Int = 0,
+        ): FloatArray {
+            if (faces == null || faces.isEmpty() || activeWidth <= 0 || activeHeight <= 0) return FloatArray(0)
+            val inputs = faces.mapNotNull { face ->
+                val b = face.bounds ?: return@mapNotNull null
+                FaceBoxInput(b.left, b.top, b.right, b.bottom, face.score)
+            }
+            return normalizeFaceBoxes(inputs, activeWidth, activeHeight, minScore, activeLeft, activeTop)
+        }
+
         fun from(
             cameraId: String,
             facing: LensFacing,
@@ -82,6 +137,14 @@ class RawMetadata(
                 ?: FloatArray(4) { i -> pattern?.getOffsetForIndex(i % 2, i / 2)?.toFloat() ?: 0f }
             val white = result.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL)
                 ?: characteristics.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL) ?: 1023
+            val active = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+            val faceBoxes = normalizeFaceBoxes(
+                result.get(CaptureResult.STATISTICS_FACES),
+                active?.width() ?: 0,
+                active?.height() ?: 0,
+                activeLeft = active?.left ?: 0,
+                activeTop = active?.top ?: 0,
+            )
             return RawMetadata(
                 cameraId = cameraId,
                 facing = facing,
@@ -98,6 +161,7 @@ class RawMetadata(
                 zoomRatio = zoomRatio,
                 cropZoom = cropZoom,
                 captureTimeMillis = captureTimeMillis,
+                faceBoxes = faceBoxes,
             )
         }
     }

@@ -247,6 +247,7 @@ double GpuBurst::merge_spatial(int ref, const std::vector<Offsets>& offs, const 
         if (k != ref) for (int y = 0; y < slots; y++) wTotal += rs[(size_t)k * slots + y];
     merged_ = out;
     kr_ = false;
+    krScale_ = 1.f;
     g_.finish();
     return n_ > 1 ? wTotal / ((double)qw_ * qh_ * (n_ - 1)) : 0;
 }
@@ -279,7 +280,7 @@ void GpuBurst::stream_merge(const Offsets& of, const NoiseModel& nm, float black
     tnx_ = of.nx;
     tny_ = of.ny;
     nt_ = tnx_ * tny_;
-    if (!odx_) {
+    if (odx_.bytes() < (size_t)nt_ * 2) {
         odx_ = g_.alloc((size_t)nt_ * 2);
         ody_ = g_.alloc((size_t)nt_ * 2);
     }
@@ -304,12 +305,116 @@ double GpuBurst::stream_end(float black) {
     g_.run("merge_norm", gs(qw_), gs(qh_), sOut_, sWsum_, W_, qw_, qh_, black);
     merged_ = sOut_;
     kr_ = false;
+    krScale_ = 1.f;
     sOut_ = sWsum_ = sRob_ = sTmp_ = GImg();
     sRows_.reset();
     refPyr_.clear();
     drop_frames();
     g_.finish();
     return sAdded_ > 0 ? sWeight_ / ((double)qw_ * qh_ * sAdded_) : 0;
+}
+
+void GpuBurst::stream_freq_ref(const Raw& ref, const Meta&, ImageF* gray) {
+    const size_t fs = (size_t)W_ * H_;
+    g_.write(frames_, ref.row(0), fs * 2, 0);
+    refPyr_ = pyramid(0);
+    if (gray) *gray = download(refPyr_[0]);
+    const int ntx = (qw_ + 7) / 8 + 1, nty = (qh_ + 7) / 8 + 1;
+    const size_t nTiles = (size_t)ntx * nty;
+    sFreqRe_ = g_.alloc(nTiles * 128 * sizeof(cl_float4));
+    sFreqIm_ = g_.alloc(nTiles * 128 * sizeof(cl_float4));
+    sFreqMean_ = g_.alloc(nTiles * sizeof(cl_float4));
+    sTileW_ = g_.alloc(nTiles * sizeof(float));
+    g_.zero(sTileW_);
+    const LocalMem lm{272 * sizeof(cl_float4)};
+    g_.run_local("freq_stream_ref", (size_t)ntx * 64, (size_t)nty, 64, 1, frames_, W_, qw_, qh_, ntx, nty,
+                 sFreqRe_, sFreqIm_, sFreqMean_, lm, lm);
+    sWeight_ = 0;
+    sAdded_ = 0;
+}
+
+void GpuBurst::stream_freq_merge(const Offsets& of, const Meta& m, const NoiseModel& nm, float c) {
+    tnx_ = of.nx;
+    tny_ = of.ny;
+    nt_ = tnx_ * tny_;
+    const size_t need = (size_t)nt_ * 4;
+    if (odx_.bytes() < need) {
+        odx_ = g_.alloc(need);
+        ody_ = g_.alloc(need);
+    }
+    std::vector<int16_t> dx((size_t)nt_ * 2, 0), dy((size_t)nt_ * 2, 0);
+    std::copy(of.dx.begin(), of.dx.end(), dx.begin());
+    std::copy(of.dy.begin(), of.dy.end(), dy.begin());
+    if (of.fx.size() == (size_t)nt_ && of.fy.size() == (size_t)nt_) {
+        for (int t = 0; t < nt_; t++) {
+            dx[nt_ + t] = (int16_t)clampi((int)std::lround(of.fx[t] * 16384.f), -8192, 8192);
+            dy[nt_ + t] = (int16_t)clampi((int)std::lround(of.fy[t] * 16384.f), -8192, 8192);
+        }
+    }
+    g_.write(odx_, dx.data(), need);
+    g_.write(ody_, dy.data(), need);
+
+    const Tables& t = tables();
+    float bl[4];
+    for (int l = 0; l < 4; l++) bl[l] = m.black[cfa_channel(m.cfa, l & 1, l >> 1)];
+    const int ntx = (qw_ + 7) / 8 + 1, nty = (qh_ + 7) / 8 + 1;
+    const LocalMem lm{272 * sizeof(cl_float4)};
+    g_.run_local("freq_stream_add", (size_t)ntx * 64, (size_t)nty, 64, 1, frames_, W_, qw_, qh_, W_ * H_,
+                 odx_, ody_, tnx_, tny_, nt_, f4(bl[0], bl[1], bl[2], bl[3]), t.w2, c, (float)nm.a, (float)nm.b,
+                 ntx, nty, sFreqRe_, sFreqIm_, sFreqMean_, sTileW_, lm, lm);
+    sAdded_++;
+}
+
+double GpuBurst::stream_freq_end(const Meta& m, const NoiseModel& nm, float spatial) {
+    GImg out = g_.image(W_, H_);
+    double meanW = 0.0;
+    if (sAdded_ == 0) {
+        g_.run("raw_to_float", gs(W_ * H_), 1, frames_, out, W_ * H_);
+    } else {
+        g_.zero(out.b);
+        const Tables& t = tables();
+        float bl[4];
+        for (int l = 0; l < 4; l++) bl[l] = m.black[cfa_channel(m.cfa, l & 1, l >> 1)];
+        const int ntx = (qw_ + 7) / 8 + 1, nty = (qh_ + 7) / 8 + 1;
+        const LocalMem lm{272 * sizeof(cl_float4)};
+        const int n = sAdded_ + 1;
+        for (int py = 0; py < 2; py++)
+            for (int px = 0; px < 2; px++) {
+                size_t gx = (size_t)(ntx - px + 1) / 2 * 64, gy = (size_t)(nty - py + 1) / 2;
+                g_.run_local("freq_stream_end", gx, gy, 64, 1, sFreqRe_, sFreqIm_, sFreqMean_,
+                             f4(bl[0], bl[1], bl[2], bl[3]), t.w2, spatial, (float)nm.a, (float)nm.b, n,
+                             W_, qw_, qh_, px, py, ntx, nty, out, lm, lm);
+            }
+        std::vector<float> tw((size_t)ntx * nty);
+        g_.read(sTileW_, tw.data(), tw.size() * 4);
+        double s = 0.0;
+        for (float v : tw) s += v / sAdded_;
+        meanW = s / ((double)ntx * nty);
+    }
+    merged_ = out;
+    kr_ = false;
+    krScale_ = 1.f;
+    sFreqRe_.reset();
+    sFreqIm_.reset();
+    sFreqMean_.reset();
+    sTileW_.reset();
+    refPyr_.clear();
+    drop_frames();
+    g_.finish();
+    return meanW;
+}
+
+double GpuBurst::stream_neff(bool freq) {
+    if (sAdded_ <= 0) return 1.0;
+    if (!freq) {
+        return 1.0 + (qw_ > 0 && qh_ > 0 ? sWeight_ / ((double)qw_ * qh_) : 0.0);
+    }
+    const int ntx = (qw_ + 7) / 8 + 1, nty = (qh_ + 7) / 8 + 1;
+    std::vector<float> tw((size_t)ntx * nty);
+    g_.read(sTileW_, tw.data(), tw.size() * 4);
+    double s = 0.0;
+    for (float v : tw) s += v;
+    return 1.0 + s / ((double)ntx * nty);
 }
 
 double GpuBurst::merge_freq(int ref, const std::vector<Offsets>& offs, const Meta& m, const NoiseModel& nm, float c, float spatial) {
@@ -336,6 +441,7 @@ double GpuBurst::merge_freq(int ref, const std::vector<Offsets>& offs, const Met
     if (n_ > 1) for (float v : tw) s += v / (n_ - 1);
     merged_ = out;
     kr_ = false;
+    krScale_ = 1.f;
     g_.finish();
     return s / ((double)ntx * nty);
 }
@@ -346,14 +452,7 @@ void GpuBurst::merge_kr(const Raw& R, int ref, const std::vector<Offsets>& offs,
     const int W = W_, H = H_, qw = qw_, qh = qh_, n = n_, qn = qw * qh, fs = W * H;
     const float black = (m.black[0] + m.black[1] + m.black[2] + m.black[3]) / 4;
 
-    double s2 = 0, v2 = 0;
-    for (int y = 0; y < H; y += 7)
-        for (int x = 0; x < W; x += 7) {
-            double s = R.at(x, y) - black;
-            if (s <= 0 || R.at(x, y) >= m.white) continue;
-            s2 += s * s; v2 += nm.var(s);
-        }
-    float snr = v2 > 0 ? (float)(10.0 * std::log10(s2 / v2)) : 30.f;
+    float snr = kr_burst_snr_db(R, m, nm);
     if (p.kDetail < 0) p.kDetail = lerp_snr(snr, 0.33f, 0.25f);
     if (p.kDenoise < 0) p.kDenoise = lerp_snr(snr, 5.0f, 3.0f);
     if (p.dTh < 0) p.dTh = lerp_snr(snr, 0.81f, 0.71f);
@@ -361,16 +460,44 @@ void GpuBurst::merge_kr(const Raw& R, int ref, const std::vector<Offsets>& offs,
 
     GImg gx = g_.image(qw, qh), gy = g_.image(qw, qh);
     g_.run("lk_grad", gs(qw), gs(qh), mean3_, ref * qn, qw, qh, gx, gy);
-    Buf fx = g_.alloc((size_t)nt_ * n * 4), fy = g_.alloc((size_t)nt_ * n * 4);
+    Buf fx = g_.alloc((size_t)nt_ * n * 4), fy = g_.alloc((size_t)nt_ * n * 4), ferr = g_.alloc((size_t)nt_ * 4);
     g_.zero(fx);
     g_.zero(fy);
+    g_.zero(ferr);
+    int firstAlt = -1;
     for (int k = 0; k < n; k++) {
         if (k == ref) continue;
+        if (firstAlt < 0) firstAlt = k;
         g_.run_local("refine_flow", gs(16 * tnx_), gs(tny_), 64, 1, mean3_, ref * qn, k * qn, gx, gy, qw, qh, odx_, ody_, k * nt_,
-                     nt_ * n, tnx_, tny_, 3, fx, fy, LocalMem{64 * 3 * sizeof(float)});
+                     nt_ * n, tnx_, tny_, 3, fx, fy, (float)nm.a, (float)nm.b, black, k == firstAlt ? 1 : 0, ferr,
+                     LocalMem{64 * 3 * sizeof(float)});
     }
     gx = GImg();
     gy = GImg();
+
+    std::vector<float> hx, hy;
+    SubpixelStats sp;
+    if (p.scale <= 0.f || st != nullptr) {
+        hx.resize((size_t)nt_ * n);
+        hy.resize(hx.size());
+        g_.read(fx, hx.data(), hx.size() * 4);
+        g_.read(fy, hy.data(), hy.size() * 4);
+        if (n >= 2) {
+            std::vector<float> errVec(nt_);
+            g_.read(ferr, errVec.data(), errVec.size() * 4);
+            std::vector<Flow> flows(n);
+            for (int k = 0; k < n; k++) {
+                flows[k].nx = tnx_;
+                flows[k].ny = tny_;
+                flows[k].fx.assign(hx.begin() + (size_t)k * nt_, hx.begin() + (size_t)(k + 1) * nt_);
+                flows[k].fy.assign(hy.begin() + (size_t)k * nt_, hy.begin() + (size_t)(k + 1) * nt_);
+                if (k != ref) flows[k].err = errVec;
+            }
+            sp = subpixel_diversity(flows, ref);
+        }
+    }
+    if (p.scale <= 0.f) p.scale = (n >= 2 && sp.score >= kAutoScaleThreshold && snr >= p.autoMinSnrDb) ? 2.f : 1.f;
+    krScale_ = p.scale;
 
     GImg vst = g_.image(qw, qh), icov = g_.image(qw, qh, 3);
     g_.run("kr_vst", gs(qw), gs(qh), grayRef_, qw, qh, black, nm.a, nm.b, vst);
@@ -408,6 +535,9 @@ void GpuBurst::merge_kr(const Raw& R, int ref, const std::vector<Offsets>& offs,
     g_.read(rows, rs.data(), rs.size() * 4);
     if (st) {
         st->snrDb = snr;
+        st->scale = p.scale;
+        st->subpixelScore = sp.score;
+        st->confidentTiles = sp.confidentTiles;
         st->kDetail = p.kDetail; st->kDenoise = p.kDenoise; st->dTh = p.dTh; st->dTr = p.dTr;
         double s = 0;
         for (int k = 0; k < n; k++) {
@@ -417,9 +547,6 @@ void GpuBurst::merge_kr(const Raw& R, int ref, const std::vector<Offsets>& offs,
             s += fw / ((double)qw * qh);
         }
         st->meanWeight = n > 1 ? s / (n - 1) : 0;
-        std::vector<float> hx((size_t)nt_ * n), hy(hx.size());
-        g_.read(fx, hx.data(), hx.size() * 4);
-        g_.read(fy, hy.data(), hy.size() * 4);
         double cov = 0;
         for (int t = 0; t < nt_; t++) {
             uint16_t bins = 0;
@@ -450,9 +577,10 @@ void GpuBurst::drop_frames() {
 
 ImageF GpuBurst::download_merged() { return download(merged_); }
 
-void GpuBurst::set_merged(const ImageF& im, bool kernelRegression) {
+void GpuBurst::set_merged(const ImageF& im, bool kernelRegression, float krScale) {
     merged_ = upload(im);
     kr_ = kernelRegression;
+    krScale_ = kernelRegression ? krScale : 1.f;
 }
 
 // ---- finishing
@@ -665,7 +793,53 @@ ToneInfo GpuBurst::local_tonemap(const LookParams& p) {
     return {gS, gL, key};
 }
 
-void GpuBurst::local_contrast(float amount, float radiusFrac) {
+bool GpuBurst::hdrnet_tonemap(const LookParams& lp, AccelBackend backend, ToneInfo& outTone, HdrnetStats& outSt) {
+    const int W = rgb_.w, H = rgb_.h;
+    const int s8w = (W + 7) / 8, s8h = (H + 7) / 8;
+    GImg sub = g_.image(s8w, s8h);
+    g_.run("tm_key_samples", gs(s8w), gs(s8h), rgb_, W, H, sub, s8w, s8h);
+    std::vector<float> samp((size_t)s8w * s8h);
+    g_.read(sub.b, samp.data(), samp.size() * 4);
+    double lsum = 0;
+    for (float v : samp) lsum += std::log(v + 1e-4);
+    float key = (float)std::exp(lsum / samp.size());
+    std::nth_element(samp.begin(), samp.begin() + (size_t)(samp.size() * 0.995), samp.end());
+    float p995 = samp[(size_t)(samp.size() * 0.995)];
+    float gL = clampf(lp.targetKey / key, 1.f, 64.f);
+    float maxRatio = lp.compression > 0 ? lp.compression : 8.f;
+    float gS = clampf(1.f / p995, gL / maxRatio, gL);
+    outTone = {gS, gL, key};
+
+    constexpr size_t kNchwElems = (size_t)3 * 256 * 256;
+    Buf nchwBuf = g_.alloc(kNchwElems * sizeof(float));
+    g_.run("hdrnet_downsample", gs(256), gs(256), rgb_, W, H, nchwBuf);
+    std::vector<float> nchw(kNchwElems);
+    g_.read(nchwBuf, nchw.data(), kNchwElems * sizeof(float));
+
+    std::vector<float> grid, guide;
+    if (!hdrnet_predict(nchw.data(), lp.hdrnetModelPath, backend, grid, guide, &outSt)) {
+        return false;
+    }
+
+    Timer sliceTimer;
+    const size_t n4 = grid.size() / 4;
+    std::vector<cl_float4> packedGrid(n4);
+    for (size_t i = 0; i < n4; i++) {
+        packedGrid[i] = f4(grid[i * 4 + 0], grid[i * 4 + 1], grid[i * 4 + 2], grid[i * 4 + 3]);
+    }
+    Buf gridBuf = g_.alloc(packedGrid.size() * sizeof(cl_float4));
+    Buf guideBuf = g_.alloc(guide.size() * sizeof(float));
+    g_.write(gridBuf, packedGrid.data(), packedGrid.size() * sizeof(cl_float4));
+    g_.write(guideBuf, guide.data(), guide.size() * sizeof(float));
+
+    const float keyScale = clampf(lp.targetKey / 0.22f, 0.35f, 1.25f);
+    g_.run("hdrnet_slice", gs(W), gs(H), rgb_, W, H, gridBuf, guideBuf, eotf_, keyScale);
+    g_.finish();
+    outSt.sliceMs = sliceTimer.ms();
+    return true;
+}
+
+void GpuBurst::local_contrast(float amount, float radiusFrac, const GImg* segMask) {
     if (amount <= 0) return;
     const int W = rgb_.w, H = rgb_.h;
     GImg L = luma(rgb_, -3.4e38f);
@@ -679,19 +853,49 @@ void GpuBurst::local_contrast(float amount, float radiusFrac) {
     GImg A = g_.image(sw, sh), B = g_.image(sw, sh);
     g_.run("lc_coef", gs(sw * sh), 1, mI, mII, A, B, sw * sh, eps);
     GImg mA = box(A, r), mB = box(B, r);
-    g_.run("lc_apply", gs(W), gs(H), rgb_, W, H, L, mA, mB, sw, sh, amount);
+    GImg dummyMask;
+    const bool hasSeg = segMask && segMask->w > 0 && segMask->h > 0;
+    if (!hasSeg) dummyMask = g_.image(1, 1, 2);
+    const GImg& maskRef = hasSeg ? *segMask : dummyMask;
+    const int mw = hasSeg ? segMask->w : 0;
+    const int mh = hasSeg ? segMask->h : 0;
+    g_.run("lc_apply", gs(W), gs(H), rgb_, W, H, L, mA, mB, sw, sh, amount, maskRef, mw, mh);
 }
 
-void GpuBurst::sharpen(float amount, float radius, float core) {
+void GpuBurst::apply_lut_3d(const Lut3D& lut, float strength) {
+    const float s = clampf(strength, 0.f, 1.f);
+    if (s <= 0.f || !lut.valid() || rgb_.w <= 0 || rgb_.h <= 0) return;
+    const int N = lut.size;
+    const size_t count = (size_t)N * N * N;
+    std::vector<cl_float4> packed(count);
+    for (size_t i = 0; i < count; i++) {
+        packed[i] = f4(lut.table[i * 3 + 0], lut.table[i * 3 + 1], lut.table[i * 3 + 2], 0.f);
+    }
+    Buf lutBuf = g_.alloc(count * sizeof(cl_float4));
+    g_.write(lutBuf, packed.data(), count * sizeof(cl_float4));
+    const cl_float4 domMin = f4(lut.domMin[0], lut.domMin[1], lut.domMin[2], 0.f);
+    const cl_float4 invSpan = f4(1.f / (lut.domMax[0] - lut.domMin[0]),
+                                 1.f / (lut.domMax[1] - lut.domMin[1]),
+                                 1.f / (lut.domMax[2] - lut.domMin[2]), 0.f);
+    g_.run("apply_lut3d", gs(rgb_.w * rgb_.h), 1, rgb_, rgb_.w * rgb_.h, lutBuf, N, domMin, invSpan, s);
+}
+
+void GpuBurst::sharpen(float amount, float radius, float core, const GImg* segMask) {
     if (amount <= 0) return;
-    const int n = rgb_.w * rgb_.h;
+    const int W = rgb_.w, H = rgb_.h;
     GImg L = luma(rgb_, -3.4e38f);
     GImg B = gaussian(L, radius);
-    g_.run("sharpen_apply", gs(n), 1, rgb_, n, L, B, amount, core);
+    GImg dummyMask;
+    const bool hasSeg = segMask && segMask->w > 0 && segMask->h > 0;
+    if (!hasSeg) dummyMask = g_.image(1, 1, 2);
+    const GImg& maskRef = hasSeg ? *segMask : dummyMask;
+    const int mw = hasSeg ? segMask->w : 0;
+    const int mh = hasSeg ? segMask->h : 0;
+    g_.run("sharpen_apply", gs(W), gs(H), rgb_, W, H, L, B, amount, core, maskRef, mw, mh);
 }
 
 void GpuBurst::finish(const Meta& m, const LookParams& look, Demosaic dm, float zoom, bool keepHdr, FinishOut& out, float aspect,
-                      const float lcaR[2], const float lcaB[2]) {
+                      const float lcaR[2], const float lcaB[2], AccelBackend accelBackend) {
     LookParams lp = look;
     Timer t;
     auto lap = [&](double& field) { g_.finish(); field = t.ms(); t = Timer(); };
@@ -711,12 +915,13 @@ void GpuBurst::finish(const Meta& m, const LookParams& look, Demosaic dm, float 
         rgb_ = g_.image(W, H, 3);
         float wbG = 0.5f * (m.wb[1] + m.wb[2]);
         cl_float4 inv = f4(1.f / (m.white - m.black[0]), 2.f / (2 * m.white - m.black[1] - m.black[2]), 1.f / (m.white - m.black[3]), 0);
-        g_.run("normalize_rgb", gs(W), gs(H), merged_, rgb_, W, H, 1.f, inv, f4(m.wb[0], wbG, m.wb[3], 0), lscBuf, lsc ? m.lscRows : 0,
+        g_.run("normalize_rgb", gs(W), gs(H), merged_, rgb_, W, H, krScale_, inv, f4(m.wb[0], wbG, m.wb[3], 0), lscBuf, lsc ? m.lscRows : 0,
                lsc ? m.lscCols : 0, m.cropX, m.cropY, sw, sh, lp.lscLumaStrength);
         lap(out.ft.lscwb);
-        int h = H / 2, slots = h * groups64(W / 2);
+        int step = std::max(1, (int)std::lround(2 * krScale_));
+        int gw = W / step, gh = H / step, slots = gh * groups64(gw);
         Buf rows = g_.alloc((size_t)std::max(1, slots) * 8);
-        g_.run_local("sigma_rows_rgb", gs(W / 2), gs(h), 64, 1, rgb_, W, H, 2, rows, kRed);
+        g_.run_local("sigma_rows_rgb", gs(gw), gs(gh), 64, 1, rgb_, W, H, step, rows, kRed);
         out.sigma = sigma_from(rows, slots);
     } else {
         GImg cfa = g_.image(W, H);
@@ -766,13 +971,16 @@ void GpuBurst::finish(const Meta& m, const LookParams& look, Demosaic dm, float 
     if (chroma < 0) chroma = clampf((float)out.visibleSigma / 0.01f, 1.f, 6.f);
     chroma *= lp.chromaDenoiseScale;
     out.chroma = chroma;
-    chroma_denoise(chroma);
+    chroma_denoise(chroma * (kr_ ? krScale_ : 1.f));
     lap(out.ft.chroma);
     if (zoom > 1.f) {
         upscale(m.full_w(), m.full_h());
         lap(out.tUpscale);
     }
+    const int preAspectW = rgb_.w, preAspectH = rgb_.h;
+    int aspectX0 = 0, aspectY0 = 0, aspectW = preAspectW, aspectH = preAspectH;
     if (aspect > 0.f) {
+        aspect_crop_box(preAspectW, preAspectH, aspect, aspectX0, aspectY0, aspectW, aspectH);
         crop_aspect(aspect);
         g_.finish();
     }
@@ -785,22 +993,60 @@ void GpuBurst::finish(const Meta& m, const LookParams& look, Demosaic dm, float 
         out.hdr = std::move(o);
     }
     t = Timer();
-    out.tone = local_tonemap(lp);
+    if (lp.tonemapMode == TonemapMode::HDRNET) {
+        if (!hdrnet_tonemap(lp, accelBackend, out.tone, out.hdrnet)) {
+            out.tone = local_tonemap(lp);
+        }
+    } else {
+        out.tone = local_tonemap(lp);
+    }
     lap(out.ft.tonemap);
     out.localContrast = noise_scaled_local_contrast(lp.localContrast, (float)out.visibleSigma);
-    g_.run("pixel_look", gs(rgb_.w * rgb_.h), 1, rgb_, rgb_.w * rgb_.h, oetf_, lp.contrast, lp.saturation);
-    local_contrast((float)out.localContrast, lp.localRadius);
+    g_.run("pixel_look", gs(rgb_.w * rgb_.h), 1, rgb_, rgb_.w * rgb_.h, oetf_, eotf_, lp.contrast, lp.saturation);
+
+    GImg segMaskGpu;
+    bool hasSegMask = false;
+    if (lp.semanticSegEnabled) {
+        std::vector<float> mappedBoxes = map_face_boxes_to_roi(
+            lp.faceBoxes, m, aspectX0, aspectY0, aspectW, aspectH, preAspectW, preAspectH);
+        constexpr size_t kSegElems = (size_t)256 * 256 * 3;
+        Buf segBuf = g_.alloc(kSegElems * sizeof(float));
+        g_.run("seg_downsample", gs(256), gs(256), rgb_, rgb_.w, rgb_.h, segBuf);
+        std::vector<float> rgb256(kSegElems);
+        g_.read(segBuf, rgb256.data(), kSegElems * sizeof(float));
+        SemanticMask segHost;
+        if (semantic_seg_from_rgb256(rgb256, lp.segModelPath, mappedBoxes, lp.orientationDegrees,
+                                     accelBackend, segHost, &out.seg) && segHost.valid()) {
+            segMaskGpu = g_.image(segHost.w, segHost.h, 2);
+            g_.write(segMaskGpu.b, segHost.data.data(), segHost.data.size() * sizeof(float));
+            hasSegMask = true;
+        }
+    }
+    const GImg* segPtr = hasSegMask ? &segMaskGpu : nullptr;
+
+    local_contrast((float)out.localContrast, lp.localRadius, segPtr);
     if (!(lp.skySat == 1 && lp.skinSat == 1 && lp.skyHue == 0 && lp.skinHue == 0)) {
         auto win = [](float centre, float half) {
             float rr = centre * (float)M_PI / 180.f;
             return f4(std::cos(rr), std::sin(rr), std::cos(half * (float)M_PI / 180.f), 0);
         };
-        g_.run("hue_tune", gs(rgb_.w * rgb_.h), 1, rgb_, rgb_.w * rgb_.h, win(-110.f, 38.f), win(52.f, 28.f),
-               f4(lp.skySat, lp.skinSat, lp.skyHue * (float)M_PI / 180.f, lp.skinHue * (float)M_PI / 180.f));
+        GImg dummyMask;
+        if (!hasSegMask) dummyMask = g_.image(1, 1, 2);
+        const GImg& maskRef = hasSegMask ? segMaskGpu : dummyMask;
+        const int mw = hasSegMask ? segMaskGpu.w : 0;
+        const int mh = hasSegMask ? segMaskGpu.h : 0;
+        g_.run("hue_tune", gs(rgb_.w), gs(rgb_.h), rgb_, rgb_.w, rgb_.h,
+               win(-110.f, 38.f), win(52.f, 28.f),
+               f4(lp.skySat, lp.skinSat, lp.skyHue * (float)M_PI / 180.f, lp.skinHue * (float)M_PI / 180.f),
+               maskRef, mw, mh, oetf_, eotf_);
+    }
+    if (!lp.lutPath.empty() && lp.lutStrength > 0.f) {
+        Lut3D lut;
+        if (load_cube_lut(lp.lutPath, lut)) apply_lut_3d(lut, lp.lutStrength);
     }
     lap(out.ft.look);
     out.sharpenCore = sharpen_core((float)out.visibleSigma);
-    sharpen(lp.sharpen, lp.sharpenRadius, (float)out.sharpenCore);
+    sharpen(lp.sharpen, lp.sharpenRadius, (float)out.sharpenCore, segPtr);
     lap(out.ft.sharpen);
     merged_ = GImg();
 }

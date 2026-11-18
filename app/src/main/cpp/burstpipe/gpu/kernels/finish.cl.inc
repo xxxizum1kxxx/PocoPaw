@@ -443,17 +443,28 @@ __kernel void tm_whitepoint(__global float* rgb, int n, float lo, float invSpan,
 
 inline float smooth01_cl(float t) { t = clamp(t, 0.f, 1.f); return t * t * (3.f - 2.f * t); }
 
-inline float srgb_oetf_exact_cl(float x) {
-    x = clamp(x, 0.f, 1.f);
-    return x <= 0.0031308f ? 12.92f * x : 1.055f * pow(x, 1.f / 2.4f) - 0.055f;
-}
-
 inline float srgb_eotf_unclamped_cl(float y) {
     return y <= 0.04045f ? y / 12.92f : pow((y + 0.055f) / 1.055f, 2.4f);
 }
 
+inline float srgb_eotf_fast_cl(__global const float* eotf, float y) {
+    if (y <= 1.f) return y < 0.f ? y / 12.92f : lut_interp(eotf, y);
+    return pow((y + 0.055f) / 1.055f, 2.4f);
+}
+
+inline float fast_cbrt_cl(float x) {
+    if (x <= 1e-30f) return 0.f;
+    uint i = as_uint(x);
+    i = i / 3u + 0x2a517d47u;
+    float y = as_float(i);
+    y = (2.f * y + x / (y * y)) * (1.f / 3.f);
+    y = (2.f * y + x / (y * y)) * (1.f / 3.f);
+    y = (2.f * y + x / (y * y)) * (1.f / 3.f);
+    return y;
+}
+
 inline float sgn_cbrt_cl(float x) {
-    float a = cbrt(fabs(x));
+    float a = fast_cbrt_cl(fabs(x));
     return x < 0.f ? -a : a;
 }
 
@@ -525,7 +536,7 @@ inline float oklab_max_chroma_cl(float L, float a_, float b_) {
     float r0 = +4.0767416621f * l - 3.3077115913f * m + 0.2309699292f * s;
     float g0 = -1.2684380046f * l + 2.6097574011f * m - 0.3413193965f * s;
     float b0 = -0.0041960863f * l - 0.7034186147f * m + 1.7076147010f * s;
-    float Lcusp = cbrt(1.f / max(1e-6f, max(r0, max(g0, b0))));
+    float Lcusp = fast_cbrt_cl(1.f / max(1e-6f, max(r0, max(g0, b0))));
     float Ccusp = Lcusp * Smax;
     if (L <= Lcusp) return max(0.f, L * Smax);
     float t = Ccusp * (1.f - L) / max(1.f - Lcusp, 1e-6f);
@@ -584,7 +595,8 @@ inline float3 oklab_gamut_compress_cl(float r, float g, float b) {
     return clamp(out, 0.f, 1.f);
 }
 
-__kernel void pixel_look(__global float* rgb, int n, __global const float* oetf, float contrast, float saturation) {
+__kernel void pixel_look(__global float* rgb, int n, __global const float* oetf, __global const float* eotf,
+                         float contrast, float saturation) {
     int i = get_global_id(0);
     if (i >= n) return;
     __global float* q = rgb + (size_t)i * 3;
@@ -612,7 +624,7 @@ __kernel void pixel_look(__global float* rgb, int n, __global const float* oetf,
     float Lv = Ld + contrast * (s - Ld);
     float cg = Ld > 1e-6f ? Lv / Ld : 1.f;
     rd *= cg; gd *= cg; bd *= cg;
-    float3 lab = linear_srgb_to_oklab_cl(srgb_eotf_unclamped_cl(rd), srgb_eotf_unclamped_cl(gd), srgb_eotf_unclamped_cl(bd));
+    float3 lab = linear_srgb_to_oklab_cl(srgb_eotf_fast_cl(eotf, rd), srgb_eotf_fast_cl(eotf, gd), srgb_eotf_fast_cl(eotf, bd));
     if (lab.x <= 0.f) {
         q[0] = 0.f; q[1] = 0.f; q[2] = 0.f;
     } else if (lab.x >= 1.f) {
@@ -683,13 +695,144 @@ __kernel void lc_coef(__global const float* mI, __global const float* mII, __glo
 }
 
 
+inline float hdrnet_encode_cl(float c) {
+    return log(1.f + 128.f * clamp(c, 0.f, 16.f)) * (1.f / 7.62510714f);
+}
+
+inline float pwl17_cl(__global const float* t, float v) {
+    float f = clamp(v, 0.f, 1.f) * 16.f;
+    int k = min((int)f, 15);
+    float a = f - (float)k;
+    return t[k] + a * (t[k + 1] - t[k]);
+}
+
+__kernel void hdrnet_downsample(__global const float* rgb, int W, int H, __global float* outNchw) {
+    int x = get_global_id(0), y = get_global_id(1);
+    if (x >= 256 || y >= 256) return;
+    float fx = clamp((x + 0.5f) * (float)W / 256.f - 0.5f, 0.f, (float)max(0, W - 1));
+    float fy = clamp((y + 0.5f) * (float)H / 256.f - 0.5f, 0.f, (float)max(0, H - 1));
+    int x0 = (int)fx, y0 = (int)fy;
+    int x1 = min(x0 + 1, W - 1), y1 = min(y0 + 1, H - 1);
+    float ax = fx - x0, ay = fy - y0;
+    __global const float* p00 = rgb + ((size_t)y0 * W + x0) * 3;
+    __global const float* p10 = rgb + ((size_t)y0 * W + x1) * 3;
+    __global const float* p01 = rgb + ((size_t)y1 * W + x0) * 3;
+    __global const float* p11 = rgb + ((size_t)y1 * W + x1) * 3;
+    size_t idx = (size_t)y * 256 + x;
+    for (int c = 0; c < 3; c++) {
+        float u00 = hdrnet_encode_cl(p00[c]);
+        float u10 = hdrnet_encode_cl(p10[c]);
+        float u01 = hdrnet_encode_cl(p01[c]);
+        float u11 = hdrnet_encode_cl(p11[c]);
+        outNchw[(size_t)c * 65536 + idx] =
+            (1.f - ay) * ((1.f - ax) * u00 + ax * u10) + ay * ((1.f - ax) * u01 + ax * u11);
+    }
+}
+
+__kernel void hdrnet_slice(__global float* rgb, int W, int H, __global const float4* grid4,
+                           __global const float* guide, __global const float* eotf, float keyScale) {
+    int x = get_global_id(0), y = get_global_id(1);
+    if (x >= W || y >= H) return;
+    __global float* p = rgb + ((size_t)y * W + x) * 3;
+    float ur = hdrnet_encode_cl(p[0]);
+    float ug = hdrnet_encode_cl(p[1]);
+    float ub = hdrnet_encode_cl(p[2]);
+
+    float c0 = guide[0] * ur + guide[1] * ug + guide[2] * ub + guide[3];
+    float c1 = guide[4] * ur + guide[5] * ug + guide[6] * ub + guide[7];
+    float c2 = guide[8] * ur + guide[9] * ug + guide[10] * ub + guide[11];
+    float p0 = pwl17_cl(guide + 12, c0);
+    float p1 = pwl17_cl(guide + 29, c1);
+    float p2 = pwl17_cl(guide + 46, c2);
+    float gd = clamp(guide[63] * p0 + guide[64] * p1 + guide[65] * p2 + guide[66], 0.f, 1.f);
+
+    float fx = clamp((x + 0.5f) * (16.f / (float)W) - 0.5f, 0.f, 15.f);
+    float fy = clamp((y + 0.5f) * (16.f / (float)H) - 0.5f, 0.f, 15.f);
+    float fz = clamp(gd * 7.f, 0.f, 7.f);
+    int x0 = min((int)fx, 14), x1 = x0 + 1;
+    int y0 = min((int)fy, 14), y1 = y0 + 1;
+    int z0 = min((int)fz, 6),  z1 = z0 + 1;
+    float ax = fx - (float)x0, ay = fy - (float)y0, az = fz - (float)z0;
+
+    float4 r0 = (float4)0.f, r1 = (float4)0.f, r2 = (float4)0.f;
+    #define ACC_CELL(gx, gy, gz, w) do { \
+        int ci = (((gy) * 16 + (gx)) * 8 + (gz)) * 3; \
+        float wt = (w); \
+        r0 += wt * grid4[ci + 0]; \
+        r1 += wt * grid4[ci + 1]; \
+        r2 += wt * grid4[ci + 2]; \
+    } while (0)
+    ACC_CELL(x0, y0, z0, (1.f - ax) * (1.f - ay) * (1.f - az));
+    ACC_CELL(x1, y0, z0, ax         * (1.f - ay) * (1.f - az));
+    ACC_CELL(x0, y1, z0, (1.f - ax) * ay         * (1.f - az));
+    ACC_CELL(x1, y1, z0, ax         * ay         * (1.f - az));
+    ACC_CELL(x0, y0, z1, (1.f - ax) * (1.f - ay) * az);
+    ACC_CELL(x1, y0, z1, ax         * (1.f - ay) * az);
+    ACC_CELL(x0, y1, z1, (1.f - ax) * ay         * az);
+    ACC_CELL(x1, y1, z1, ax         * ay         * az);
+    #undef ACC_CELL
+
+    float4 u4 = (float4)(ur, ug, ub, 1.f);
+    float yd0 = clamp(dot(r0, u4), 0.f, 1.25f);
+    float yd1 = clamp(dot(r1, u4), 0.f, 1.25f);
+    float yd2 = clamp(dot(r2, u4), 0.f, 1.25f);
+    p[0] = srgb_eotf_fast_cl(eotf, yd0) * keyScale;
+    p[1] = srgb_eotf_fast_cl(eotf, yd1) * keyScale;
+    p[2] = srgb_eotf_fast_cl(eotf, yd2) * keyScale;
+}
+
+__kernel void seg_downsample(__global const float* rgb, int W, int H, __global float* out256) {
+    int x = get_global_id(0), y = get_global_id(1);
+    if (x >= 256 || y >= 256) return;
+    int x0 = (int)((long)x * W / 256), x1 = max(x0 + 1, (int)((long)(x + 1) * W / 256));
+    int y0 = (int)((long)y * H / 256), y1 = max(y0 + 1, (int)((long)(y + 1) * H / 256));
+    int sx = max(1, (x1 - x0) / 4);
+    int sy = max(1, (y1 - y0) / 4);
+    float sr = 0.f, sg = 0.f, sb = 0.f;
+    int cnt = 0;
+    for (int yy = y0; yy < y1; yy += sy) {
+        __global const float* row = rgb + ((size_t)yy * W + x0) * 3;
+        int stride = sx * 3;
+        for (int xx = x0; xx < x1; xx += sx, row += stride) {
+            sr += row[0];
+            sg += row[1];
+            sb += row[2];
+            cnt++;
+        }
+    }
+    float inv = 1.f / (float)max(1, cnt);
+    __global float* dst = out256 + ((size_t)y * 256 + x) * 3;
+    dst[0] = clamp(sr * inv, 0.f, 1.f);
+    dst[1] = clamp(sg * inv, 0.f, 1.f);
+    dst[2] = clamp(sb * inv, 0.f, 1.f);
+}
+
+inline float2 sample_mask2_cl(__global const float* mask, int mw, int mh, int x, int y, int W, int H) {
+    if (mw <= 0 || mh <= 0) return (float2)(0.f, 0.f);
+    float fx = clamp((x + 0.5f) * (float)mw / (float)W - 0.5f, 0.f, (float)(mw - 1));
+    float fy = clamp((y + 0.5f) * (float)mh / (float)H - 0.5f, 0.f, (float)(mh - 1));
+    int x0 = (int)fx, y0 = (int)fy;
+    int x1 = min(x0 + 1, mw - 1), y1 = min(y0 + 1, mh - 1);
+    float ax = fx - (float)x0, ay = fy - (float)y0;
+    __global const float* p00 = mask + ((size_t)y0 * mw + x0) * 2;
+    __global const float* p10 = mask + ((size_t)y0 * mw + x1) * 2;
+    __global const float* p01 = mask + ((size_t)y1 * mw + x0) * 2;
+    __global const float* p11 = mask + ((size_t)y1 * mw + x1) * 2;
+    float f = (1.f - ay) * ((1.f - ax) * p00[0] + ax * p10[0]) + ay * ((1.f - ax) * p01[0] + ax * p11[0]);
+    float s = (1.f - ay) * ((1.f - ax) * p00[1] + ax * p10[1]) + ay * ((1.f - ax) * p01[1] + ax * p11[1]);
+    return (float2)(f, s);
+}
+
 __kernel void lc_apply(__global float* rgb, int W, int H, __global const float* L, __global const float* mA,
-                       __global const float* mB, int sw, int sh, float amount) {
+                       __global const float* mB, int sw, int sh, float amount,
+                       __global const float* segMask, int mw, int mh) {
     int x = get_global_id(0), y = get_global_id(1);
     if (x >= W || y >= H) return;
     float l = L[(size_t)y * W + x], base = up4(mA, sw, sh, x, y) * l + up4(mB, sw, sh, x, y);
     float fade = clamp(l / 0.08f, 0.f, 1.f) * clamp((1.f - l) / 0.1f, 0.f, 1.f);
-    float delta = amount * fade * (l - base);
+    float2 ms = sample_mask2_cl(segMask, mw, mh, x, y, W, H);
+    float regionScale = (mw > 0 && mh > 0) ? (1.f - 0.55f * ms.x) * (1.f - 0.50f * ms.y) : 1.f;
+    float delta = amount * regionScale * fade * (l - base);
     __global float* q = rgb + ((size_t)y * W + x) * 3;
     for (int c = 0; c < 3; c++) q[c] = clamp(q[c] + delta, 0.f, 1.f);
 }
@@ -700,13 +843,15 @@ inline float hue_weight(float4 win, float ux, float uy) {
 }
 
 // sky, skin = (cos, sin, cos(half_width), 0) in Oklab; sat4 = (skySat, skinSat, skyRot, skinRot)
-__kernel void hue_tune(__global float* rgb, int n, float4 sky, float4 skin, float4 sat4) {
-    int i = get_global_id(0);
-    if (i >= n) return;
-    __global float* q = rgb + (size_t)i * 3;
-    float rl = srgb_eotf_unclamped_cl(clamp(q[0], 0.f, 1.f));
-    float gl = srgb_eotf_unclamped_cl(clamp(q[1], 0.f, 1.f));
-    float bl = srgb_eotf_unclamped_cl(clamp(q[2], 0.f, 1.f));
+__kernel void hue_tune(__global float* rgb, int W, int H, float4 sky, float4 skin, float4 sat4,
+                       __global const float* segMask, int mw, int mh,
+                       __global const float* oetf, __global const float* eotf) {
+    int x = get_global_id(0), y = get_global_id(1);
+    if (x >= W || y >= H) return;
+    __global float* q = rgb + ((size_t)y * W + x) * 3;
+    float rl = lut_interp(eotf, q[0]);
+    float gl = lut_interp(eotf, q[1]);
+    float bl = lut_interp(eotf, q[2]);
     float3 lab = linear_srgb_to_oklab_cl(rl, gl, bl);
     if (lab.x <= 0.f || lab.x >= 1.f) return;
     float c2 = lab.y * lab.y + lab.z * lab.z;
@@ -714,7 +859,11 @@ __kernel void hue_tune(__global float* rgb, int n, float4 sky, float4 skin, floa
     float C = sqrt(c2), inv = 1.f / C;
     float ux = lab.y * inv, uy = lab.z * inv;
     float cw = clamp(C / 0.025f, 0.f, 1.f);
-    float ws = hue_weight(sky, ux, uy) * cw, wk = hue_weight(skin, ux, uy) * cw;
+    float2 ms = sample_mask2_cl(segMask, mw, mh, x, y, W, H);
+    float skyGate = (mw > 0 && mh > 0) ? (0.25f + 0.75f * ms.y) : 1.f;
+    float faceGate = (mw > 0 && mh > 0) ? (0.25f + 0.75f * ms.x) : 1.f;
+    float ws = hue_weight(sky, ux, uy) * cw * skyGate;
+    float wk = hue_weight(skin, ux, uy) * cw * faceGate;
     if (ws + wk <= 0.f) return;
     float sat = 1.f + ws * (sat4.x - 1.f) + wk * (sat4.y - 1.f);
     float th = ws * sat4.z + wk * sat4.w;
@@ -723,19 +872,63 @@ __kernel void hue_tune(__global float* rgb, int n, float4 sky, float4 skin, floa
     float Cmax = oklab_max_chroma_cl(lab.x, nux, nuy);
     float Cnew = oklab_compress_chroma_cl(C * sat, Cmax);
     float3 lin = oklab_to_linear_srgb_cl(lab.x, Cnew * nux, Cnew * nuy);
-    q[0] = srgb_oetf_exact_cl(lin.x);
-    q[1] = srgb_oetf_exact_cl(lin.y);
-    q[2] = srgb_oetf_exact_cl(lin.z);
+    q[0] = srgb_oetf(oetf, lin.x);
+    q[1] = srgb_oetf(oetf, lin.y);
+    q[2] = srgb_oetf(oetf, lin.z);
 }
 
-__kernel void sharpen_apply(__global float* rgb, int n, __global const float* L, __global const float* B, float amount,
-                            float core) {
+__kernel void apply_lut3d(__global float* rgb, int n, __global const float4* lut, int N,
+                          float4 domMin, float4 invSpan, float strength) {
     int i = get_global_id(0);
     if (i >= n) return;
-    float d = L[i] - B[i];
-    d = d > core ? d - core : (d < -core ? d + core : 0.f);
-    float delta = amount * d;
     __global float* q = rgb + (size_t)i * 3;
+    float r = q[0], g = q[1], b = q[2];
+    float fr = clamp((r - domMin.x) * invSpan.x, 0.f, 1.f) * (float)(N - 1);
+    float fg = clamp((g - domMin.y) * invSpan.y, 0.f, 1.f) * (float)(N - 1);
+    float fb = clamp((b - domMin.z) * invSpan.z, 0.f, 1.f) * (float)(N - 1);
+    int r0 = min((int)fr, N - 2), r1 = r0 + 1;
+    int g0 = min((int)fg, N - 2), g1 = g0 + 1;
+    int b0 = min((int)fb, N - 2), b1 = b0 + 1;
+    float dr = fr - (float)r0, dg = fg - (float)g0, db = fb - (float)b0;
+    #define LUT_AT(ri, gi, bi) (lut[((size_t)(bi) * N + (gi)) * N + (ri)].xyz)
+    float3 c000 = LUT_AT(r0, g0, b0);
+    float3 c111 = LUT_AT(r1, g1, b1);
+    float3 val;
+    if (dr >= dg && dg >= db) {
+        val = (1.f - dr) * c000 + (dr - dg) * LUT_AT(r1, g0, b0) + (dg - db) * LUT_AT(r1, g1, b0) + db * c111;
+    } else if (dr >= db && db >= dg) {
+        val = (1.f - dr) * c000 + (dr - db) * LUT_AT(r1, g0, b0) + (db - dg) * LUT_AT(r1, g0, b1) + dg * c111;
+    } else if (db >= dr && dr >= dg) {
+        val = (1.f - db) * c000 + (db - dr) * LUT_AT(r0, g0, b1) + (dr - dg) * LUT_AT(r1, g0, b1) + dg * c111;
+    } else if (dg >= dr && dr >= db) {
+        val = (1.f - dg) * c000 + (dg - dr) * LUT_AT(r0, g1, b0) + (dr - db) * LUT_AT(r1, g1, b0) + db * c111;
+    } else if (dg >= db && db >= dr) {
+        val = (1.f - dg) * c000 + (dg - db) * LUT_AT(r0, g1, b0) + (db - dr) * LUT_AT(r0, g1, b1) + dr * c111;
+    } else {
+        val = (1.f - db) * c000 + (db - dg) * LUT_AT(r0, g0, b1) + (dg - dr) * LUT_AT(r0, g1, b1) + dr * c111;
+    }
+    #undef LUT_AT
+    float3 orig = (float3)(r, g, b);
+    float3 out = clamp(orig + strength * (val - orig), 0.f, 1.f);
+    q[0] = out.x; q[1] = out.y; q[2] = out.z;
+}
+
+__kernel void sharpen_apply(__global float* rgb, int W, int H, __global const float* L, __global const float* B,
+                            float amount, float core, __global const float* segMask, int mw, int mh) {
+    int x = get_global_id(0), y = get_global_id(1);
+    if (x >= W || y >= H) return;
+    size_t i = (size_t)y * W + x;
+    float d = L[i] - B[i];
+    float2 ms = sample_mask2_cl(segMask, mw, mh, x, y, W, H);
+    float faceW = ms.x, skyW = ms.y;
+    float effCore = core * (1.f + 0.8f * faceW + 1.5f * skyW);
+    float effAmt = amount * (1.f - 0.55f * faceW) * (1.f - 0.85f * skyW);
+    float dSharp = d > effCore ? d - effCore : (d < -effCore ? d + effCore : 0.f);
+    float skyGrain = (mw > 0 && mh > 0 && skyW > 0.f)
+        ? (-0.45f * skyW * (1.f - smooth01_cl((fabs(d) - core) / max(2.f * core, 1e-5f))) * d)
+        : 0.f;
+    float delta = effAmt * dSharp + skyGrain;
+    __global float* q = rgb + i * 3;
     for (int c = 0; c < 3; c++) q[c] = clamp(q[c] + delta, 0.f, 1.f);
 }
 

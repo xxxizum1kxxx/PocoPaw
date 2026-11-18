@@ -156,6 +156,18 @@ Flow refine_flow(const ImageF& mref, const ImageF& malt, const Offsets& o, int i
     return f;
 }
 
+float kr_burst_snr_db(const Raw& refFrame, const Meta& m, const NoiseModel& nm) {
+    const float black = (m.black[0] + m.black[1] + m.black[2] + m.black[3]) / 4;
+    double s2 = 0, v2 = 0;
+    for (int y = 0; y < refFrame.h; y += 7)
+        for (int x = 0; x < refFrame.w; x += 7) {
+            double s = refFrame.at(x, y) - black;
+            if (s <= 0 || refFrame.at(x, y) >= m.white) continue;
+            s2 += s * s; v2 += nm.var(s);
+        }
+    return v2 > 0 ? (float)(10.0 * std::log10(s2 / v2)) : 30.f;
+}
+
 ImageF kr_merge(const std::vector<Raw>& frames, int ref, const std::vector<Flow>& flows,
                 const ImageF& grayRef, const std::vector<ImageF>& mean3, const Meta& m,
                 const NoiseModel& nm, const MergeOpts& o, KrParams p, KrStats* st) {
@@ -164,14 +176,10 @@ ImageF kr_merge(const std::vector<Raw>& frames, int ref, const std::vector<Flow>
     const float black = (m.black[0] + m.black[1] + m.black[2] + m.black[3]) / 4;
 
     // burst SNR (dB) of the reference frame, as in the IPOL implementation
-    double s2 = 0, v2 = 0;
-    for (int y = 0; y < H; y += 7)
-        for (int x = 0; x < W; x += 7) {
-            double s = R.at(x, y) - black;
-            if (s <= 0 || R.at(x, y) >= m.white) continue;
-            s2 += s * s; v2 += nm.var(s);
-        }
-    float snr = v2 > 0 ? (float)(10.0 * std::log10(s2 / v2)) : 30.f;
+    float snr = kr_burst_snr_db(R, m, nm);
+    SubpixelStats sp;
+    if (n >= 2 && (p.scale <= 0.f || st != nullptr)) sp = subpixel_diversity(flows, ref);
+    if (p.scale <= 0.f) p.scale = (n >= 2 && sp.score >= kAutoScaleThreshold && snr >= p.autoMinSnrDb) ? 2.f : 1.f;
     if (p.kDetail < 0) p.kDetail = lerp_snr(snr, 0.33f, 0.25f);
     if (p.kDenoise < 0) p.kDenoise = lerp_snr(snr, 5.0f, 3.0f);
     if (p.dTh < 0) p.dTh = lerp_snr(snr, 0.81f, 0.71f);
@@ -468,14 +476,17 @@ ImageF kr_merge(const std::vector<Raw>& frames, int ref, const std::vector<Flow>
                 v1 -= dY;
                 v2 += dB - dY / std::max(sCol[2], 0.1f);
             }
-            o[0] = std::max(0.f, v0);
-            o[1] = std::max(0.f, v1);
-            o[2] = std::max(0.f, v2);
+            o[0] = v0;
+            o[1] = v1;
+            o[2] = v2;
         }
     });
 
     if (st) {
         st->snrDb = snr;
+        st->scale = p.scale;
+        st->subpixelScore = sp.score;
+        st->confidentTiles = sp.confidentTiles;
         st->kDetail = p.kDetail; st->kDenoise = p.kDenoise; st->dTh = p.dTh; st->dTr = p.dTr;
         double s = 0;
         for (int k = 0; k < n; k++) if (k != ref) s += frameW[k];

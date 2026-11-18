@@ -157,4 +157,43 @@ class BurstExposureTest {
 
         assertNull(BurstExposure.planExposure(LiveExposure(iso = null, exposureNs = 10_000_000L, clippedFraction = 0.5f), hasOis = true))
     }
+
+    @Test
+    fun twoXZoomBoostScalesFrameCountBetween12And16() {
+        assertEquals(8, BurstExposure.framesForZoom(baseFrames = 8, cropZoom = 1.0f))
+        assertEquals(4, BurstExposure.framesForZoom(baseFrames = 4, cropZoom = 1.0f))
+
+        val midBoost = BurstExposure.framesForZoom(baseFrames = 8, cropZoom = 1.5f)
+        assertTrue(midBoost in 12..16)
+        assertEquals(14, midBoost)
+
+        val lowBoost = BurstExposure.framesForZoom(baseFrames = 4, cropZoom = 1.05f)
+        assertTrue(lowBoost in 12..16)
+
+        assertEquals(16, BurstExposure.framesForZoom(baseFrames = 8, cropZoom = 2.0f))
+        assertEquals(16, BurstExposure.framesForZoom(baseFrames = 8, cropZoom = 2.5f))
+        assertEquals(1, BurstExposure.framesForZoom(baseFrames = 8, cropZoom = 2.0f, flash = true))
+    }
+
+    @Test
+    fun lowBudgetClampsZoomBoostSafelyWithoutException() {
+        val budget = com.izum1k.pocopaw.camera.RawRequestBudget()
+        budget.consume(50) // 15 remaining, 8 margin -> maxAffordable = 7
+        val desired = BurstExposure.framesForZoom(baseFrames = 8, cropZoom = 2.0f)
+        assertEquals(16, desired)
+        val clamped = BurstExposure.framesWithinBudget(desired, budget)
+        assertEquals(7, clamped)
+        assertTrue(budget.canAfford(clamped))
+    }
+
+    @Test
+    fun framesWithinBudgetReturnsZeroWhenBudgetExhausted() {
+        val budget = com.izum1k.pocopaw.camera.RawRequestBudget()
+        budget.recordSubmitted(65)
+        assertEquals(0, budget.maxAffordable())
+        val clamped = BurstExposure.framesWithinBudget(16, budget)
+        assertEquals(0, clamped)
+        assertTrue(clamped <= budget.maxAffordable())
+        assertTrue(budget.canAfford(clamped))
+    }
 }

@@ -9,6 +9,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.izum1k.pocopaw.AppContainer
+import com.izum1k.pocopaw.camera.AwbEstimatorMode
 import com.izum1k.pocopaw.camera.CameraController
 import com.izum1k.pocopaw.camera.CameraInfo
 import com.izum1k.pocopaw.camera.CaptureSpec
@@ -21,6 +22,7 @@ import com.izum1k.pocopaw.data.AspectRatio
 import com.izum1k.pocopaw.data.CameraSettings
 import com.izum1k.pocopaw.data.FlashMode
 import com.izum1k.pocopaw.data.DngContent
+import com.izum1k.pocopaw.data.KrScaleMode
 import com.izum1k.pocopaw.data.OutputFormat
 import com.izum1k.pocopaw.data.Processing
 import com.izum1k.pocopaw.data.TimerMode
@@ -29,14 +31,18 @@ import com.izum1k.pocopaw.data.BurstFrames
 import com.izum1k.pocopaw.data.LookStyle
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
+import com.izum1k.pocopaw.pipeline.BurstExposure
 import com.izum1k.pocopaw.pipeline.BurstLook
 import com.izum1k.pocopaw.pipeline.BurstScene
 import com.izum1k.pocopaw.pipeline.DngPassthroughPipeline
+import com.izum1k.pocopaw.pipeline.FlowMethod
 import com.izum1k.pocopaw.pipeline.LensCalibration
 import com.izum1k.pocopaw.pipeline.HdrPlusPipeline
 import com.izum1k.pocopaw.pipeline.ImagePipeline
 import com.izum1k.pocopaw.pipeline.PipelineOptions
 import com.izum1k.pocopaw.pipeline.PipelineRegistry
+import com.izum1k.pocopaw.pipeline.TonemapMode
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
@@ -45,6 +51,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -70,28 +78,37 @@ data class PipelineRun(val pipelineId: String, val frames: Int, val millis: Long
 data class SessionSettings(
     val output: OutputFormat? = null,
     val processing: Processing? = null,
+    val krScale: KrScaleMode? = null,
     val burstFrames: BurstFrames? = null,
     val scene: SceneMode? = null,
     val look: LookStyle? = null,
+    val tonemapMode: TonemapMode? = null,
     val ultraHdr: Boolean? = null,
+    val earlyStopEnabled: Boolean? = null,
 ) {
     fun over(saved: CameraSettings) = saved.copy(
         output = output ?: saved.output,
         processing = processing ?: saved.processing,
+        krScale = krScale ?: saved.krScale,
         burstFrames = burstFrames ?: saved.burstFrames,
         scene = scene ?: saved.scene,
         look = look ?: saved.look,
+        tonemapMode = tonemapMode ?: saved.tonemapMode,
         ultraHdr = ultraHdr ?: saved.ultraHdr,
+        earlyStopEnabled = earlyStopEnabled ?: saved.earlyStopEnabled,
     )
 
     /** Drops the choices whose saved default just changed. */
     fun without(prev: CameraSettings, saved: CameraSettings) = copy(
         output = output.takeIf { prev.output == saved.output },
         processing = processing.takeIf { prev.processing == saved.processing },
+        krScale = krScale.takeIf { prev.krScale == saved.krScale },
         burstFrames = burstFrames.takeIf { prev.burstFrames == saved.burstFrames },
         scene = scene.takeIf { prev.scene == saved.scene },
         look = look.takeIf { prev.look == saved.look },
+        tonemapMode = tonemapMode.takeIf { prev.tonemapMode == saved.tonemapMode },
         ultraHdr = ultraHdr.takeIf { prev.ultraHdr == saved.ultraHdr },
+        earlyStopEnabled = earlyStopEnabled.takeIf { prev.earlyStopEnabled == saved.earlyStopEnabled },
     )
 }
 
@@ -168,12 +185,20 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
             }
         }
         viewModelScope.launch {
-            settings.collect { if (needsMotion(it)) motion.start() else motion.stop() }
+            settings.collect { cfg ->
+                if (needsMotion(cfg)) motion.start() else motion.stop()
+                controller.setRaw10Enabled(cfg.raw10Enabled)
+                pushControls(cfg.flash)
+            }
         }
-        // A setting that asks for more frames than are left (8 to 16, DNG to a burst) reopens
-        // right away instead of at the next press.
+        // A setting that asks for more frames than are left (8 to 16, DNG to a burst, 2x zoom boost)
+        // reopens right away instead of at the next press.
         viewModelScope.launch {
-            combine(settings, cameraState) { _, state -> state }.collect { state ->
+            combine(
+                settings,
+                cameraState,
+                _ui.map { it.cropZoom }.distinctUntilChanged(),
+            ) { _, state, _ -> state }.collect { state ->
                 if (state is CameraController.State.Previewing && _ui.value.busy == Busy.IDLE && !controller.budget.canAfford(nextFrames())) {
                     controller.reopen()
                 }
@@ -215,6 +240,7 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
 
     fun onResume() {
         resumed = true
+        container.syncAwbEstimator()
         maybeOpen()
     }
 
@@ -291,18 +317,54 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
         val s = _ui.value
         val cam = s.current ?: return
         if (cam.facing != LensFacing.BACK || cam.relativeZoom != 1f || s.busy == Busy.CAPTURING) return
-        val target = if (s.cropZoom > 1f) 1f else TWO_X.coerceAtMost(cam.zoomRange.upper)
+        val target = if (s.cropZoom > 1.01f) 1f else TWO_X.coerceAtMost(cam.zoomRange.upper).coerceAtLeast(cam.zoomRange.lower)
         _ui.update { it.copy(cropZoom = target, zoomTarget = target, zoomAnimId = it.zoomAnimId + 1) }
     }
 
-    /** One frame of the [CameraUiState.zoomTarget] animation. */
+    /** One frame of the [CameraUiState.zoomTarget] animation, or continuous zoom update. */
     fun setZoom(value: Float) {
         val cam = _ui.value.current ?: return
         val z = value.coerceIn(cam.zoomRange.lower, cam.zoomRange.upper)
         if (abs(z - _ui.value.zoom) < 0.001f) return
-        _ui.update { it.copy(zoom = z) }
+        _ui.update {
+            it.copy(
+                zoom = z,
+                cropZoom = if (it.zoomTarget == null) cropZoomFor(cam, z) else it.cropZoom,
+            )
+        }
         pushControls()
     }
+
+    /** Continuous pinch zoom (`1.0x..2.0x` on main back lens, clamped to `cam.zoomRange`). */
+    fun setContinuousZoom(value: Float) {
+        if (!value.isFinite()) return
+        val cam = _ui.value.current ?: return
+        val isMainBack = cam.facing == LensFacing.BACK && cam.relativeZoom == 1f
+        val z = clampContinuousZoom(value, isMainBack, cam.zoomRange.lower, cam.zoomRange.upper, fallback = _ui.value.zoom)
+        if (abs(z - _ui.value.zoom) < 0.001f && _ui.value.zoomTarget == null) return
+        _ui.update {
+            it.copy(
+                zoom = z,
+                cropZoom = cropZoomFor(cam, z),
+                zoomTarget = null,
+                zoomAnimId = if (it.zoomTarget != null) it.zoomAnimId + 1 else it.zoomAnimId,
+            )
+        }
+        pushControls()
+    }
+
+    /** Multiplies the latest continuous zoom by a pinch [factor] without reading stale Compose state. */
+    fun scaleContinuousZoom(factor: Float) {
+        if (!factor.isFinite() || factor <= 0f) return
+        setContinuousZoom(_ui.value.zoom * factor)
+    }
+
+    private fun cropZoomFor(cam: CameraInfo?, zoom: Float): Float =
+        cropZoomFor(
+            isMainBack = cam != null && cam.facing == LensFacing.BACK && cam.relativeZoom == 1f,
+            zoom = zoom,
+            zoomUpper = cam?.zoomRange?.upper ?: 1f,
+        )
 
     fun setEv(index: Int) {
         val cam = _ui.value.current ?: return
@@ -387,6 +449,7 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
 
     /** A capture setting changed from the quick settings panel, for this session only. */
     fun setQuick(change: SessionSettings.() -> SessionSettings) = session.update(change)
+    fun setAwbMode(v: AwbEstimatorMode) = viewModelScope.launch { settingsRepo.setAwbMode(v) }
     fun setAspect(v: AspectRatio) = viewModelScope.launch { settingsRepo.setAspect(v) }
     fun setGrid(v: Boolean) = viewModelScope.launch { settingsRepo.setGrid(v) }
 
@@ -420,23 +483,46 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
     private suspend fun capture(deviceRotation: Int) {
         val s = _ui.value
         val cam = s.current ?: return
-        val fires = flashFires(settings.value, cam, live.value)
+        val cfg = settings.value
+        val fires = flashFires(cfg, cam, live.value)
         val shake = motion.rms()
         // KR's super-resolution comes from hand shake; on a tripod it only costs time
-        val still = settings.value.processing == Processing.HDR_PLUS_KR && shake != null && shake < STILL_RAD_PER_SEC
+        val still = cfg.processing == Processing.HDR_PLUS_KR && shake != null && shake < STILL_RAD_PER_SEC
         if (still) Log.i(TAG, "HDR+ KR -> HDR+: still (gyro rms %.4f rad/s)".format(shake))
-        val pipeline = pipelineFor(settings.value, cam, fires, still)
-        _ui.update { it.copy(busy = Busy.CAPTURING, progress = 0f, shutterTick = it.shutterTick + 1) }
-        if (settings.value.shutterSound) sound.play(MediaActionSound.SHUTTER_CLICK)
+        _ui.update { it.copy(busy = Busy.CAPTURING, progress = 0f) }
+        val pipeline = try {
+            withContext(Dispatchers.IO) { pipelineFor(cfg, cam, fires, still, s.cropZoom) }
+        } catch (e: CancellationException) {
+            _ui.update { it.copy(busy = Busy.IDLE) }
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "pipeline setup failed", e)
+            releaseFocus()
+            fail(CaptureMessage.CAPTURE_FAILED)
+            return
+        }
+        _ui.update { it.copy(shutterTick = it.shutterTick + 1) }
+        if (cfg.shutterSound) sound.play(MediaActionSound.SHUTTER_CLICK)
+        val zslPolicy = zslCapturePolicy(
+            cfg = cfg,
+            mode = s.mode,
+            flash = fires,
+            frames = pipeline.framesPerCapture,
+            clippedFraction = live.value.clippedFraction,
+            bufferedZsl = controller.bufferedZslFrames,
+        )
         val spec = CaptureSpec(
             frameCount = pipeline.framesPerCapture,
             exposure = pipeline.exposureFor(captureExposure(s, cam, fires), live.value.copy(motionRadPerSec = shake), cam),
-            flash = if (fires) settings.value.flash else FlashMode.OFF,
+            flash = if (fires) cfg.flash else FlashMode.OFF,
             deviceRotation = deviceRotation,
             zoomRatio = s.zoom,
             cropZoom = s.cropZoom,
+            earlyStopEnabled = cfg.isEarlyStopEnabled() && cfg.earlyStopEnabled,
+            allowZsl = zslPolicy.allowZsl,
+            reserveShortFrames = zslPolicy.reserveShortFrames,
         )
-        val stream = pipeline.openStream(spec.exposure)
+        val stream = if (zslPolicy.disableStreamForHybrid) null else pipeline.openStream(spec.exposure)
         val burst = try {
             controller.capture(spec, stream)
         } catch (e: Exception) {
@@ -464,41 +550,37 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
      * DNG output keeps the single-frame pass-through; JPEG output runs the burst pipeline. A flash
      * fires for one frame only, so a flash capture is a burst of one. [still] runs KR as plain HDR+.
      */
-    private fun pipelineFor(
+    internal fun pipelineFor(
         cfg: CameraSettings,
         cam: CameraInfo,
         flash: Boolean = flashFires(cfg, cam, live.value),
         still: Boolean = false,
+        cropZoom: Float = _ui.value.cropZoom,
     ): ImagePipeline {
         if (cfg.output == OutputFormat.DNG) return PipelineRegistry.create(DngPassthroughPipeline.ID)
-        val id = when (cfg.processing) {
-            Processing.HDR_PLUS -> HdrPlusPipeline.ID
-            Processing.HDR_PLUS_KR -> if (still) HdrPlusPipeline.ID else HdrPlusPipeline.ID_KR
-        }
         return PipelineRegistry.create(
-            id,
-            PipelineOptions(
-                frames = if (flash) 1 else cfg.burstFrames.count,
-                writeJpeg = true,
-                writeDng = cfg.output == OutputFormat.DNG_JPEG,
-                mergedDng = cfg.dngContent == DngContent.MERGED,
-                look = BurstLook(style = cfg.look.preset),
-                scene = if (flash) BurstScene.AUTO else when (cfg.scene) {
-                    SceneMode.AUTO -> BurstScene.AUTO
-                    SceneMode.BRACKET -> BurstScene.BRACKET
-                    SceneMode.NIGHT -> BurstScene.NIGHT
-                },
-                ultraHdr = cfg.ultraHdr,
-                lca = LensCalibration.lca(cam.id),
-                noise = LensCalibration.noise(cam.id),
-                gpu = cfg.gpuAcceleration,
-                aspectRatio = if (cfg.aspect == AspectRatio.SIXTEEN_NINE) 16f / 9f else 0f,
+            pipelineIdFor(cfg, still),
+            buildPipelineOptions(
+                cfg = cfg,
+                camId = cam.id,
+                flash = flash,
+                cropZoom = cropZoom,
+                lutPathResolver = container::lutPathFor,
+                pmridPath = container::pmridModelPath,
+                flowPath = container::seaRaftModelPath,
+                hdrnetPath = container::hdrnetModelPath,
+                segPath = container::segModelPath,
             ),
         )
     }
 
-    /** RAW frames the next press will ask for. */
-    private fun nextFrames(): Int = _ui.value.current?.let { pipelineFor(settings.value, it).framesPerCapture } ?: 1
+    /** RAW frames the next press will ask for, computed without resolving asset paths. */
+    private fun nextFrames(): Int {
+        val s = _ui.value
+        val cam = s.current ?: return 1
+        val cfg = settings.value
+        return expectedFrames(cfg, flashFires(cfg, cam, live.value), s.cropZoom)
+    }
 
     private fun fail(message: CaptureMessage) {
         _ui.update { it.copy(busy = Busy.IDLE, countdown = null, message = message, messageId = it.messageId + 1) }
@@ -524,7 +606,9 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
 
     private fun previewControls(flash: FlashMode = settings.value.flash): PreviewControls {
         val s = _ui.value
-        return PreviewControls(exposure = exposurePlan(s), flash = flash, zoomRatio = s.zoom, wbShift = s.wbShift)
+        val cfg = settings.value
+        val zslEligible = cfg.zslEnabled && s.mode == CaptureMode.PHOTO && cfg.scene != SceneMode.NIGHT && flash != FlashMode.ON
+        return PreviewControls(exposure = exposurePlan(s), flash = flash, zoomRatio = s.zoom, wbShift = s.wbShift, zslActive = zslEligible)
     }
 
     private fun pushControls(flash: FlashMode = settings.value.flash) {
@@ -544,8 +628,147 @@ class CameraViewModel(private val container: AppContainer) : ViewModel() {
 
         /** Night meters hand shake for its exposure; KR checks it to skip super-resolution when still. */
         fun needsMotion(cfg: CameraSettings) = cfg.scene == SceneMode.NIGHT || cfg.processing == Processing.HDR_PLUS_KR
+
+        internal data class ZslCapturePolicy(
+            val allowZsl: Boolean,
+            val reserveShortFrames: Int,
+            val disableStreamForHybrid: Boolean,
+        )
+
+        internal fun zslCapturePolicy(
+            cfg: CameraSettings,
+            mode: CaptureMode,
+            flash: Boolean,
+            frames: Int,
+            clippedFraction: Float,
+            bufferedZsl: Int,
+        ): ZslCapturePolicy {
+            val allowZsl = cfg.zslEnabled && mode == CaptureMode.PHOTO && cfg.scene != SceneMode.NIGHT && !flash && frames > 1
+            val reserveShortFrames = if (allowZsl && cfg.scene == SceneMode.AUTO && clippedFraction > BurstExposure.HIGHLIGHT_CLIP_SAFE) {
+                minOf(2, frames - 1)
+            } else {
+                0
+            }
+            val earlyStopActive = cfg.isEarlyStopEnabled() && cfg.earlyStopEnabled
+            val disableStreamForHybrid = allowZsl && bufferedZsl > 0 && !earlyStopActive
+            return ZslCapturePolicy(
+                allowZsl = allowZsl,
+                reserveShortFrames = reserveShortFrames,
+                disableStreamForHybrid = disableStreamForHybrid,
+            )
+        }
+
+        internal fun pipelineIdFor(cfg: CameraSettings, still: Boolean = false): String = when {
+            cfg.output == OutputFormat.DNG -> DngPassthroughPipeline.ID
+            cfg.processing == Processing.HDR_PLUS -> HdrPlusPipeline.ID
+            still -> HdrPlusPipeline.ID
+            else -> HdrPlusPipeline.ID_KR
+        }
+
+        internal fun effectiveLook(
+            cfg: CameraSettings,
+            flash: Boolean = false,
+            lutPathResolver: (String) -> String = { "" },
+        ): BurstLook {
+            val nightLook = !flash && cfg.scene == SceneMode.NIGHT
+            val lutId = if (nightLook) null else cfg.look.lutId
+            val resolvedLut = lutId?.let(lutPathResolver).orEmpty()
+            return BurstLook(
+                style = if (nightLook) "night" else cfg.look.preset,
+                lutPath = resolvedLut,
+                lutStrength = if (lutId != null && resolvedLut.isNotEmpty()) 1f else 0f,
+            )
+        }
+
+        internal fun expectedFrames(
+            cfg: CameraSettings,
+            flash: Boolean = false,
+            cropZoom: Float = 1f,
+        ): Int = if (cfg.output == OutputFormat.DNG) {
+            1
+        } else {
+            BurstExposure.framesForZoom(cfg.burstFrames.count, cropZoom, flash)
+        }
+
+        internal fun buildPipelineOptions(
+            cfg: CameraSettings,
+            camId: String,
+            flash: Boolean = false,
+            cropZoom: Float = 1f,
+            lutPathResolver: (String) -> String = { "" },
+            pmridPath: () -> String = { "" },
+            flowPath: () -> String = { "" },
+            hdrnetPath: () -> String = { "" },
+            segPath: () -> String = { "" },
+        ): PipelineOptions {
+            val boostFrames = expectedFrames(cfg, flash, cropZoom)
+            val pmridActive = cfg.pmridEnabled && cfg.processing == Processing.HDR_PLUS
+            val flowActive = cfg.flowMethod != FlowMethod.BLOCK_MATCH
+            val hdrnetActive = cfg.tonemapMode == TonemapMode.HDRNET
+            val segActive = cfg.semanticSegEnabled
+            return PipelineOptions(
+                frames = boostFrames,
+                writeJpeg = true,
+                writeDng = cfg.output == OutputFormat.DNG_JPEG,
+                mergedDng = cfg.effectiveDngContent() == DngContent.MERGED,
+                look = effectiveLook(cfg, flash, lutPathResolver),
+                scene = if (flash) BurstScene.AUTO else when (cfg.scene) {
+                    SceneMode.AUTO -> BurstScene.AUTO
+                    SceneMode.BRACKET -> BurstScene.BRACKET
+                    SceneMode.NIGHT -> BurstScene.NIGHT
+                },
+                ultraHdr = cfg.ultraHdr,
+                lca = LensCalibration.lca(camId),
+                noise = LensCalibration.noise(camId),
+                gpu = cfg.effectiveGpuAcceleration(),
+                aspectRatio = if (cfg.aspect == AspectRatio.SIXTEEN_NINE) 16f / 9f else 0f,
+                demosaic = cfg.demosaicMethod,
+                krScale = cfg.krScale.scale,
+                krAuto2x = cfg.krScale.auto2x,
+                pmridEnabled = pmridActive,
+                pmridModelPath = if (pmridActive) pmridPath() else "",
+                accelBackend = cfg.accelBackend,
+                flowMethod = cfg.flowMethod,
+                flowModelPath = if (flowActive) flowPath() else "",
+                tonemapMode = cfg.tonemapMode,
+                hdrnetModelPath = if (hdrnetActive) hdrnetPath() else "",
+                semanticSegEnabled = segActive,
+                segModelPath = if (segActive) segPath() else "",
+                earlyStopEnabled = cfg.isEarlyStopEnabled() && cfg.earlyStopEnabled,
+            )
+        }
         const val WB_MAX_STEPS = 10
         private const val TWO_X = 2f
+
+        internal fun clampContinuousZoom(
+            value: Float,
+            isMainBack: Boolean,
+            zoomLower: Float,
+            zoomUpper: Float,
+            fallback: Float = 1f,
+        ): Float {
+            if (!value.isFinite()) return fallback
+            val lo = minOf(zoomLower, zoomUpper)
+            val hi = maxOf(zoomLower, zoomUpper)
+            val minZ = lo.coerceAtLeast(1f)
+            val maxZ = if (isMainBack) {
+                TWO_X.coerceAtMost(hi).coerceAtLeast(lo)
+            } else {
+                hi
+            }.coerceAtLeast(minZ)
+            return value.coerceIn(minZ, maxZ)
+        }
+
+        internal fun cropZoomFor(
+            isMainBack: Boolean,
+            zoom: Float,
+            zoomUpper: Float,
+        ): Float =
+            if (isMainBack && zoom.isFinite()) {
+                zoom.coerceIn(1f, TWO_X.coerceAtMost(zoomUpper).coerceAtLeast(1f))
+            } else {
+                1f
+            }
 
         val ISO_STOPS = listOf(50, 64, 80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600, 2000, 2500, 3200, 4000, 5000, 6400)
 

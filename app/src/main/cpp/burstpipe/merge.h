@@ -79,6 +79,7 @@ public:
              float clip, bool checkClip, const MergeOpts& o);
     ImageF result(MergeStats* st);
     int added() const { return added_; }
+    double neff() const { return 1.0 + (wsum_.w > 0 && wsum_.h > 0 ? wTotal_ / ((double)wsum_.w * wsum_.h) : 0.0); }
 
 private:
     ImageF out_, wsum_, rob_;
@@ -92,3 +93,24 @@ private:
 // optional spatial shrinkage of the merged spectrum (`spatial` > 0). Same output as merge_frames.
 ImageF merge_frames_freq(const std::vector<Raw>& frames, int ref, const std::vector<Offsets>& offs,
                          const Meta& m, const NoiseModel& nm, float c, float spatial, MergeStats* st);
+
+// Frequency-domain merge one frame at a time (night-mode streaming). Accumulates the Hermitian-packed
+// 128-bin tile spectra against the retained reference frame, then normalises, shrinks and overlap-adds in
+// result(). Output matches merge_frames_freq given the frames in the same order.
+class FreqStreamMerge {
+public:
+    FreqStreamMerge(const Raw& ref, const Meta& m, float c, float spatial);
+    void add(const Raw& F, const Offsets& of, const NoiseModel& nm);
+    ImageF result(const NoiseModel& nm, MergeStats* st);
+    int added() const { return added_; }
+    double neff() const;
+
+private:
+    Raw ref_;
+    int qw_ = 0, qh_ = 0, ntx_ = 0, nty_ = 0;
+    float black_[4]{};
+    float c_ = 64.f, spatial_ = 2.f, w2_ = 0.f;
+    std::vector<float> ar_, ai_, mean_;
+    std::vector<double> tileW_;
+    int added_ = 0;
+};

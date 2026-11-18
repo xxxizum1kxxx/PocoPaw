@@ -1,4 +1,5 @@
 #include "burst.h"
+#include "ort_runtime.h"
 
 int g_threads = (int)std::max(1u, std::thread::hardware_concurrency());
 
@@ -9,34 +10,56 @@ double noise_sigma(const ImageF& cfa, int cfaType) {
     int ox = 0, oy = 0;
     for (int y = 0; y < 2; y++) for (int x = 0; x < 2; x++) if (cfa_channel(cfaType, x, y) == 1) { ox = x; oy = y; }
     int w = cfa.w / 2, h = cfa.h / 2;
+    if (w < 3 || h < 3) return 0;
+    std::vector<double> rowS(h, 0.0);
+    std::vector<long> rowN(h, 0);
+    parallel_for(h - 2, [&](int yi) {
+        int y = yi + 1;
+        auto P = [&](int x, int u, int v) { return cfa.at(2 * (x + u) + ox, 2 * (y + v) + oy); };
+        double ls = 0.0;
+        long ln = 0;
+        for (int x = 1; x < w - 1; x++) {
+            double c = P(x, 0, 0);
+            if (c > 0.9) continue;
+            double l = 4 * c - 2 * (P(x, -1, 0) + P(x, 1, 0) + P(x, 0, -1) + P(x, 0, 1)) +
+                       (P(x, -1, -1) + P(x, 1, -1) + P(x, -1, 1) + P(x, 1, 1));
+            ls += std::fabs(l);
+            ln++;
+        }
+        rowS[y] = ls;
+        rowN[y] = ln;
+    });
     double s = 0;
     long n = 0;
-    for (int y = 1; y < h - 1; y++)
-        for (int x = 1; x < w - 1; x++) {
-            auto P = [&](int u, int v) { return cfa.at(2 * (x + u) + ox, 2 * (y + v) + oy); };
-            double c = P(0, 0);
-            if (c > 0.9) continue;
-            double l = 4 * c - 2 * (P(-1, 0) + P(1, 0) + P(0, -1) + P(0, 1)) + (P(-1, -1) + P(1, -1) + P(-1, 1) + P(1, 1));
-            s += std::fabs(l);
-            n++;
-        }
+    for (int y = 1; y < h - 1; y++) { s += rowS[y]; n += rowN[y]; }
     return n ? std::sqrt(M_PI / 2) / (6.0 * n) * s : 0;
 }
 
 // same estimator on the G channel of an RGB image, sampled on a grid matching one Bayer G plane
 double noise_sigma_rgb(const ImageF& rgb, int step) {
     int w = rgb.w / step, h = rgb.h / step;
+    if (w < 3 || h < 3) return 0;
+    std::vector<double> rowS(h, 0.0);
+    std::vector<long> rowN(h, 0);
+    parallel_for(h - 2, [&](int yi) {
+        int y = yi + 1;
+        auto P = [&](int x, int u, int v) { return rgb.at(step * (x + u), step * (y + v), 1); };
+        double ls = 0.0;
+        long ln = 0;
+        for (int x = 1; x < w - 1; x++) {
+            double c = P(x, 0, 0);
+            if (c > 0.9) continue;
+            double l = 4 * c - 2 * (P(x, -1, 0) + P(x, 1, 0) + P(x, 0, -1) + P(x, 0, 1)) +
+                       (P(x, -1, -1) + P(x, 1, -1) + P(x, -1, 1) + P(x, 1, 1));
+            ls += std::fabs(l);
+            ln++;
+        }
+        rowS[y] = ls;
+        rowN[y] = ln;
+    });
     double s = 0;
     long n = 0;
-    for (int y = 1; y < h - 1; y++)
-        for (int x = 1; x < w - 1; x++) {
-            auto P = [&](int u, int v) { return rgb.at(step * (x + u), step * (y + v), 1); };
-            double c = P(0, 0);
-            if (c > 0.9) continue;
-            double l = 4 * c - 2 * (P(-1, 0) + P(1, 0) + P(0, -1) + P(0, 1)) + (P(-1, -1) + P(1, -1) + P(-1, 1) + P(1, 1));
-            s += std::fabs(l);
-            n++;
-        }
+    for (int y = 1; y < h - 1; y++) { s += rowS[y]; n += rowN[y]; }
     return n ? std::sqrt(M_PI / 2) / (6.0 * n) * s : 0;
 }
 
@@ -56,7 +79,7 @@ float display_gain(const ImageF& rgb, float targetKey) {
 }  // namespace
 
 BurstSession::BurstSession(const Meta& m, std::vector<Raw> frames, int ref)
-    : m_(m), frames_(std::move(frames)), ref_(clampi(ref, 0, (int)frames_.size() - 1)) {}
+    : m_(m), frames_(std::move(frames)), ref_(clampi(ref, 0, (int)frames_.size() - 1)), frameCount_((int)frames_.size()) {}
 
 void BurstSession::crop(float zoom) {
     if (zoom <= 1.f) return;
@@ -94,6 +117,7 @@ Raw BurstSession::cropped(const Raw& r) const {
 void BurstSession::align() {
     Timer t;
     int n = (int)frames_.size();
+    frameCount_ = n;
     refScale_ = 1.f;
     if (n > 1 && (int)m_.exposureNs.size() >= n) {
         auto expo = [&](int k) { return m_.exposureNs[k] * (m_.iso.size() > (size_t)k ? m_.iso[k] : 100); };
@@ -159,6 +183,52 @@ void BurstSession::align() {
         sy /= offs_[k].dy.size();
         maxShift_ = std::max(maxShift_, std::hypot(sx, sy));
     }
+
+    flow_ = FlowStats();
+    if (n > 1 && opt_.flowMethod != FlowMethod::BLOCK_MATCH) {
+        const float black = (m_.black[0] + m_.black[1] + m_.black[2] + m_.black[3]) * 0.25f;
+        const AccelBackend mlBackend = opt_.accelBackend != AccelBackend::AUTO ? opt_.accelBackend : backend_;
+        flow_.totalFrames = n - 1;
+        Timer tFlow;
+        if (gray_.size() < (size_t)n) gray_.resize(n);
+        if (gray_[ref_].w == 0) gray_[ref_] = gray_from_raw(frames_[ref_]);
+        for (int k = 0; k < n; k++) {
+            if (k == ref_) continue;
+            if (gray_[k].w == 0) gray_[k] = gray_from_raw(frames_[k]);
+            bool wantRaft = (opt_.flowMethod == FlowMethod::SEA_RAFT);
+            if (opt_.flowMethod == FlowMethod::AUTO) {
+                float globR = 0.f, p999R = 0.f, outF = 0.f;
+                wantRaft = assess_alignment_residual(gray_[ref_], gray_[k], offs_[k], black, &globR, &p999R, &outF);
+                flow_.maxGlobRatio = std::max(flow_.maxGlobRatio, globR);
+                flow_.maxP999Ratio = std::max(flow_.maxP999Ratio, p999R);
+            }
+            if (!wantRaft) continue;
+            if (mean3_.size() < (size_t)n) mean3_.resize(n);
+            if (mean3_[ref_].w == 0) mean3_[ref_] = box3(gray_[ref_]);
+            if (mean3_[k].w == 0) mean3_[k] = box3(gray_[k]);
+            Offsets raftOffs;
+            std::string ep, note;
+            if (estimate_sea_raft_offsets(gray_[ref_], gray_[k], mean3_[ref_], mean3_[k],
+                                          black, m_.white, opt_.flowModelPath, mlBackend,
+                                          raftOffs, &ep, &note)) {
+                offs_[k] = std::move(raftOffs);
+                flow_.raftFrames++;
+                flow_.ep = std::move(ep);
+            } else if (!note.empty()) {
+                flow_.note = std::move(note);
+            }
+        }
+        flow_.raftMs = tFlow.ms();
+        maxShift_ = 0.0;
+        for (int k = 0; k < n; k++) {
+            if (k == ref_) continue;
+            double sx = 0, sy = 0;
+            for (size_t i = 0; i < offs_[k].dx.size(); i++) { sx += offs_[k].dx[i]; sy += offs_[k].dy[i]; }
+            sx /= offs_[k].dx.size();
+            sy /= offs_[k].dy.size();
+            maxShift_ = std::max(maxShift_, std::hypot(sx, sy));
+        }
+    }
     tAlign_ = t.ms();
 
     t = Timer();
@@ -195,14 +265,25 @@ void BurstSession::merge(const BurstOptions& o) {
     Timer t;
     int n = (int)frames_.size();
     float black = (m_.black[0] + m_.black[1] + m_.black[2] + m_.black[3]) / 4;
+    const FlowMethod prevFlowMethod = opt_.flowMethod;
+    const std::string prevFlowModel = opt_.flowModelPath;
     opt_ = o;
+    if (o.flowMethod == FlowMethod::BLOCK_MATCH && prevFlowMethod != FlowMethod::BLOCK_MATCH) {
+        opt_.flowMethod = prevFlowMethod;
+        if (opt_.flowModelPath.empty()) opt_.flowModelPath = prevFlowModel;
+    }
+    if (o.accelBackend != AccelBackend::AUTO) set_accel_backend(o.accelBackend);
+    if (backend_ == AccelBackend::CPU && gpu_) gpu_.reset();
     // the frequency merge has no exposure weighting
     if (bracket_) opt_.freqMerge = false;
     mo_.robustLo = o.robustLo > 0 ? o.robustLo : (calibrated_ ? kRobustCalibrated[0] : kRobustEstimated[0]);
     mo_.robustHi = o.robustHi > 0 ? o.robustHi : (calibrated_ ? kRobustCalibrated[1] : kRobustEstimated[1]);
     mo_.dilate = o.dilate;
     kr_ = o.kernelRegression;
+    krScale_ = 1.f;
     KrParams kp;
+    kp.scale = o.krAuto2x ? 0.f : (o.krScale >= 2 ? 2.f : 1.f);
+    kp.autoMinSnrDb = o.krSnrThresholdDb;
     for (int i = 0; i < 2; i++) { kp.lcaR[i] = o.lcaR[i]; kp.lcaB[i] = o.lcaB[i]; }
     const char* step = kr_ ? "kr" : opt_.freqMerge && n > 1 ? "freq" : "merge";
     bool onGpu = false;
@@ -215,6 +296,7 @@ void BurstSession::merge(const BurstOptions& o) {
             if (kr_) {
                 gpu_->merge_kr(frames_[ref_], ref_, offs_, m_, nm_, mo_, kp, &ks_);
                 meanWeight_ = ks_.meanWeight;
+                krScale_ = ks_.scale;
             } else if (opt_.freqMerge && n > 1) {
                 meanWeight_ = gpu_->merge_freq(ref_, offs_, m_, nm_, o.freqC, o.freqSpatial);
             } else {
@@ -236,6 +318,7 @@ void BurstSession::merge(const BurstOptions& o) {
             flows[k] = k == ref_ ? zero_flow(offs_[k]) : refine_flow(mean3_[ref_], mean3_[k], offs_[k], 3, lkg, nm_, black);
         rgb_ = kr_merge(frames_, ref_, flows, gray_[ref_], mean3_, m_, nm_, mo_, kp, &ks_);
         meanWeight_ = ks_.meanWeight;
+        krScale_ = ks_.scale;
     } else if (n > 1) {
         if (!opt_.freqMerge) cpu_align_state();
         MergeStats ms;
@@ -251,15 +334,28 @@ void BurstSession::merge(const BurstOptions& o) {
     gray_.clear();
     mean3_.clear();
     offs_.clear();
+    apply_pmrid();
     tMerge_ = t.ms();
 }
 
 void BurstSession::begin_stream(const BurstOptions& o) {
     streaming_ = true;
+    streamed_ = false;
+    streamGpu_ = false;
+    noiseReady_ = false;
+    streamAdded_ = 0;
+    streamMerged_ = 0;
+    streamProgress_ = StreamProgress();
+    streamPhaseBins_.clear();
+    streamPhaseNX_ = 0;
+    streamPhaseNY_ = 0;
+    frames_.clear();
     opt_ = o;
+    flow_ = FlowStats();
+    if (o.accelBackend != AccelBackend::AUTO) set_accel_backend(o.accelBackend);
     opt_.kernelRegression = false;
-    opt_.freqMerge = false;
     kr_ = false;
+    krScale_ = 1.f;
     ref_ = -1;
     calibrated_ = !curve_.empty() && !m_.iso.empty();
     if (calibrated_) {
@@ -277,7 +373,7 @@ void BurstSession::begin_stream(const BurstOptions& o) {
     }
 }
 
-int BurstSession::add_frame(Raw f) {
+StreamProgress BurstSession::add_frame_progress(Raw f) {
     if (!streaming_ || streamed_) throw std::runtime_error("add_frame outside begin_stream / end_frames");
     if (zoom_ > 1.f) {
         Timer t;
@@ -287,24 +383,36 @@ int BurstSession::add_frame(Raw f) {
     streamAdded_++;
     if (ref_ >= 0) {
         stream_frame(f);
-        return ref_;
+    } else {
+        frames_.push_back(std::move(f));
+        if ((int)frames_.size() >= kStreamCandidates) {
+            stream_start();
+        }
     }
-    frames_.push_back(std::move(f));
-    if ((int)frames_.size() < kStreamCandidates) return -1;
-    stream_start();
-    return ref_;
+    update_stream_progress();
+    return streamProgress_;
+}
+
+int BurstSession::add_frame(Raw f) {
+    return add_frame_progress(std::move(f)).refIdx;
 }
 
 void BurstSession::stream_start() {
     Timer t;
     ref_ = sharpest_frame(frames_, (int)frames_.size());
     streamRef_ = frames_[ref_];
+    streamPhaseNX_ = (m_.width / 2 + kStride - 1) / kStride;
+    streamPhaseNY_ = (m_.height / 2 + kStride - 1) / kStride;
+    streamPhaseBins_.assign((size_t)streamPhaseNX_ * streamPhaseNY_, 1u);
     const float black = (m_.black[0] + m_.black[1] + m_.black[2] + m_.black[3]) / 4;
-    if (gpu_ && GpuBurst::enabled("align") && GpuBurst::enabled("merge")) {
+    const char* mergeStep = opt_.freqMerge ? "freq" : "merge";
+    const bool needHostGray = !noiseReady_ || (opt_.flowMethod != FlowMethod::BLOCK_MATCH);
+    if (gpu_ && GpuBurst::enabled("align") && GpuBurst::enabled(mergeStep)) {
         try {
-            gpu_->stream_ref(streamRef_, black, noiseReady_ ? nullptr : &streamGrayRef_);
+            if (opt_.freqMerge) gpu_->stream_freq_ref(streamRef_, m_, needHostGray ? &streamGrayRef_ : nullptr);
+            else gpu_->stream_ref(streamRef_, black, needHostGray ? &streamGrayRef_ : nullptr);
             streamGpu_ = true;
-            gpuSteps_ += " align merge (streamed)";
+            gpuSteps_ += std::string(" align ") + mergeStep + " (streamed)";
         } catch (const std::exception& e) {
             gpu_failed("stream", e);
         }
@@ -322,8 +430,15 @@ void BurstSession::stream_cpu_start() {
     const float black = (m_.black[0] + m_.black[1] + m_.black[2] + m_.black[3]) / 4;
     if (streamGrayRef_.w == 0) streamGrayRef_ = gray_from_raw(streamRef_);
     streamRefPyr_ = build_pyramid(streamGrayRef_);
-    streamMean3Ref_ = box3(streamGrayRef_);
-    streamMerge_ = std::make_unique<SpatialMerge>(streamRef_, black);
+    if (opt_.freqMerge) {
+        streamMean3Ref_ = ImageF();
+        streamMerge_.reset();
+        streamFreqMerge_ = std::make_unique<FreqStreamMerge>(streamRef_, m_, opt_.freqC, opt_.freqSpatial);
+    } else {
+        streamMean3Ref_ = box3(streamGrayRef_);
+        streamFreqMerge_.reset();
+        streamMerge_ = std::make_unique<SpatialMerge>(streamRef_, black);
+    }
     streamMerged_ = 0;
 }
 
@@ -333,6 +448,7 @@ void BurstSession::stream_frame(const Raw& f) {
         double sx = 0, sy = 0;
         for (size_t i = 0; i < of.dx.size(); i++) { sx += of.dx[i]; sy += of.dy[i]; }
         maxShift_ = std::max(maxShift_, std::hypot(sx / of.dx.size(), sy / of.dy.size()));
+        accumulate_stream_phase(of);
         streamMerged_++;
     };
     auto fitNoise = [&](const ImageF& gray, const Offsets& of) {
@@ -342,15 +458,47 @@ void BurstSession::stream_frame(const Raw& f) {
         noiseReady_ = true;
         tNoise_ = t.ms();
     };
+    auto refineFlow = [&](const ImageF& gray, Offsets& of) {
+        if (opt_.flowMethod == FlowMethod::BLOCK_MATCH || gray.w == 0) return;
+        if (streamGrayRef_.w == 0) streamGrayRef_ = gray_from_raw(streamRef_);
+        flow_.totalFrames++;
+        bool wantRaft = (opt_.flowMethod == FlowMethod::SEA_RAFT);
+        if (opt_.flowMethod == FlowMethod::AUTO) {
+            float globR = 0.f, p999R = 0.f, outF = 0.f;
+            wantRaft = assess_alignment_residual(streamGrayRef_, gray, of, black, &globR, &p999R, &outF);
+            flow_.maxGlobRatio = std::max(flow_.maxGlobRatio, globR);
+            flow_.maxP999Ratio = std::max(flow_.maxP999Ratio, p999R);
+        }
+        if (!wantRaft) return;
+        Timer tf;
+        if (streamMean3Ref_.w == 0) streamMean3Ref_ = box3(streamGrayRef_);
+        ImageF mean3Alt = box3(gray);
+        const AccelBackend mlBackend = opt_.accelBackend != AccelBackend::AUTO ? opt_.accelBackend : backend_;
+        Offsets raftOffs;
+        std::string ep, note;
+        if (estimate_sea_raft_offsets(streamGrayRef_, gray, streamMean3Ref_, mean3Alt,
+                                      black, m_.white, opt_.flowModelPath, mlBackend,
+                                      raftOffs, &ep, &note)) {
+            of = std::move(raftOffs);
+            flow_.raftFrames++;
+            flow_.ep = std::move(ep);
+        } else if (!note.empty()) {
+            flow_.note = std::move(note);
+        }
+        flow_.raftMs += tf.ms();
+    };
+    const bool needHostGray = !noiseReady_ || (opt_.flowMethod != FlowMethod::BLOCK_MATCH);
     Timer t;
     ImageF gray;
     if (streamGpu_) {
         try {
-            Offsets of = gpu_->stream_align(f, noiseReady_ ? nullptr : &gray);
+            Offsets of = gpu_->stream_align(f, needHostGray ? &gray : nullptr);
+            refineFlow(gray, of);
             tAlign_ += t.ms();
             fitNoise(gray, of);
             t = Timer();
-            gpu_->stream_merge(of, nm_, black, mo_);
+            if (opt_.freqMerge) gpu_->stream_freq_merge(of, m_, nm_, opt_.freqC);
+            else gpu_->stream_merge(of, nm_, black, mo_);
             tMerge_ += t.ms();
             note(of);
             return;
@@ -364,10 +512,12 @@ void BurstSession::stream_frame(const Raw& f) {
     }
     gray = gray_from_raw(f);
     Offsets of = align_frames(streamRefPyr_, build_pyramid(gray));
+    refineFlow(gray, of);
     tAlign_ += t.ms();
     fitNoise(gray, of);
     t = Timer();
-    streamMerge_->add(f, of, box3(gray), streamMean3Ref_, nm_, 1.f, 1e30f, false, mo_);
+    if (opt_.freqMerge) streamFreqMerge_->add(f, of, nm_);
+    else streamMerge_->add(f, of, box3(gray), streamMean3Ref_, nm_, 1.f, 1e30f, false, mo_);
     tMerge_ += t.ms();
     note(of);
 }
@@ -378,11 +528,12 @@ int BurstSession::end_frames() {
         if (frames_.empty()) throw std::runtime_error("no frames added");
         stream_start();
     }
+    update_stream_progress();
     Timer t;
     const float black = (m_.black[0] + m_.black[1] + m_.black[2] + m_.black[3]) / 4;
     if (streamGpu_) {
         try {
-            meanWeight_ = gpu_->stream_end(black);
+            meanWeight_ = opt_.freqMerge ? gpu_->stream_freq_end(m_, nm_, opt_.freqSpatial) : gpu_->stream_end(black);
         } catch (const std::exception& e) {
             gpu_failed("stream", e);
             streamGpu_ = false;
@@ -391,17 +542,110 @@ int BurstSession::end_frames() {
     }
     if (!streamGpu_) {
         MergeStats ms;
-        mosaic_ = streamMerge_->result(&ms);
+        mosaic_ = opt_.freqMerge ? streamFreqMerge_->result(nm_, &ms) : streamMerge_->result(&ms);
         meanWeight_ = ms.meanWeight;
     }
     streamMerge_.reset();
+    streamFreqMerge_.reset();
     streamRef_ = Raw();
     streamRefPyr_.clear();
     streamMean3Ref_ = ImageF();
     streamGrayRef_ = ImageF();
+    frameCount_ = streamAdded_;
     streamed_ = true;
+    apply_pmrid();
     tMerge_ += t.ms();
     return ref_;
+}
+
+void BurstSession::accumulate_stream_phase(const Offsets& of) {
+    const size_t nt = (size_t)of.nx * of.ny;
+    if (nt == 0) return;
+    if (streamPhaseBins_.size() != nt) streamPhaseBins_.assign(nt, 1u);
+    for (size_t t = 0; t < nt; t++) {
+        float px = 2.f * (of.dx[t] + (of.fx.empty() ? 0.f : of.fx[t]));
+        float py = 2.f * (of.dy[t] + (of.fy.empty() ? 0.f : of.fy[t]));
+        px -= 2.f * std::floor(px / 2.f);
+        py -= 2.f * std::floor(py / 2.f);
+        int bx = clampi((int)(px * 2.f), 0, 3);
+        int by = clampi((int)(py * 2.f), 0, 3);
+        streamPhaseBins_[t] |= (uint16_t)(1u << (by * 4 + bx));
+    }
+}
+
+void BurstSession::update_stream_progress() {
+    streamProgress_.refIdx = ref_;
+    streamProgress_.acceptedCount = streamAdded_;
+    if (ref_ < 0) {
+        streamProgress_.neff = 1.0f;
+        streamProgress_.phaseCoverage = 0.0f;
+        streamProgress_.estimatedSnrGainDb = 0.0f;
+        streamProgress_.shouldStop = false;
+        return;
+    }
+    double rawNeff = 1.0;
+    if (streamGpu_ && gpu_) {
+        rawNeff = gpu_->stream_neff(opt_.freqMerge);
+    } else if (opt_.freqMerge && streamFreqMerge_) {
+        rawNeff = streamFreqMerge_->neff();
+    } else if (streamMerge_) {
+        rawNeff = streamMerge_->neff();
+    }
+    const float maxNeff = (float)std::max(1, streamAdded_);
+    const float clampedNeff = clampf((float)rawNeff, 1.0f, maxNeff);
+    streamProgress_.neff = clampf(std::max(streamProgress_.neff, clampedNeff), 1.0f, maxNeff);
+    double cov = 0.0;
+    if (!streamPhaseBins_.empty()) {
+        const int denom = std::min(std::max(1, streamAdded_), 16);
+        for (uint16_t bins : streamPhaseBins_) {
+            int hit = 0;
+            for (int bit = 0; bit < 16; bit++) hit += (bins >> bit) & 1;
+            cov += (double)hit / denom;
+        }
+        cov /= (double)streamPhaseBins_.size();
+    }
+    streamProgress_.phaseCoverage = clampf((float)cov, 0.0f, 1.0f);
+    streamProgress_.estimatedSnrGainDb = 10.0f * std::log10(std::max(1.0f, streamProgress_.neff));
+    streamProgress_.shouldStop = opt_.earlyStopEnabled && ref_ >= 0 &&
+                                 streamAdded_ >= kStreamCandidates &&
+                                 is_finite_f32_val(opt_.earlyStopTargetSnrDb) &&
+                                 is_finite_f32_val(streamProgress_.estimatedSnrGainDb) &&
+                                 streamProgress_.estimatedSnrGainDb >= opt_.earlyStopTargetSnrDb;
+}
+
+void BurstSession::apply_pmrid() {
+    pmrid_ = PmridStats();
+    if (kr_ || !opt_.pmridEnabled) return;
+    float kEff = 0.f, bEff = 0.f, neff = 1.f, alpha = 0.f;
+    if (!pmrid_should_run(m_, nm_, frameCount_, meanWeight_, opt_.pmridLowNoiseCutoff,
+                          &kEff, &bEff, &neff, &alpha)) {
+        pmrid_.kEff = kEff;
+        pmrid_.bEff = bEff;
+        pmrid_.neff = neff;
+        pmrid_.alpha = alpha;
+        pmrid_.note = "gated (low noise)";
+        return;
+    }
+    const bool wasOnGpu = (mosaic_.w == 0 && gpu_ && gpu_->merged());
+    if (wasOnGpu) mosaic_ = gpu_->download_merged();
+    if (mosaic_.w == 0) return;
+    const AccelBackend mlBackend = opt_.accelBackend != AccelBackend::AUTO ? opt_.accelBackend : backend_;
+    if (pmrid_denoise_mosaic(mosaic_, m_, nm_, frameCount_, meanWeight_,
+                             opt_.pmridLowNoiseCutoff, opt_.pmridModelPath, mlBackend, &pmrid_)) {
+        if (wasOnGpu && gpu_ && GpuBurst::enabled("finish")) {
+            gpu_->set_merged(mosaic_, false, 1.f);
+            mosaic_ = ImageF();
+        }
+    } else if (wasOnGpu) {
+        mosaic_ = ImageF();
+    }
+}
+
+ImageF BurstSession::merged_mosaic() const {
+    if (kr_) return {};
+    if (mosaic_.w > 0) return mosaic_;
+    if (gpu_ && gpu_->merged()) return gpu_->download_merged();
+    return {};
 }
 
 std::vector<uint8_t> BurstSession::encode_dng(const DngColor& c, const DngExtras& x) {
@@ -422,11 +666,14 @@ std::vector<uint8_t> BurstSession::encode_dng(const DngColor& c, const DngExtras
 }
 
 void BurstSession::finish(const LookParams& lp, bool keepHdr) {
+    const AccelBackend mlBackend = opt_.accelBackend != AccelBackend::AUTO ? opt_.accelBackend : backend_;
+    hdrnet_ = HdrnetStats();
+    seg_ = SemanticSegStats();
     if (gpu_ && GpuBurst::enabled("finish")) {
         try {
-            if (!gpu_->merged()) gpu_->set_merged(kr_ ? rgb_ : mosaic_, kr_);
+            if (!gpu_->merged()) gpu_->set_merged(kr_ ? rgb_ : mosaic_, kr_, krScale_);
             GpuBurst::FinishOut o;
-            gpu_->finish(m_, lp, opt_.demosaic, zoom_, keepHdr, o, aspect_, opt_.lcaR, opt_.lcaB);
+            gpu_->finish(m_, lp, opt_.demosaic, zoom_, keepHdr, o, aspect_, opt_.lcaR, opt_.lcaB, mlBackend);
             sigma_ = o.sigma;
             visibleSigma_ = o.visibleSigma;
             chroma_ = o.chroma;
@@ -437,6 +684,8 @@ void BurstSession::finish(const LookParams& lp, bool keepHdr) {
             tone_ = o.tone;
             ft_ = o.ft;
             hdr_ = std::move(o.hdr);
+            hdrnet_ = std::move(o.hdrnet);
+            seg_ = std::move(o.seg);
             mosaic_ = ImageF();
             rgb_ = ImageF();
             outW_ = gpu_->width();
@@ -456,7 +705,7 @@ void BurstSession::finish(const LookParams& lp, bool keepHdr) {
             }
             gpu_failed("finish", e);
         }
-    } else if (gpu_ && gpu_->merged()) {
+    } else if (gpu_ && gpu_->merged() && mosaic_.w == 0 && rgb_.w == 0) {
         (kr_ ? rgb_ : mosaic_) = gpu_->download_merged();
     }
     if (gpu_) gpuProfile_ = gpu_->profile();
@@ -470,9 +719,9 @@ void BurstSession::finish_cpu(const LookParams& look, bool keepHdr) {
     Timer t;
     LookParams lp = look;
     if (kr_) {
-        normalize_rgb(rgb_, m_, lp, 1.f);
+        normalize_rgb(rgb_, m_, lp, krScale_);
         ft_.lscwb = t.ms();
-        sigma_ = noise_sigma_rgb(rgb_, 2);
+        sigma_ = noise_sigma_rgb(rgb_, std::max(1, (int)std::lround(2 * krScale_)));
     } else {
         ImageF cfa = normalize_mosaic(mosaic_, m_, lp);
         ft_.lscwb = t.ms();
@@ -491,15 +740,45 @@ void BurstSession::finish_cpu(const LookParams& look, bool keepHdr) {
     if (chroma < 0) chroma = clampf((float)visibleSigma_ / 0.01f, 1.f, 6.f);
     chroma *= lp.chromaDenoiseScale;
     chroma_ = chroma;
-    t = Timer(); chroma_denoise(rgb_, chroma); ft_.chroma = t.ms();
+    t = Timer(); chroma_denoise(rgb_, chroma * (kr_ ? krScale_ : 1.f)); ft_.chroma = t.ms();
     if (zoom_ > 1.f) { t = Timer(); upscale_lanczos(rgb_, m_.full_w(), m_.full_h()); tUpscale_ = t.ms(); }
-    if (aspect_ > 0.f) crop_aspect(rgb_, aspect_);
+    const int preAspectW = rgb_.w, preAspectH = rgb_.h;
+    int aspectX0 = 0, aspectY0 = 0, aspectW = preAspectW, aspectH = preAspectH;
+    if (aspect_ > 0.f) {
+        aspect_crop_box(preAspectW, preAspectH, aspect_, aspectX0, aspectY0, aspectW, aspectH);
+        crop_aspect(rgb_, aspect_);
+    }
     hdr_ = keepHdr ? hdr_luma(rgb_, 1) : HdrLuma();
-    t = Timer(); tone_ = local_tonemap(rgb_, lp); ft_.tonemap = t.ms();
+    const AccelBackend mlBackend = opt_.accelBackend != AccelBackend::AUTO ? opt_.accelBackend : backend_;
+    t = Timer();
+    if (lp.tonemapMode == TonemapMode::HDRNET) {
+        if (!hdrnet_tonemap(rgb_, lp, mlBackend, tone_, &hdrnet_)) {
+            tone_ = local_tonemap(rgb_, lp);
+        }
+    } else {
+        tone_ = local_tonemap(rgb_, lp);
+    }
+    ft_.tonemap = t.ms();
     localContrast_ = noise_scaled_local_contrast(lp.localContrast, (float)visibleSigma_);
-    t = Timer(); pixel_look(rgb_, lp); local_contrast(rgb_, localContrast_, lp.localRadius); hue_tune(rgb_, lp); ft_.look = t.ms();
+    t = Timer();
+    pixel_look(rgb_, lp);
+    SemanticMask segMask;
+    if (lp.semanticSegEnabled) {
+        std::vector<float> mapped = map_face_boxes_to_roi(
+            lp.faceBoxes, m_, aspectX0, aspectY0, aspectW, aspectH, preAspectW, preAspectH);
+        std::vector<float> rgb256 = downsample_rgb256(rgb_);
+        semantic_seg_from_rgb256(rgb256, lp.segModelPath, mapped, lp.orientationDegrees, mlBackend, segMask, &seg_);
+    }
+    const SemanticMask* segPtr = segMask.valid() ? &segMask : nullptr;
+    local_contrast(rgb_, localContrast_, lp.localRadius, segPtr);
+    hue_tune(rgb_, lp, segPtr);
+    if (!lp.lutPath.empty() && lp.lutStrength > 0.f) {
+        Lut3D lut;
+        if (load_cube_lut(lp.lutPath, lut)) apply_lut_3d(rgb_, lut, lp.lutStrength);
+    }
+    ft_.look = t.ms();
     sharpenCore_ = sharpen_core((float)visibleSigma_);
-    t = Timer(); sharpen_luma(rgb_, lp.sharpen, lp.sharpenRadius, (float)sharpenCore_); ft_.sharpen = t.ms();
+    t = Timer(); sharpen_luma(rgb_, lp.sharpen, lp.sharpenRadius, (float)sharpenCore_, segPtr); ft_.sharpen = t.ms();
 }
 
 void BurstSession::render(uint8_t* rgba, size_t stride) const {
@@ -541,7 +820,8 @@ std::vector<uint8_t> BurstSession::encode_ultrahdr(int quality, float headroom) 
 
 std::string BurstSession::summary() const {
     char buf[1024];
-    std::string mode = kr_ ? "kr" : std::string("classic/") + (opt_.freqMerge ? "freq" : "spatial") + "/" + demosaic_name(opt_.demosaic);
+    std::string mode = kr_ ? ("kr " + std::to_string((int)std::lround(krScale_)) + "x")
+                           : std::string("classic/") + (opt_.freqMerge ? "freq" : "spatial") + "/" + demosaic_name(opt_.demosaic);
     if (bracket_) {
         mode += " bracket gains";
         for (float g : mo_.gain) { char b[16]; snprintf(b, sizeof b, " %.2f", g); mode += b; }
@@ -557,6 +837,10 @@ std::string BurstSession::summary() const {
              visibleSigma_, chroma_, localContrast_, tone_.keyBefore, targetKey_, tone_.gainShort, tone_.gainLong, sharpenCore_, tAlign_, tNoise_, tMerge_,
              ft_.lscwb, ft_.demosaic, ft_.color, ft_.chroma, ft_.tonemap, ft_.look, ft_.sharpen);
     std::string s = buf;
+    if (kr_) {
+        snprintf(buf, sizeof buf, " | kr snr=%.1fdB subpixel=%.3f conf=%.2f", ks_.snrDb, ks_.subpixelScore, ks_.confidentTiles);
+        s += buf;
+    }
     if (zoom_ > 1.f) {
         snprintf(buf, sizeof buf, " | zoom %.2fx crop at (%d, %d) %.0f ms upscale to %dx%d %.0f ms", zoom_, m_.cropX, m_.cropY, tCrop_,
                  m_.full_w(), m_.full_h(), tUpscale_);
@@ -569,6 +853,44 @@ std::string BurstSession::summary() const {
     if (tDng_ > 0) {
         snprintf(buf, sizeof buf, " | dng x%d %.0f ms", dng_scale(m_.white), tDng_);
         s += buf;
+    }
+    if (opt_.pmridEnabled && !kr_) {
+        if (pmrid_.ran) {
+            snprintf(buf, sizeof buf, " | pmrid k=%.4f alpha=%.2f %.0f ms (%s)",
+                     pmrid_.kEff, pmrid_.alpha, pmrid_.ms, pmrid_.ep.c_str());
+        } else {
+            snprintf(buf, sizeof buf, " | pmrid skipped (%s)", pmrid_.note.c_str());
+        }
+        s += buf;
+    }
+    if (opt_.flowMethod != FlowMethod::BLOCK_MATCH) {
+        snprintf(buf, sizeof buf, " | flow %s %d/%d %.0f ms",
+                 flow_method_name(opt_.flowMethod), flow_.raftFrames, flow_.totalFrames, flow_.raftMs);
+        s += buf;
+        if (!flow_.ep.empty()) s += " (" + flow_.ep + ")";
+        else if (!flow_.note.empty()) s += " (" + flow_.note + ")";
+    }
+    if (hdrnet_.ran || !hdrnet_.note.empty()) {
+        if (hdrnet_.ran) {
+            snprintf(buf, sizeof buf, " | hdrnet ort %.1f ms slice %.1f ms (%s)",
+                     hdrnet_.ortMs, hdrnet_.sliceMs, hdrnet_.ep.c_str());
+        } else {
+            snprintf(buf, sizeof buf, " | hdrnet fallback (%s)", hdrnet_.note.c_str());
+        }
+        s += buf;
+    }
+    if (seg_.ran || !seg_.note.empty()) {
+        if (seg_.ran) {
+            snprintf(buf, sizeof buf, " | seg faces=%d face=%.2f sky=%.2f %.1f ms (%s)",
+                     seg_.faceBoxCount, seg_.meanFace, seg_.meanSky, seg_.ms,
+                     seg_.usedModel ? seg_.ep.c_str() : "boxes");
+        } else {
+            snprintf(buf, sizeof buf, " | seg skipped (%s)", seg_.note.c_str());
+        }
+        s += buf;
+    }
+    if (backend_ != AccelBackend::AUTO) {
+        s += std::string(" | accel ") + accel_backend_name(backend_);
     }
     if (us_.bytes) {
         snprintf(buf, sizeof buf, " | ultrahdr max boost %.2f gain map %zu B file %zu B %.0f ms", us_.maxBoost, us_.gainMapBytes, us_.bytes, tUhdr_);

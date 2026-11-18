@@ -15,8 +15,11 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -106,11 +109,13 @@ import androidx.compose.ui.unit.dp
 import androidx.graphics.shapes.Morph
 import com.gpo.yoin.symbols.YoinSymbols
 import com.izum1k.pocopaw.R
+import com.izum1k.pocopaw.camera.AwbEstimatorMode
 import com.izum1k.pocopaw.camera.CameraInfo
 import com.izum1k.pocopaw.camera.LiveExposure
 import com.izum1k.pocopaw.data.AspectRatio
 import com.izum1k.pocopaw.data.BurstFrames
 import com.izum1k.pocopaw.data.CameraSettings
+import com.izum1k.pocopaw.data.KrScaleMode
 import com.izum1k.pocopaw.data.LookStyle
 import com.izum1k.pocopaw.ui.component.ConnectedChoice
 import com.izum1k.pocopaw.camera.ManualExposure
@@ -119,6 +124,8 @@ import com.izum1k.pocopaw.data.OutputFormat
 import com.izum1k.pocopaw.data.Processing
 import com.izum1k.pocopaw.data.SceneMode
 import com.izum1k.pocopaw.data.TimerMode
+import com.izum1k.pocopaw.pipeline.BurstExposure
+import com.izum1k.pocopaw.pipeline.TonemapMode
 import com.izum1k.pocopaw.ui.component.PillShape
 import com.izum1k.pocopaw.ui.component.Reveal
 import com.izum1k.pocopaw.ui.theme.MorphShape
@@ -276,28 +283,34 @@ private fun QuickMoreToggle(open: Boolean, onClick: () -> Unit) {
 
 /**
  * The capture settings worth changing between shots, covering the viewfinder: output, processing,
- * burst frames, scene, look and Ultra HDR. With DNG only, nothing after output applies.
+ * KR scale, burst frames, scene, look, tone mapping, Ultra HDR, AWB and early stopping. With DNG
+ * only, multi-frame options do not apply.
  */
 @Composable
 fun QuickSettingsPanel(
     settings: CameraSettings,
     onOutput: (OutputFormat) -> Unit,
     onProcessing: (Processing) -> Unit,
+    onKrScale: (KrScaleMode) -> Unit,
     onFrames: (BurstFrames) -> Unit,
     onScene: (SceneMode) -> Unit,
     onLook: (LookStyle) -> Unit,
+    onTonemap: (TonemapMode) -> Unit,
     onUltraHdr: (Boolean) -> Unit,
+    onAwb: (AwbEstimatorMode) -> Unit,
+    onEarlyStop: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val merged = settings.output != OutputFormat.DNG
+    val merged = settings.isBurstMode
     Column(
         modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surface)
             // Taps on the panel stay on it rather than reaching the viewfinder under it.
             .clickable(interactionSource = null, indication = null) {}
-            .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         QuickRow(stringResource(R.string.settings_output)) {
             ConnectedChoice(OutputFormat.entries.filter { it.available }, settings.output, { outputLabel(it) }, onOutput, weight = { if (it == OutputFormat.DNG_JPEG) 1.6f else 1f })
@@ -321,18 +334,93 @@ fun QuickSettingsPanel(
                 ConnectedChoice(BurstFrames.entries, settings.burstFrames, { it.count.toString() }, onFrames, enabled = merged)
             }
         }
+        Reveal(merged && settings.processing == Processing.HDR_PLUS_KR) {
+            val krApplies = settings.isKrScaleEnabled()
+            QuickRow(stringResource(R.string.settings_kr_scale), krApplies) {
+                ConnectedChoice(
+                    KrScaleMode.entries,
+                    settings.krScale,
+                    {
+                        stringResource(
+                            when (it) {
+                                KrScaleMode.ONE_X -> R.string.kr_scale_1x_short
+                                KrScaleMode.TWO_X -> R.string.kr_scale_2x_short
+                                KrScaleMode.AUTO -> R.string.kr_scale_auto_short
+                            },
+                        )
+                    },
+                    onKrScale,
+                    enabled = krApplies,
+                )
+            }
+        }
+        // night always finishes with its own look
+        val lookApplies = settings.isLookEnabled()
+        QuickRow(stringResource(R.string.settings_look), lookApplies) {
+            ConnectedChoice(
+                LookStyle.entries,
+                settings.look,
+                {
+                    stringResource(
+                        when (it) {
+                            LookStyle.STANDARD -> R.string.look_standard_short
+                            LookStyle.PIXEL -> R.string.look_pixel_short
+                            LookStyle.FILM_WARM -> R.string.look_warm_short
+                            LookStyle.CLASSIC_CHROME -> R.string.look_chrome_short
+                            LookStyle.BW_SILVER -> R.string.look_bw_short
+                        },
+                    )
+                },
+                onLook,
+                enabled = lookApplies,
+            )
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            // night always finishes with its own look
-            val lookApplies = merged && settings.scene != SceneMode.NIGHT
-            QuickRow(stringResource(R.string.settings_look), lookApplies, Modifier.weight(1f)) {
-                ConnectedChoice(LookStyle.entries, settings.look, {
-                    if (it == LookStyle.PIXEL) "Pixel" else stringResource(R.string.look_standard)
-                }, onLook, enabled = lookApplies)
+            QuickRow(stringResource(R.string.settings_tonemap), merged, Modifier.weight(1f)) {
+                ConnectedChoice(
+                    TonemapMode.entries,
+                    settings.tonemapMode,
+                    {
+                        stringResource(
+                            when (it) {
+                                TonemapMode.MERTENS -> R.string.tonemap_mertens
+                                TonemapMode.HDRNET -> R.string.tonemap_hdrnet
+                            },
+                        )
+                    },
+                    onTonemap,
+                    enabled = merged,
+                )
             }
             QuickRow(stringResource(R.string.settings_ultra_hdr), merged, Modifier.weight(1f)) {
                 ConnectedChoice(listOf(false, true), settings.ultraHdr, {
                     stringResource(if (it) R.string.value_on else R.string.value_off)
                 }, onUltraHdr, enabled = merged)
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            QuickRow(stringResource(R.string.settings_awb), true, Modifier.weight(1f)) {
+                ConnectedChoice(
+                    AwbEstimatorMode.entries,
+                    settings.awbMode,
+                    {
+                        stringResource(
+                            when (it) {
+                                AwbEstimatorMode.HAL -> R.string.awb_hal_short
+                                AwbEstimatorMode.FFCC -> R.string.awb_ffcc_short
+                                AwbEstimatorMode.C5 -> R.string.awb_c5_short
+                            },
+                        )
+                    },
+                    onAwb,
+                    enabled = true,
+                )
+            }
+            val earlyStopApplies = settings.isEarlyStopEnabled()
+            QuickRow(stringResource(R.string.settings_early_stop), earlyStopApplies, Modifier.weight(1f)) {
+                ConnectedChoice(listOf(false, true), earlyStopApplies && settings.earlyStopEnabled, {
+                    stringResource(if (it) R.string.value_on else R.string.value_off)
+                }, onEarlyStop, enabled = earlyStopApplies)
             }
         }
     }
@@ -448,7 +536,8 @@ private const val FLASH_METER_MS = 1_200L
 
 /**
  * One pill per back camera; the selected one shows the live zoom. Tapping the selected main lens
- * (1×) calls [onToggleZoom] for its 2× step instead of showing the focal length.
+ * (1×) calls [onToggleZoom] for its 2× step instead of showing the focal length; long-pressing it
+ * calls [onLongPressMain] to open the continuous 1.0×–2.0× zoom slider.
  */
 @Composable
 fun LensSelector(
@@ -459,6 +548,7 @@ fun LensSelector(
     onSelect: (CameraInfo) -> Unit,
     onToggleZoom: () -> Unit,
     modifier: Modifier = Modifier,
+    onLongPressMain: () -> Unit = {},
 ) {
     if (lenses.size < 2 && (current == null || lenses.none { it.id == current.id })) return
     val haptics = LocalHapticFeedback.current
@@ -514,16 +604,25 @@ fun LensSelector(
                         .widthIn(min = size)
                         .clip(PillShape)
                         .background(container)
-                        .clickable {
-                            haptics.performHapticFeedback(HapticFeedbackType.SegmentTick)
-                            if (selected && lens.relativeZoom == 1f) {
-                                showFocal = false
-                                onToggleZoom()
-                            } else {
-                                focalTap++
-                                onSelect(lens)
-                            }
-                        }
+                        .combinedClickable(
+                            onClick = {
+                                haptics.performHapticFeedback(HapticFeedbackType.SegmentTick)
+                                if (selected && lens.relativeZoom == 1f) {
+                                    showFocal = false
+                                    onToggleZoom()
+                                } else {
+                                    focalTap++
+                                    onSelect(lens)
+                                }
+                            },
+                            onLongClick = {
+                                if (selected && lens.relativeZoom == 1f) {
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    showFocal = false
+                                    onLongPressMain()
+                                }
+                            },
+                        )
                         .animateContentSize(YoinMotion.defaultSpatialSpec())
                         .padding(horizontal = LENS_LABEL_PADDING),
                     contentAlignment = Alignment.Center,
@@ -585,15 +684,81 @@ private val LENS_PILL_PADDING = 4.dp
 private val LENS_GAP = 4.dp
 private const val FOCAL_SHOW_MS = 5_000L
 
+/** Lingering HUD pill showing live continuous zoom factor and 35mm-equivalent focal length. */
+@Composable
+fun ZoomHudPill(
+    zoomText: String,
+    focalText: String,
+    modifier: Modifier = Modifier,
+) {
+    DevPill(modifier, spacing = 6.dp) {
+        Text(
+            zoomText,
+            style = MaterialTheme.typography.labelLarge.withTabularFigures(),
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary,
+            softWrap = false,
+        )
+        Text(
+            focalText,
+            style = MaterialTheme.typography.labelMedium.withTabularFigures(),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            softWrap = false,
+        )
+    }
+}
+
+/** Compact continuous 1.0×–2.0× zoom slider bar above [LensSelector]. */
+@Composable
+fun ZoomSlider(
+    zoom: Float,
+    minZoom: Float,
+    maxZoom: Float,
+    onZoomChange: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val label = stringResource(R.string.control_zoom_slider)
+    val clamped = zoom.coerceIn(minZoom, maxZoom)
+    val numbers = MaterialTheme.typography.labelMedium.withTabularFigures()
+    Row(
+        modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp)
+            .clip(PillShape)
+            .background(controlContainer())
+            .padding(horizontal = 14.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(CameraFormat.zoom(minZoom), style = numbers, color = MaterialTheme.colorScheme.onSurfaceVariant, softWrap = false)
+        Slider(
+            value = clamped,
+            onValueChange = onZoomChange,
+            valueRange = minZoom..maxZoom,
+            modifier = Modifier
+                .weight(1f)
+                .height(36.dp)
+                .semantics { contentDescription = label },
+        )
+        Text(
+            CameraFormat.zoom(clamped),
+            style = numbers,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.primary,
+            softWrap = false,
+        )
+    }
+}
+
 /** What a shutter press will write and through which pipeline, with the live exposure. */
 @Composable
-fun DevChip(settings: CameraSettings, camera: CameraInfo?, live: LiveExposure, modifier: Modifier = Modifier) {
+fun DevChip(settings: CameraSettings, camera: CameraInfo?, live: LiveExposure, modifier: Modifier = Modifier, cropZoom: Float = 1f) {
     if (camera == null) return
     val numbers = MaterialTheme.typography.labelMedium.withTabularFigures()
     val quiet = MaterialTheme.colorScheme.onSurfaceVariant
     DevPill(modifier) {
         Text(outputLabel(settings.output), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, softWrap = false)
-        Text(pipelineLabel(settings, camera, live), style = numbers, softWrap = false)
+        Text(pipelineLabel(settings, camera, live, cropZoom), style = numbers, softWrap = false)
         live.iso?.let { Text("ISO $it", style = numbers, color = quiet, softWrap = false) }
         live.exposureNs?.let { Text(CameraFormat.shutter(it), style = numbers, color = quiet, softWrap = false) }
     }
@@ -607,20 +772,21 @@ private fun outputLabel(output: OutputFormat): String = when (output) {
 
 /** The pipeline [CameraViewModel] will pick for the next press, flash included. */
 @Composable
-private fun pipelineLabel(settings: CameraSettings, camera: CameraInfo, live: LiveExposure): String {
+private fun pipelineLabel(settings: CameraSettings, camera: CameraInfo, live: LiveExposure, cropZoom: Float = 1f): String {
     if (settings.output == OutputFormat.DNG) return stringResource(R.string.pipeline_single)
     val merge = when (settings.processing) {
         Processing.HDR_PLUS -> "HDR+"
         Processing.HDR_PLUS_KR -> "HDR+ KR"
     }
     val flash = CameraViewModel.flashFires(settings, camera, live)
+    val frames = BurstExposure.framesForZoom(settings.burstFrames.count, cropZoom, flash)
     val scene = when {
         flash -> stringResource(R.string.flash_short)
         settings.scene == SceneMode.BRACKET -> stringResource(R.string.scene_bracket_short)
         settings.scene == SceneMode.NIGHT -> stringResource(R.string.scene_night_short)
         else -> null
     }
-    return listOfNotNull("$merge ×${if (flash) 1 else settings.burstFrames.count}", scene).joinToString(" ")
+    return listOfNotNull("$merge ×$frames", scene).joinToString(" ")
 }
 
 /** RAW requests left on this open of the device; a tap reopens it to give them all back. */

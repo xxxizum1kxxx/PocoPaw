@@ -352,4 +352,321 @@ __kernel void merge_freq_tiles(__global const ushort* frames, int W, int qw, int
         out[r0i] += o.x; out[r0i + 1] += o.y; out[r1i] += o.z; out[r1i + 1] += o.w;
     }
 }
+
+__kernel void raw_to_float(__global const ushort* raw, __global float* out, int n) {
+    int i = get_global_id(0);
+    if (i < n) out[i] = (float)raw[i];
+}
+
+inline void pack_hermitian_cl(float4 r00, float4 i00, float4 r01, float4 i01, float4 r02, float4 i02,
+                              int u, int g, __local float4* lre, __local float4* lim) {
+    if (g > 0) {
+        lre[g * 16 + u] = r00;
+        lim[g * 16 + u] = i00;
+    } else if (u == 0) {
+        lre[0] = r00;
+        lim[0] = r02;
+    } else if (u == 8) {
+        lre[8] = r00;
+        lim[8] = r02;
+    } else if (u < 8) {
+        lre[u] = r00;
+        lim[u] = i00;
+        lre[16 - u] = r02;
+        lim[16 - u] = i02;
+    }
+    lre[(g + 4) * 16 + u] = r01;
+    lim[(g + 4) * 16 + u] = i01;
+}
+
+inline void wiener_real_bin(float4 r0, float4 rk, float4 ik, float4 mk,
+                            int u, int v, int sub, float pxr, float pxi, float fx, float fy,
+                            float4 noiseD, float4* dst, float4* wacc) {
+    float4 skr;
+    if (sub) {
+        int sv = v < 8 ? v : (v > 8 ? v - 16 : 0);
+        float ay = 0.3926990817f * (float)sv * fy;
+        float pyr = cos(ay), pyi = sin(ay);
+        float pr = pxr * pyr - pxi * pyi;
+        float pi = pxr * pyi + pxi * pyr;
+        float wru = kSinDftRe[u], wiu = kSinDftIm[u];
+        float wrv = kSinDftRe[v], wiv = kSinDftIm[v];
+        float wr = wru * wrv - wiu * wiv;
+        skr = rk * pr - ik * pi + mk * wr;
+    } else {
+        skr = rk;
+    }
+    float4 dr = r0 - skr;
+    float4 d2 = dr * dr;
+    float4 a = d2 / (d2 + noiseD);
+    *dst += skr + a * dr;
+    *wacc += 1.f - a;
+}
+
+__kernel void freq_stream_ref(__global const ushort* refFrame, int W, int qw, int qh, int ntx, int nty,
+                              __global float4* accRe, __global float4* accIm, __global float4* tileMean,
+                              __local float4* lre, __local float4* lim) {
+    int ti = get_group_id(0), tj = get_group_id(1);
+    if (ti >= ntx || tj >= nty) return;
+    int lid = get_local_id(0);
+    int u = lid >> 2, g = lid & 3;
+    int lu = lid & 15, lv = lid >> 4;
+    int x0 = (ti - 1) * 8, y0 = (tj - 1) * 8;
+
+    float ang = -0.3926990817f * (float)g;
+    float w1r = cos(ang),       w1i = sin(ang);
+    float w2r = cos(2.f * ang), w2i = sin(2.f * ang);
+    float w3r = cos(3.f * ang), w3i = sin(3.f * ang);
+
+    float4 q0 = load_quad(refFrame, W, qw, qh, x0 + lu, y0 + lv);
+    float4 q1 = load_quad(refFrame, W, qw, qh, x0 + lu, y0 + lv + 4);
+    float4 q2 = load_quad(refFrame, W, qw, qh, x0 + lu, y0 + lv + 8);
+    float4 q3 = load_quad(refFrame, W, qw, qh, x0 + lu, y0 + lv + 12);
+    float4 mean = local_sum64(lre, q0 + q1 + q2 + q3, lid) * (1.f / 256.f);
+    int tid = tj * ntx + ti;
+    if (lid == 0) tileMean[tid] = mean;
+
+    float wlu = kSinWin[lu];
+    lre[(lv +  0) * 17 + lu] = q0 * (wlu * kSinWin[lv +  0]);
+    lre[(lv +  4) * 17 + lu] = q1 * (wlu * kSinWin[lv +  4]);
+    lre[(lv +  8) * 17 + lu] = q2 * (wlu * kSinWin[lv +  8]);
+    lre[(lv + 12) * 17 + lu] = q3 * (wlu * kSinWin[lv + 12]);
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    float4 r00, i00, r01, i01, r02, i02, r03, i03;
+    fft2d_r4_fwd(lre, lim, lid, w1r, w1i, w2r, w2i, w3r, w3i,
+                 &r00, &i00, &r01, &i01, &r02, &i02, &r03, &i03);
+
+    pack_hermitian_cl(r00, i00, r01, i01, r02, i02, u, g, lre, lim);
+    barrier(CLK_LOCAL_MEM_FENCE);
+    size_t base = (size_t)tid * 128;
+    accRe[base + lid]      = lre[lid];      accIm[base + lid]      = lim[lid];
+    accRe[base + lid + 64] = lre[lid + 64]; accIm[base + lid + 64] = lim[lid + 64];
+}
+
+__kernel void freq_stream_add(__global const ushort* frames, int W, int qw, int qh, int frameSize,
+                              __global const short* odx, __global const short* ody, int nx, int ny, int subOff,
+                              float4 black, float w2, float c, float na, float nb, int ntx, int nty,
+                              __global float4* accRe, __global float4* accIm, __global const float4* tileMean,
+                              __global float* tileW, __local float4* lre, __local float4* lim) {
+    int ti = get_group_id(0), tj = get_group_id(1);
+    if (ti >= ntx || tj >= nty) return;
+    int lid = get_local_id(0);
+    int u = lid >> 2, g = lid & 3;
+    int lu = lid & 15, lv = lid >> 4;
+    int x0 = (ti - 1) * 8, y0 = (tj - 1) * 8;
+    int tid = tj * ntx + ti;
+    size_t base = (size_t)tid * 128;
+
+    float ang = -0.3926990817f * (float)g;
+    float w1r = cos(ang),       w1i = sin(ang);
+    float w2r = cos(2.f * ang), w2i = sin(2.f * ang);
+    float w3r = cos(3.f * ang), w3i = sin(3.f * ang);
+
+    float4 q0 = load_quad(frames, W, qw, qh, x0 + lu, y0 + lv);
+    float4 q1 = load_quad(frames, W, qw, qh, x0 + lu, y0 + lv + 4);
+    float4 q2 = load_quad(frames, W, qw, qh, x0 + lu, y0 + lv + 8);
+    float4 q3 = load_quad(frames, W, qw, qh, x0 + lu, y0 + lv + 12);
+    float wlu = kSinWin[lu];
+    lre[(lv +  0) * 17 + lu] = q0 * (wlu * kSinWin[lv +  0]);
+    lre[(lv +  4) * 17 + lu] = q1 * (wlu * kSinWin[lv +  4]);
+    lre[(lv +  8) * 17 + lu] = q2 * (wlu * kSinWin[lv +  8]);
+    lre[(lv + 12) * 17 + lu] = q3 * (wlu * kSinWin[lv + 12]);
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    float4 r00, i00, r01, i01, r02, i02, r03, i03;
+    fft2d_r4_fwd(lre, lim, lid, w1r, w1i, w2r, w2i, w3r, w3i,
+                 &r00, &i00, &r01, &i01, &r02, &i02, &r03, &i03);
+
+    int oi = clamp(ti - 1, 0, nx - 1), oj = clamp(tj - 1, 0, ny - 1);
+    int ot = oj * nx + oi;
+    int dx = odx[ot], dy = ody[ot];
+    if (!shift_inside(x0, dx, qw) || !shift_inside(y0, dy, qh)) {
+        pack_hermitian_cl(r00, i00, r01, i01, r02, i02, u, g, lre, lim);
+        barrier(CLK_LOCAL_MEM_FENCE);
+        accRe[base + lid]      += lre[lid];      accIm[base + lid]      += lim[lid];
+        accRe[base + lid + 64] += lre[lid + 64]; accIm[base + lid + 64] += lim[lid + 64];
+        return;
+    }
+
+    float fx = subOff > 0 ? odx[subOff + ot] * (1.f / 16384.f) : 0.f;
+    float fy = subOff > 0 ? ody[subOff + ot] * (1.f / 16384.f) : 0.f;
+    int sub = (fx != 0.f || fy != 0.f) ? 1 : 0;
+
+    __global const ushort* fBase = frames + (size_t)frameSize;
+    q0 = load_quad(fBase, W, qw, qh, x0 + dx + lu, y0 + dy + lv);
+    q1 = load_quad(fBase, W, qw, qh, x0 + dx + lu, y0 + dy + lv + 4);
+    q2 = load_quad(fBase, W, qw, qh, x0 + dx + lu, y0 + dy + lv + 8);
+    q3 = load_quad(fBase, W, qw, qh, x0 + dx + lu, y0 + dy + lv + 12);
+
+    float4 mk = (float4)0;
+    if (sub) mk = local_sum64(lre, q0 + q1 + q2 + q3, lid) * (1.f / 256.f);
+
+    lre[(lv +  0) * 17 + lu] = (q0 - mk) * (wlu * kSinWin[lv +  0]);
+    lre[(lv +  4) * 17 + lu] = (q1 - mk) * (wlu * kSinWin[lv +  4]);
+    lre[(lv +  8) * 17 + lu] = (q2 - mk) * (wlu * kSinWin[lv +  8]);
+    lre[(lv + 12) * 17 + lu] = (q3 - mk) * (wlu * kSinWin[lv + 12]);
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    float4 rk0, ik0, rk1, ik1, rk2, ik2, rk3, ik3;
+    fft2d_r4_fwd(lre, lim, lid, w1r, w1i, w2r, w2i, w3r, w3i,
+                 &rk0, &ik0, &rk1, &ik1, &rk2, &ik2, &rk3, &ik3);
+
+    lre[lid]      = accRe[base + lid];      lim[lid]      = accIm[base + lid];
+    lre[lid + 64] = accRe[base + lid + 64]; lim[lid + 64] = accIm[base + lid + 64];
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    float4 mean = tileMean[tid];
+    float4 sig = na * max(mean - black, (float4)0) + nb;
+    float4 noiseD = 2.f * w2 * sig * c;
+
+    int su = u < 8 ? u : (u > 8 ? u - 16 : 0);
+    float ax = sub ? 0.3926990817f * (float)su * fx : 0.f;
+    float pxr = sub ? cos(ax) : 1.f;
+    float pxi = sub ? sin(ax) : 0.f;
+    float4 wacc = (float4)0;
+
+    if (g > 0) {
+        int s = g * 16 + u;
+        float4 ar = lre[s], ai = lim[s], wt = (float4)0;
+        wiener_bin(r00, i00, rk0, ik0, mk, u, g, sub, pxr, pxi, fx, fy, noiseD, &ar, &ai, &wt);
+        lre[s] = ar; lim[s] = ai;
+        wacc += 2.f * wt;
+    } else if (u == 0 || u == 8) {
+        float4 ar0 = lre[u], ar2 = lim[u];
+        wiener_real_bin(r00, rk0, ik0, mk, u, 0, sub, pxr, pxi, fx, fy, noiseD, &ar0, &wacc);
+        wiener_real_bin(r02, rk2, ik2, mk, u, 8, sub, pxr, pxi, fx, fy, noiseD, &ar2, &wacc);
+        lre[u] = ar0; lim[u] = ar2;
+    } else if (u < 8) {
+        float4 ar0 = lre[u], ai0 = lim[u], wt0 = (float4)0;
+        wiener_bin(r00, i00, rk0, ik0, mk, u, 0, sub, pxr, pxi, fx, fy, noiseD, &ar0, &ai0, &wt0);
+        lre[u] = ar0; lim[u] = ai0;
+        wacc += 2.f * wt0;
+        int s2 = 16 - u;
+        float4 ar2 = lre[s2], ai2 = lim[s2], wt2 = (float4)0;
+        wiener_bin(r02, i02, rk2, ik2, mk, u, 8, sub, pxr, pxi, fx, fy, noiseD, &ar2, &ai2, &wt2);
+        lre[s2] = ar2; lim[s2] = ai2;
+        wacc += 2.f * wt2;
+    }
+    {
+        int s1 = (g + 4) * 16 + u;
+        float4 ar1 = lre[s1], ai1 = lim[s1], wt1 = (float4)0;
+        wiener_bin(r01, i01, rk1, ik1, mk, u, g + 4, sub, pxr, pxi, fx, fy, noiseD, &ar1, &ai1, &wt1);
+        lre[s1] = ar1; lim[s1] = ai1;
+        wacc += 2.f * wt1;
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    accRe[base + lid]      = lre[lid];      accIm[base + lid]      = lim[lid];
+    accRe[base + lid + 64] = lre[lid + 64]; accIm[base + lid + 64] = lim[lid + 64];
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    float4 ws = local_sum64(lre, wacc, lid);
+    if (lid == 0) tileW[tid] += (ws.x + ws.y + ws.z + ws.w) / (4.f * 256.f);
+}
+
+__kernel void freq_stream_end(__global const float4* accRe, __global const float4* accIm,
+                              __global const float4* tileMean, float4 black, float w2, float spatial,
+                              float na, float nb, int n, int W, int qw, int qh, int px, int py,
+                              int ntx, int nty, __global float* out, __local float4* lre, __local float4* lim) {
+    int ti = 2 * get_group_id(0) + px, tj = 2 * get_group_id(1) + py;
+    if (ti >= ntx || tj >= nty) return;
+    int lid = get_local_id(0);
+    int u = lid >> 2, g = lid & 3;
+    int x0 = (ti - 1) * 8, y0 = (tj - 1) * 8;
+    int tid = tj * ntx + ti;
+    size_t base = (size_t)tid * 128;
+
+    lre[lid]      = accRe[base + lid];      lim[lid]      = accIm[base + lid];
+    lre[lid + 64] = accRe[base + lid + 64]; lim[lid + 64] = accIm[base + lid + 64];
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    float4 ar0, ai0, ar1, ai1, ar2, ai2, ar3, ai3;
+    if (g > 0) {
+        int s0 = g * 16 + u;
+        ar0 = lre[s0]; ai0 = lim[s0];
+    } else if (u == 0) {
+        ar0 = lre[0]; ai0 = (float4)0;
+    } else if (u == 8) {
+        ar0 = lre[8]; ai0 = (float4)0;
+    } else if (u < 8) {
+        ar0 = lre[u]; ai0 = lim[u];
+    } else {
+        ar0 = lre[16 - u]; ai0 = -lim[16 - u];
+    }
+    {
+        int s1 = (g + 4) * 16 + u;
+        ar1 = lre[s1]; ai1 = lim[s1];
+    }
+    if (g > 0) {
+        int u2 = (16 - u) & 15, v2 = 16 - (g + 8);
+        int s2 = v2 * 16 + u2;
+        ar2 = lre[s2]; ai2 = -lim[s2];
+    } else if (u == 0) {
+        ar2 = lim[0]; ai2 = (float4)0;
+    } else if (u == 8) {
+        ar2 = lim[8]; ai2 = (float4)0;
+    } else if (u < 8) {
+        ar2 = lre[16 - u]; ai2 = lim[16 - u];
+    } else {
+        ar2 = lre[u]; ai2 = -lim[u];
+    }
+    {
+        int u3 = (16 - u) & 15, v3 = 16 - (g + 12);
+        int s3 = v3 * 16 + u3;
+        ar3 = lre[s3]; ai3 = -lim[s3];
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    float inv = 1.f / (float)n;
+    ar0 *= inv; ai0 *= inv; ar1 *= inv; ai1 *= inv;
+    ar2 *= inv; ai2 *= inv; ar3 *= inv; ai3 *= inv;
+    if (spatial > 0.f) {
+        float4 mean = tileMean[tid];
+        float4 sig = na * max(mean - black, (float4)0) + nb;
+        float4 sigM = w2 * sig * spatial * inv;
+        float sigMs = sigM.x + sigM.y + sigM.z + sigM.w;
+        shrink_bin(&ar0, &ai0, u, g,      sigMs);
+        shrink_bin(&ar1, &ai1, u, g + 4,  sigMs);
+        shrink_bin(&ar2, &ai2, u, g + 8,  sigMs);
+        shrink_bin(&ar3, &ai3, u, g + 12, sigMs);
+    }
+
+    float ang = -0.3926990817f * (float)g;
+    float w1r = cos(ang),       w1i = sin(ang);
+    float w2r = cos(2.f * ang), w2i = sin(2.f * ang);
+    float w3r = cos(3.f * ang), w3i = sin(3.f * ang);
+    float4 yr0, yr1, yr2, yr3;
+    fft2d_r4_inv(lre, lim, lid, w1r, w1i, w2r, w2i, w3r, w3i,
+                 ar0, ai0, ar1, ai1, ar2, ai2, ar3, ai3,
+                 &yr0, &yr1, &yr2, &yr3);
+
+    int y = y0 + u;
+    if (y < 0 || y >= qh) return;
+    float wy = kSinWin[u] * (1.f / 256.f);
+    int x = x0 + g;
+    if (x >= 0 && x < qw) {
+        float4 o = yr0 * (wy * kSinWin[g]);
+        size_t r0i = (size_t)(2 * y) * W + 2 * x, r1i = r0i + W;
+        out[r0i] += o.x; out[r0i + 1] += o.y; out[r1i] += o.z; out[r1i + 1] += o.w;
+    }
+    x = x0 + g + 4;
+    if (x >= 0 && x < qw) {
+        float4 o = yr1 * (wy * kSinWin[g + 4]);
+        size_t r0i = (size_t)(2 * y) * W + 2 * x, r1i = r0i + W;
+        out[r0i] += o.x; out[r0i + 1] += o.y; out[r1i] += o.z; out[r1i + 1] += o.w;
+    }
+    x = x0 + g + 8;
+    if (x >= 0 && x < qw) {
+        float4 o = yr2 * (wy * kSinWin[g + 8]);
+        size_t r0i = (size_t)(2 * y) * W + 2 * x, r1i = r0i + W;
+        out[r0i] += o.x; out[r0i + 1] += o.y; out[r1i] += o.z; out[r1i + 1] += o.w;
+    }
+    x = x0 + g + 12;
+    if (x >= 0 && x < qw) {
+        float4 o = yr3 * (wy * kSinWin[g + 12]);
+        size_t r0i = (size_t)(2 * y) * W + 2 * x, r1i = r0i + W;
+        out[r0i] += o.x; out[r0i + 1] += o.y; out[r1i] += o.z; out[r1i + 1] += o.w;
+    }
+}
 )CL"

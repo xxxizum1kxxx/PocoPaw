@@ -151,6 +151,38 @@ data class PipelineOptions(
     val gpu: Boolean = false,
     /** Output aspect ratio for JPEG / Ultra HDR (e.g. 16f/9f); 0 keeps full-sensor 4:3. */
     val aspectRatio: Float = 0f,
+    /** Classic-path Bayer demosaic algorithm (`RCD`, `AMAZE`, `MHC`). */
+    val demosaic: DemosaicMethod = DemosaicMethod.RCD,
+    /** Kernel regression output scale (1 or 2). */
+    val krScale: Int = 1,
+    /** Kernel regression auto-2x via subpixel diversity and SNR threshold. */
+    val krAuto2x: Boolean = false,
+    /** Minimum burst SNR (dB) required for KR auto-2x promotion. */
+    val krSnrThresholdDb: Float = 14.0f,
+    /** Classic-path PMRID learned raw denoising after merge. */
+    val pmridEnabled: Boolean = false,
+    /** Low-noise k_eff cutoff for smoothstep PMRID blend gating (<= 0 disables gating). */
+    val pmridLowNoiseCutoff: Float = 0.05f,
+    /** Path to extracted `pmrid.onnx` model file (empty resolves default asset/calib path). */
+    val pmridModelPath: String = "",
+    /** Accelerator routing policy across native burst and ML stages. */
+    val accelBackend: AccelBackend = AccelBackend.AUTO,
+    /** Optical flow method for multi-frame alignment (`BLOCK_MATCH`, `SEA_RAFT`, `AUTO`). */
+    val flowMethod: FlowMethod = FlowMethod.BLOCK_MATCH,
+    /** Path to extracted `sea_raft.onnx` model file. */
+    val flowModelPath: String = "",
+    /** Tone mapping mode (`MERTENS`, `HDRNET`). */
+    val tonemapMode: TonemapMode = TonemapMode.MERTENS,
+    /** Path to extracted `hdrnet.onnx` model file. */
+    val hdrnetModelPath: String = "",
+    /** Enable face/sky semantic segmentation modulation during finish. */
+    val semanticSegEnabled: Boolean = false,
+    /** Path to extracted `semantic_seg.onnx` model file. */
+    val segModelPath: String = "",
+    /** Early-stopping quality prediction in streaming mode (A6). */
+    val earlyStopEnabled: Boolean = false,
+    /** Target SNR gain (dB) over single frame for streaming early stop (A6). */
+    val earlyStopTargetSnrDb: Float = 6.0f,
 )
 
 /** The single-frame pipeline: quick look, then the reference frame written as DNG unchanged. */
@@ -180,9 +212,11 @@ class HdrPlusPipeline(
 
     override val framesPerCapture: Int get() = options.frames
 
-    /** The classic spatial merge of one exposure runs while the burst is captured ([BurstStream]). */
+    /** The classic spatial or night-mode frequency merge of one exposure runs while the burst is captured ([BurstStream]). */
     override fun openStream(exposure: ExposurePlan): BurstStream? =
-        if (kernelRegression || options.scene != BurstScene.AUTO || options.frames < 2 || exposure is ExposurePlan.PerFrame) null
+        if (kernelRegression || (options.scene != BurstScene.AUTO && options.scene != BurstScene.NIGHT) ||
+            options.frames < 2 || exposure is ExposurePlan.PerFrame
+        ) null
         else BurstStream(options.gpu, options.noise, mergeOptions(kernelRegression, options))
 
     override fun exposureFor(requested: ExposurePlan, live: LiveExposure, camera: CameraInfo): ExposurePlan =
@@ -200,8 +234,38 @@ class HdrPlusPipeline(
         const val ID_KR = "hdrplus_kr"
         const val DEFAULT_FRAMES = 8
 
-        private fun mergeOptions(kernelRegression: Boolean, o: PipelineOptions) =
-            MergeOptions(kernelRegression = kernelRegression, frequencyMerge = o.scene == BurstScene.NIGHT, lca = o.lca)
+        internal fun mergeOptions(kernelRegression: Boolean, o: PipelineOptions) =
+            MergeOptions(
+                kernelRegression = kernelRegression,
+                demosaic = o.demosaic,
+                frequencyMerge = o.scene == BurstScene.NIGHT,
+                lca = o.lca,
+                krScale = o.krScale,
+                krAuto2x = o.krAuto2x,
+                krSnrThresholdDb = o.krSnrThresholdDb,
+                pmridEnabled = o.pmridEnabled,
+                pmridLowNoiseCutoff = o.pmridLowNoiseCutoff,
+                pmridModelPath = o.pmridModelPath,
+                accelBackend = o.accelBackend,
+                flowMethod = o.flowMethod,
+                flowModelPath = o.flowModelPath,
+                earlyStopEnabled = o.earlyStopEnabled,
+                earlyStopTargetSnrDb = o.earlyStopTargetSnrDb,
+            )
+
+        internal fun finishLook(o: PipelineOptions): BurstLook {
+            val base = if (o.scene == BurstScene.NIGHT) {
+                o.look.copy(style = "night", lutPath = "", lutStrength = 0f)
+            } else {
+                o.look
+            }
+            return base.copy(
+                tonemapMode = if (o.tonemapMode != TonemapMode.MERTENS) o.tonemapMode else base.tonemapMode,
+                hdrnetModelPath = o.hdrnetModelPath.ifEmpty { base.hdrnetModelPath },
+                semanticSegEnabled = o.semanticSegEnabled || base.semanticSegEnabled,
+                segModelPath = o.segModelPath.ifEmpty { base.segModelPath },
+            )
+        }
 
         private fun stagesFor(kernelRegression: Boolean, o: PipelineOptions): List<PipelineStage> = buildList {
             add(ReferenceStage())
@@ -210,11 +274,10 @@ class HdrPlusPipeline(
                 add(QuickLookStage())
                 if (!mergedDng) add(DngWriteStage())
             }
-            val night = o.scene == BurstScene.NIGHT
-            add(AlignStage(o.gpu, o.noise))
+            add(AlignStage(o.gpu, o.noise, o.accelBackend, o.flowMethod, o.flowModelPath))
             add(MergeStage(mergeOptions(kernelRegression, o)))
             if (mergedDng) add(MergedDngStage())
-            add(FinishStage(if (night) o.look.copy(style = "night") else o.look, o.ultraHdr, o.aspectRatio, o.writeJpeg))
+            add(FinishStage(finishLook(o), o.ultraHdr, o.aspectRatio, o.writeJpeg))
             if (o.writeJpeg) add(JpegWriteStage())
         }
     }

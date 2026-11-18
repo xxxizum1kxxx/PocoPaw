@@ -31,7 +31,9 @@ import android.view.Surface
 import com.izum1k.pocopaw.BuildConfig
 import com.izum1k.pocopaw.data.FlashMode
 import com.izum1k.pocopaw.pipeline.BurstStream
+import com.izum1k.pocopaw.pipeline.NativeBurst
 import com.izum1k.pocopaw.pipeline.NativeMemory
+import com.izum1k.pocopaw.pipeline.Raw10Unpacker
 import com.izum1k.pocopaw.pipeline.RawBurst
 import com.izum1k.pocopaw.pipeline.RawFrame
 import com.izum1k.pocopaw.pipeline.RawMetadata
@@ -148,9 +150,43 @@ class CameraController(private val manager: CameraManager, private val motion: M
     private var meterLoggedAt = 0L
     private var frames = 0
     private var framesSinceNs = 0L
-    var awbEstimator: AwbEstimator = AwbEstimator.HAL
+    @Volatile
+    private var awbEstimator: AwbEstimator = AwbEstimator.HAL
     /** Gains from [awbEstimator], held with AWB off; null while the HAL's AWB runs. */
     private var appWb: RggbChannelVector? = null
+
+    fun setAwbEstimator(estimator: AwbEstimator) {
+        awbEstimator = estimator
+        handler.post {
+            appWb = null
+            rebuildPreviewIfIdle()
+        }
+    }
+    @Volatile
+    private var raw10Enabled = false
+    private var raw10Active = false
+    private val zslRing = ZslRingBuffer(capacity = ZSL_CAPACITY, maxAgeNs = ZSL_MAX_AGE_NS)
+    private val zslSequences = HashSet<Int>()
+    private var zslInFlight = 0
+    private var reopening = false
+
+    val bufferedZslFrames: Int get() = zslRing.size
+
+    fun setRaw10Enabled(enabled: Boolean) {
+        if (raw10Enabled == enabled) return
+        raw10Enabled = enabled
+        scope.launch {
+            mutex.withLock {
+                val info = camera ?: return@withLock
+                val tex = texture ?: return@withLock
+                val wantRaw10 = enabled && info.supportsRaw10 && info.raw10Size != null
+                if (wantRaw10 != raw10Active && _state.value is State.Previewing && !tex.isReleased) {
+                    openLocked(info, tex, keepFocus = true)
+                }
+            }
+        }
+    }
+
     private var sceneSweepAfter = 0L
     private var sceneSweepDeadline = 0L
     /** A tap waits for AE on its region before AF scans: when it was made, 0 when none waits. */
@@ -178,6 +214,9 @@ class CameraController(private val manager: CameraManager, private val motion: M
 
     /** Tags the repeating preview request that also fills the analysis stream for [SceneMeter]. */
     private object MeterTag
+
+    /** Tags paced ZSL RAW requests issued during idle preview. */
+    private object ZslTag
 
     suspend fun open(info: CameraInfo, texture: SurfaceTexture, controls: PreviewControls) = withContext(dispatcher) {
         mutex.withLock {
@@ -235,7 +274,10 @@ class CameraController(private val manager: CameraManager, private val motion: M
                         sceneSweepDeadline = now + SCENE_SWEEP_MAX_WAIT_MS
                     }
                 }
-                if (_state.value is State.Previewing) startPreview()
+                if (_state.value is State.Previewing) {
+                    startPreview()
+                    syncZslState()
+                }
             }
         }
     }
@@ -667,20 +709,26 @@ class CameraController(private val manager: CameraManager, private val motion: M
         meterFrames.result(ts, result)?.let { (f, r) -> measure(ts, f, r) }
     }
 
-    /** Converts a frame off the camera thread; a frame arriving while the last is still converted is dropped. */
+    /** Converts a frame and runs [awbEstimator] off the camera thread; a frame arriving while busy is dropped. */
     private fun measure(ts: Long, f: MeterFrame, r: CaptureResult) {
         if (!meterBusy.compareAndSet(false, true)) return
+        val camId = camera?.id
+        val estimator = awbEstimator
         meterScope.launch {
-            val stats = try {
-                SceneMeter.measure(f, r, ts)
+            var stats: MeterStats? = null
+            var nextWb: RggbChannelVector? = null
+            try {
+                stats = SceneMeter.measure(f, r, ts)
+                nextWb = stats?.let { runCatching { estimator.estimate(it, camId) }.getOrNull() }
             } finally {
                 meterBusy.set(false)
             }
-            if (stats != null) handler.post { onMeterStats(stats) }
+            val measured = stats ?: return@launch
+            handler.post { onMeterStats(measured, nextWb, estimator) }
         }
     }
 
-    private fun onMeterStats(s: MeterStats) {
+    private fun onMeterStats(s: MeterStats, nextWb: RggbChannelVector?, estimator: AwbEstimator) {
         if (_state.value !is State.Previewing && _state.value !is State.Capturing) return
         meterStats = s
         _live.value = _live.value.copy(clippedFraction = s.clippedFraction)
@@ -689,7 +737,7 @@ class CameraController(private val manager: CameraManager, private val motion: M
             sceneStats = s
         }
         logMeter(s)
-        followWhiteBalance(s)
+        if (estimator === awbEstimator) followWhiteBalance(nextWb)
         checkSceneChange(s)
     }
 
@@ -723,8 +771,7 @@ class CameraController(private val manager: CameraManager, private val motion: M
     }
 
     /** Hands the estimator's gains to [applyWhiteBalance]; rebuilds the preview when they change. */
-    private fun followWhiteBalance(s: MeterStats) {
-        val next = awbEstimator.estimate(s)
+    private fun followWhiteBalance(next: RggbChannelVector?) {
         val prev = appWb
         val same = next == null && prev == null ||
             next != null && prev != null && abs(next.red / prev.red - 1) < WB_FOLLOW_TOLERANCE && abs(next.blue / prev.blue - 1) < WB_FOLLOW_TOLERANCE
@@ -779,13 +826,8 @@ class CameraController(private val manager: CameraManager, private val motion: M
         awaitSweep()
         mutex.withLock {
             var info = camera ?: throw CameraFailure(Reason.UNKNOWN)
-            if (!budget.canAfford(spec.frameCount)) {
-                Log.i(TAG, "RAW budget at ${budget.remaining.value}, reopening ${info.id}")
-                openLocked(info, texture ?: throw CameraFailure(Reason.UNKNOWN), keepFocus = true)
-                info = camera ?: throw CameraFailure(Reason.UNKNOWN)
-            }
-            val s = session ?: throw CameraFailure(Reason.UNKNOWN)
-            val reader = rawReader ?: throw CameraFailure(Reason.UNKNOWN)
+            var s = session ?: throw CameraFailure(Reason.UNKNOWN)
+            var reader = rawReader ?: throw CameraFailure(Reason.UNKNOWN)
             val swept = cancelSweep()
             if (info.hasAutoFocus) burstFocus = spec.focusDioptres
             if (swept || burstFocus != null) runCatching { startPreview() }
@@ -794,13 +836,14 @@ class CameraController(private val manager: CameraManager, private val motion: M
                 tapPendingSince = 0L
                 startTapScan(s, TapScan(_live.value.focusDioptres, retry = false))
             }
+            handler.removeCallbacks(zslTick)
+            reader.setOnImageAvailableListener(null, null)
+
             var unlockFocus = false
             var gate: SteadyGate? = null
+            val zslFrames = ArrayList<RawFrame>()
+            val postFrames = ArrayList<RawFrame>()
             try {
-                unlockFocus = lockFocus(s, info)
-                val fires = info.hasFlash && spec.flash != FlashMode.OFF && spec.exposure is ExposurePlan.Auto
-                if (fires) runPrecapture(s)
-                val requests = List(spec.frameCount) { stillRequest(info, spec, reader.surface, it) }
                 fun metadataFor(result: CaptureResult) = RawMetadata.from(
                     cameraId = info.id,
                     facing = info.facing,
@@ -815,37 +858,115 @@ class CameraController(private val manager: CameraManager, private val motion: M
                 gate = stream?.let { st ->
                     SteadyGate { f -> st.add(f, streamMetadata ?: metadataFor(f.result).also { streamMetadata = it }) }
                 }
-                val collector = CaptureCollector(spec.frameCount, gate?.let { g -> g::offer })
-                activeCapture = collector
-                generateSequence { reader.acquireNextImage() }.forEach { it.close() }
-                reader.setOnImageAvailableListener({ r -> r.acquireNextImage()?.let(collector::onImage) }, handler)
-                budget.consume(spec.frameCount)
-                s.captureBurst(requests, collector.callback, handler)
-                val frames = withTimeout(captureTimeoutMs(spec)) { collector.await() }
-                frames.first().result.let { r ->
+
+                // A10 ZSL: drain buffered frames in Auto photo (allowZsl) or Bracket hybrid mode.
+                val zslEligible = controls.zslActive && spec.flash == FlashMode.OFF &&
+                    (spec.allowZsl || spec.exposure !is ExposurePlan.Manual)
+                var neededIndices: List<Int> = (0 until spec.frameCount).toList()
+                var zslOfferedToGate = false
+                if (zslEligible) {
+                    if (spec.exposure is ExposurePlan.PerFrame) {
+                        val minExpo = spec.exposure.frames.minOf { it.iso.toDouble() * it.exposureNs }
+                        val shortIdx = (0 until spec.frameCount).filter {
+                            val e = spec.exposure.at(it)
+                            abs(e.iso.toDouble() * e.exposureNs - minExpo) <= 1e-3 * minExpo
+                        }
+                        val longIdx = (0 until spec.frameCount).filter { it !in shortIdx }
+                        if (longIdx.isNotEmpty()) {
+                            zslFrames += zslRing.drain(longIdx.size)
+                            neededIndices = shortIdx + longIdx.drop(zslFrames.size)
+                        } else {
+                            zslFrames += zslRing.drain(spec.frameCount)
+                            neededIndices = (zslFrames.size until spec.frameCount).toList()
+                        }
+                    } else {
+                        val maxZsl = (spec.frameCount - spec.reserveShortFrames.coerceAtLeast(0)).coerceAtLeast(0)
+                        zslFrames += zslRing.drain(maxZsl)
+                        val checkZslEarlyStop = gate != null && stream != null && spec.earlyStopEnabled && zslFrames.size >= 3
+                        if (zslFrames.size >= spec.frameCount || checkZslEarlyStop) {
+                            zslFrames.forEach { f -> gate?.offer(f) }
+                            zslOfferedToGate = true
+                        }
+                        val stoppedEarly = if (checkZslEarlyStop) {
+                            gate.flush()
+                            stream.awaitProgress()?.shouldStop == true
+                        } else {
+                            false
+                        }
+                        neededIndices = if (stoppedEarly) emptyList() else (zslFrames.size until spec.frameCount).toList()
+                    }
+                }
+
+                if (neededIndices.isNotEmpty()) {
+                    if (!budget.canAfford(neededIndices.size)) {
+                        Log.i(TAG, "RAW budget at ${budget.remaining.value}, reopening ${info.id}")
+                        openLocked(info, texture ?: throw CameraFailure(Reason.UNKNOWN), keepFocus = true)
+                        info = camera ?: throw CameraFailure(Reason.UNKNOWN)
+                        s = session ?: throw CameraFailure(Reason.UNKNOWN)
+                        reader = rawReader ?: throw CameraFailure(Reason.UNKNOWN)
+                        _state.value = State.Capturing(info.id)
+                    }
+                    unlockFocus = lockFocus(s, info)
+                    val fires = info.hasFlash && spec.flash != FlashMode.OFF && spec.exposure is ExposurePlan.Auto
+                    if (fires) runPrecapture(s)
+                    generateSequence { reader.acquireNextImage() }.forEach { it.close() }
+
+                    if (gate != null && stream != null && spec.earlyStopEnabled &&
+                        spec.exposure !is ExposurePlan.PerFrame && neededIndices.size > EARLY_STOP_CHUNK_SIZE
+                    ) {
+                        // A6 chunked capture: consume RAW budget strictly per submitted chunk and stop early once target SNR is met.
+                        var offset = 0
+                        while (offset < neededIndices.size) {
+                            val end = min(offset + EARLY_STOP_CHUNK_SIZE, neededIndices.size)
+                            val chunk = neededIndices.subList(offset, end)
+                            val requests = chunk.map { stillRequest(info, spec, reader.surface, it) }
+                            val collector = CaptureCollector(requests.size, gate::offer)
+                            activeCapture = collector
+                            reader.setOnImageAvailableListener({ r -> r.acquireNextImage()?.let(collector::onImage) }, handler)
+                            budget.consume(requests.size)
+                            s.captureBurst(requests, collector.callback, handler)
+                            val chunkFrames = withTimeout(captureTimeoutMs(spec.copy(frameCount = requests.size))) { collector.await() }
+                            postFrames += chunkFrames
+                            collector.release()
+                            activeCapture = null
+                            val sp = stream.awaitProgress()
+                            if (sp?.shouldStop == true || stream.shouldStop) break
+                            offset = end
+                        }
+                    } else {
+                        val requests = neededIndices.map { stillRequest(info, spec, reader.surface, it) }
+                        val collector = CaptureCollector(requests.size, gate?.let { g -> g::offer })
+                        activeCapture = collector
+                        reader.setOnImageAvailableListener({ r -> r.acquireNextImage()?.let(collector::onImage) }, handler)
+                        budget.consume(requests.size)
+                        s.captureBurst(requests, collector.callback, handler)
+                        postFrames += withTimeout(captureTimeoutMs(spec.copy(frameCount = requests.size))) { collector.await() }
+                    }
+                }
+
+                if (!zslOfferedToGate && zslFrames.isNotEmpty() && gate != null) {
+                    zslFrames.forEach { f -> gate.offer(f) }
+                    zslOfferedToGate = true
+                }
+
+                val allFrames = zslFrames + postFrames
+                allFrames.first().result.let { r ->
                     Log.i(
                         TAG,
-                        "captured ${frames.size}: ISO ${r.get(CaptureResult.SENSOR_SENSITIVITY)}, " +
+                        "captured ${allFrames.size} (zsl=${zslFrames.size}, hal=${postFrames.size}): ISO ${r.get(CaptureResult.SENSOR_SENSITIVITY)}, " +
                             "${r.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.div(1000)}us, flash state ${r.get(CaptureResult.FLASH_STATE)}, " +
                             "AE mode ${r.get(CaptureResult.CONTROL_AE_MODE)}, preview was ISO ${_live.value.iso} ${_live.value.exposureNs?.div(1000)}us",
                     )
                 }
-                Log.i(
-                    TAG,
-                    "burst lens " + frames.joinToString(" ") { f ->
-                        val moving = f.result.get(CaptureResult.LENS_STATE) == CaptureResult.LENS_STATE_MOVING
-                        "%.2f%s".format(f.result.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: Float.NaN, if (moving) "m" else "")
-                    } + " (AF ${afStateName(frames.first().result.get(CaptureResult.CONTROL_AF_STATE))})",
-                )
                 gate?.flush()
                 val g = gate
                 val accepted = if (g != null) {
-                    if (g.dropped > 0) Log.w(TAG, "left out ${g.dropped} of ${frames.size} frames shot off focus")
+                    if (g.dropped > 0) Log.w(TAG, "left out ${g.dropped} of ${allFrames.size} frames shot off focus")
                     g.accepted
                 } else {
-                    steadyFrames(frames, spec)
+                    steadyFrames(allFrames, spec)
                 }
-                val firstFrame = accepted.firstOrNull() ?: frames.first()
+                val firstFrame = accepted.firstOrNull() ?: allFrames.first()
                 val metadata = streamMetadata ?: metadataFor(firstFrame.result)
                 if (BuildConfig.DEBUG) meterStats?.let { m ->
                     Log.i(TAG, "meter grid ${(firstFrame.timestampNs - m.timestampNs) / 1_000_000}ms before frame 0 " + SceneMeter.gridString(m))
@@ -853,7 +974,13 @@ class CameraController(private val manager: CameraManager, private val motion: M
                 }
                 RawBurst(frames = accepted, metadata = metadata, stream = if (g != null) stream else null)
             } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                zslFrames.forEach { it.release() }
+                postFrames.forEach { it.release() }
                 throw CameraFailure(Reason.TIMEOUT, e)
+            } catch (t: Throwable) {
+                zslFrames.forEach { it.release() }
+                postFrames.forEach { it.release() }
+                throw t
             } finally {
                 gate?.abandon()
                 burstFocus = null
@@ -868,6 +995,7 @@ class CameraController(private val manager: CameraManager, private val motion: M
                             s.capture(b.build(), null, handler)
                         }
                         startPreview()
+                        syncZslState()
                     }
                 }
             }
@@ -879,8 +1007,17 @@ class CameraController(private val manager: CameraManager, private val motion: M
      * [keepFocus] (a reopen for the RAW budget, same camera, phone still) keeps the scene's distance.
      */
     private suspend fun openLocked(info: CameraInfo, tex: SurfaceTexture, keepFocus: Boolean = false) {
-        val kept = if (keepFocus && camera?.id == info.id && !moving) sceneFocus to sceneStats else null
+        val preserve = keepFocus && camera?.id == info.id && !moving
+        val keptFocus = if (preserve) tapFocus ?: sceneFocus ?: _live.value.focusDioptres else null
+        val keptStats = if (preserve) sceneStats else null
+        val keptTapRegion = if (preserve) focusRegion else null
         closeLocked()
+        if (tex.isReleased) {
+            camera = null
+            texture = null
+            _state.value = State.Closed
+            return
+        }
         if (info.id != wbCameraId) {
             autoWb = null
             wbBase = null
@@ -889,10 +1026,11 @@ class CameraController(private val manager: CameraManager, private val motion: M
         }
         camera = info
         texture = tex
-        tapFocus = null
+        focusRegion = keptTapRegion
+        tapFocus = if (keptTapRegion != null) keptFocus else null
         tapPendingSince = 0L
-        sceneFocus = kept?.first
-        sceneStats = kept?.second
+        sceneFocus = if (keptTapRegion == null) keptFocus else null
+        sceneStats = keptStats
         sceneBaselinePending = false
         sceneChangedSince = 0L
         meterStats = null
@@ -901,23 +1039,31 @@ class CameraController(private val manager: CameraManager, private val motion: M
         framesSinceNs = 0L
         moving = false
         sceneSweepAfter = 0L
+        zslInFlight = 0
+        reopening = false
         _state.value = State.Opening(info.id)
         try {
             tex.setDefaultBufferSize(info.previewSize.width, info.previewSize.height)
             val surface = Surface(tex).also { previewSurface = it }
-            val reader = ImageReader.newInstance(info.rawSize.width, info.rawSize.height, ImageFormat.RAW_SENSOR, RAW_MAX_IMAGES)
+            val r10 = info.raw10Size
+            val useRaw10 = raw10Enabled && info.supportsRaw10 && r10 != null
+            val rawSize = if (useRaw10) r10 else info.rawSize
+            val rawFormat = if (useRaw10) ImageFormat.RAW10 else ImageFormat.RAW_SENSOR
+            val reader = ImageReader.newInstance(rawSize.width, rawSize.height, rawFormat, RAW_MAX_IMAGES)
             rawReader = reader
+            raw10Active = useRaw10
             val dev = openDevice(info.id)
             device = dev
             budget.reset()
             session = createSessionWithYuv(dev, info, surface, reader.surface)
             startPreview()
             _state.value = State.Previewing(info.id)
+            syncZslState()
             if (yuvReader != null) {
                 motion?.start(this)
                 handler.removeCallbacks(meterTick)
                 handler.post(meterTick)
-                if (sceneFocus == null) {
+                if (sceneFocus == null && tapFocus == null) {
                     val now = System.currentTimeMillis()
                     sceneSweepAfter = now + SCENE_SWEEP_MIN_MS
                     sceneSweepDeadline = now + SCENE_SWEEP_MAX_WAIT_MS
@@ -945,6 +1091,12 @@ class CameraController(private val manager: CameraManager, private val motion: M
         activeCapture?.fail(CameraFailure(Reason.DISCONNECTED))
         cancelSweep()
         handler.removeCallbacks(meterTick)
+        handler.removeCallbacks(zslTick)
+        zslSequences.clear()
+        zslInFlight = 0
+        reopening = false
+        zslRing.clear()
+        meterFrames.clear()
         motion?.stop(this)
         runCatching { session?.close() }
         runCatching { device?.close() }
@@ -954,6 +1106,7 @@ class CameraController(private val manager: CameraManager, private val motion: M
         session = null
         device = null
         rawReader = null
+        raw10Active = false
         yuvReader = null
         previewSurface = null
         faceRegion = null
@@ -1101,6 +1254,74 @@ class CameraController(private val manager: CameraManager, private val motion: M
             b.addTarget(yuv.surface)
             b.setTag(MeterTag)
             runCatching { s.capture(b.build(), previewCallback, handler) }
+        }
+    }
+
+    private fun syncZslState() {
+        val reader = rawReader ?: return
+        handler.removeCallbacks(zslTick)
+        if (!controls.zslActive || _state.value !is State.Previewing || activeCapture != null) {
+            if (activeCapture == null) reader.setOnImageAvailableListener(null, null)
+            zslRing.clear()
+            return
+        }
+        reader.setOnImageAvailableListener({ r -> r.acquireNextImage()?.let(::onZslRawImage) }, handler)
+        handler.post(zslTick)
+    }
+
+    private val zslTick = object : Runnable {
+        override fun run() {
+            if (!controls.zslActive || _state.value !is State.Previewing || activeCapture != null || reopening) return
+            if (budget.needsProactiveReopen()) {
+                triggerProactiveReopen()
+                return
+            }
+            handler.postDelayed(this, ZSL_POLL_MS)
+            if (sweep != null || zslInFlight >= MAX_ZSL_IN_FLIGHT) return
+            val s = session ?: return
+            val reader = rawReader ?: return
+            val b = previewBuilder() ?: return
+            b.addTarget(reader.surface)
+            b.set(CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE, CameraMetadata.STATISTICS_LENS_SHADING_MAP_MODE_ON)
+            b.setTag(ZslTag)
+            val seq = runCatching {
+                budget.recordSubmitted(1)
+                s.capture(b.build(), previewCallback, handler)
+            }.getOrNull()
+            if (seq != null) {
+                zslSequences.add(seq)
+                zslInFlight = zslSequences.size
+            }
+        }
+    }
+
+    private fun triggerProactiveReopen() {
+        if (reopening) return
+        reopening = true
+        scope.launch {
+            mutex.withLock {
+                val info = camera
+                val tex = texture
+                if (info != null && tex != null && _state.value is State.Previewing && budget.needsProactiveReopen()) {
+                    Log.i(TAG, "proactive ZSL reopen at ${budget.consumed}/${budget.limit} RAW requests")
+                    openLocked(info, tex, keepFocus = true)
+                } else {
+                    reopening = false
+                }
+            }
+        }
+    }
+
+    private fun onZslRawImage(image: Image) {
+        image.use { img ->
+            if (!controls.zslActive || _state.value !is State.Previewing || activeCapture != null) return
+            if (img.format == ImageFormat.RAW10) {
+                val (buf, stride) = copyRaw10Compact(img)
+                zslRing.onImage(buf, img.width, img.height, img.timestamp, isRaw10 = true, rowStride = stride)
+            } else {
+                val buf = copyRawToRaw16(img)
+                zslRing.onImage(buf, img.width, img.height, img.timestamp, isRaw10 = false)
+            }
         }
     }
 
@@ -1433,6 +1654,11 @@ class CameraController(private val manager: CameraManager, private val motion: M
             when (val tag = request.tag) {
                 is SweepTag -> onSweepResult(tag, result)
                 MeterTag -> onMeterResult(result)
+                ZslTag -> {
+                    if (controls.zslActive && _state.value is State.Previewing && activeCapture == null) {
+                        zslRing.onResult(result)
+                    }
+                }
             }
             countFrame()
             aeWatcher?.invoke(ae)
@@ -1467,6 +1693,20 @@ class CameraController(private val manager: CameraManager, private val motion: M
                 flashRequired = ae == CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED,
                 clippedFraction = meterStats?.clippedFraction ?: 0f,
             )
+        }
+
+        override fun onCaptureFailed(session: CameraCaptureSession, request: CaptureRequest, failure: CaptureFailure) = Unit
+
+        override fun onCaptureSequenceCompleted(session: CameraCaptureSession, sequenceId: Int, frameNumber: Long) {
+            if (zslSequences.remove(sequenceId)) {
+                zslInFlight = zslSequences.size
+            }
+        }
+
+        override fun onCaptureSequenceAborted(session: CameraCaptureSession, sequenceId: Int) {
+            if (zslSequences.remove(sequenceId)) {
+                zslInFlight = zslSequences.size
+            }
         }
     }
 
@@ -1645,13 +1885,34 @@ class CameraController(private val manager: CameraManager, private val motion: M
             RawFrame(data, w, h, ts, results.getValue(ts))
         }
 
-        private fun copyRaw(image: Image): ByteBuffer {
+        private fun copyRaw(image: Image): ByteBuffer = copyRawToRaw16(image)
+    }
+
+    companion object {
+        private const val TAG = "PocoPawCamera"
+        private const val RAW_MAX_IMAGES = 8
+        private const val ZSL_CAPACITY = 12
+        private const val ZSL_MAX_AGE_NS = 3_000_000_000L
+        private const val MAX_ZSL_IN_FLIGHT = 2
+        private const val ZSL_POLL_MS = 200L
+        private const val EARLY_STOP_CHUNK_SIZE = 4
+
+        private fun copyRawToRaw16(image: Image): ByteBuffer {
             val plane = image.planes[0]
             val src = plane.buffer
+            if (image.format == ImageFormat.RAW10) {
+                val out = NativeMemory.allocate(image.width * image.height * 2)
+                if (!NativeBurst.unpackRaw10Native(src, image.width, image.height, plane.rowStride, out)) {
+                    Raw10Unpacker.unpackRaw10(src, image.width, image.height, plane.rowStride, out)
+                }
+                out.rewind()
+                return out
+            }
             val rowBytes = image.width * 2
             val out = NativeMemory.allocate(rowBytes * image.height)
             if (plane.rowStride == rowBytes) {
                 src.rewind()
+                src.limit(rowBytes * image.height)
                 out.put(src)
             } else {
                 for (y in 0 until image.height) {
@@ -1664,11 +1925,28 @@ class CameraController(private val manager: CameraManager, private val motion: M
             out.rewind()
             return out
         }
-    }
 
-    companion object {
-        private const val TAG = "PocoPawCamera"
-        private const val RAW_MAX_IMAGES = 8
+        private fun copyRaw10Compact(image: Image): Pair<ByteBuffer, Int> {
+            val plane = image.planes[0]
+            val src = plane.buffer
+            val rowBytes = Raw10Unpacker.packedRowBytes(image.width)
+            val total = rowBytes * image.height
+            val out = NativeMemory.allocate(total)
+            if (plane.rowStride == rowBytes) {
+                src.rewind()
+                src.limit(total)
+                out.put(src)
+            } else {
+                for (y in 0 until image.height) {
+                    val start = y * plane.rowStride
+                    src.limit(start + rowBytes)
+                    src.position(start)
+                    out.put(src)
+                }
+            }
+            out.rewind()
+            return out to rowBytes
+        }
         private const val MAX_RECOVERIES = 3
         private const val SERVICE_RESTART_DELAY_MS = 2_000L
         private const val PRECAPTURE_TIMEOUT_MS = 1_500L

@@ -26,7 +26,8 @@ inline float bilinear(__global const float* im, int w, int h, float x, float y) 
 __kernel void refine_flow(__global const float* mean3, int refOff, int altOff, __global const float* gxi,
                           __global const float* gyi, int w, int h, __global const short* odx,
                           __global const short* ody, int tOff, int subOff, int nx, int ny, int iters, __global float* fxo,
-                          __global float* fyo, __local float* red) {
+                          __global float* fyo, float na, float nb, float black, int writeErr, __global float* ferr,
+                          __local float* red) {
     int g0 = get_global_id(0), j = get_global_id(1), lid = get_local_id(0);
     int u = g0 & 15, i = g0 >> 4, base = lid & ~15;
     bool valid = i < nx && j < ny;
@@ -55,6 +56,29 @@ __kernel void refine_flow(__global const float* mean3, int refOff, int altOff, _
     float det = a * c - b * b, tr = a + c;
     bool flat = x1 <= x0 || y1 <= y0 || tr <= 0 || det < 1e-4f * tr * tr;
     bool done = !valid || flat;
+    float rs = 0.f;
+    if (!done && col && ((x - x0) & 3) == 0) {
+        for (int y = y0; y < y1; y += 4) rs += mref[y * w + x];
+    }
+    red[lid * 3] = rs;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    if (valid && u == 0 && writeErr) {
+        if (flat) {
+            ferr[t] = 1e3f;
+        } else {
+            float s = 0.f;
+            for (int k = 0; k < 16; k++) s += red[(base + k) * 3];
+            int cnt = ((y1 - y0 + 3) / 4) * ((x1 - x0 + 3) / 4);
+            s /= (float)max(1, cnt);
+            float sig = max(0.f, s * 0.25f - black);
+            float varRes = 8.f * (na * sig + nb) / 9.f;
+            float disc = sqrt(0.25f * (a - c) * (a - c) + b * b);
+            float lmax = 0.5f * tr + disc;
+            float lmin = det / max(lmax, 1e-9f);
+            ferr[t] = sqrt(varRes / max(lmin, 1e-9f));
+        }
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
     float dx = dx0 + subx, dy = dy0 + suby;
     for (int it = 0; it < iters; it++) {
         float sx = 0, sy = 0;
@@ -262,8 +286,8 @@ __kernel void kr_gather(__global const ushort* frames, int frameSize, int n, int
         v2 += dB - dY / max(sCol.z, 0.1f);
     }
     __global float* o = out + ((size_t)Y * OW + X) * 3;
-    o[0] = max(0.f, v0);
-    o[1] = max(0.f, v1);
-    o[2] = max(0.f, v2);
+    o[0] = v0;
+    o[1] = v1;
+    o[2] = v2;
 }
 )CL"

@@ -1,5 +1,22 @@
 #pragma once
 #include "common.h"
+#include "semantic_seg.h"
+
+enum class TonemapMode { MERTENS = 0, HDRNET = 1 };
+
+inline const char* tonemap_mode_name(TonemapMode m) {
+    return m == TonemapMode::HDRNET ? "hdrnet" : "mertens";
+}
+
+inline TonemapMode parse_tonemap_mode(int v) {
+    return v == 1 ? TonemapMode::HDRNET : TonemapMode::MERTENS;
+}
+
+inline bool parse_tonemap_mode_str(const std::string& s, TonemapMode& out) {
+    if (s == "mertens") { out = TonemapMode::MERTENS; return true; }
+    if (s == "hdrnet") { out = TonemapMode::HDRNET; return true; }
+    return false;
+}
 
 struct LookParams {
     float lscLumaStrength = 0.85f;  // 1 = fully remove vignetting, <1 keeps a little (and less corner noise)
@@ -17,6 +34,14 @@ struct LookParams {
     float skinSat = 1.f, skinHue = 0.f;  // ... and for skin tones
     float chromaDenoiseScale = 1.f; // multiplies the automatic chroma denoise strength
     bool toneFull = false;          // exposure fusion at full resolution instead of kToneSub (the reference it approximates)
+    std::string lutPath;            // optional .cube 3D LUT applied in display sRGB at the end of the look
+    float lutStrength = 1.f;        // blend weight in [0, 1]
+    TonemapMode tonemapMode = TonemapMode::MERTENS;
+    std::string hdrnetModelPath;
+    bool semanticSegEnabled = false;
+    std::string segModelPath;
+    std::vector<float> faceBoxes;   // normalized sensor-orientation [x0, y0, x1, y1, ...]
+    int orientationDegrees = 0;     // clockwise rotation to upright
 };
 
 // local_tonemap: fusion at 1/kToneSub of each side, gain upsampled by a guided filter of this radius (binned px) and
@@ -52,18 +77,29 @@ void upscale_lanczos(ImageF& rgb, int W, int H);
 void aspect_crop_box(int inW, int inH, float aspect, int& x0, int& y0, int& cw, int& ch);
 void crop_aspect(ImageF& rgb, float aspect);
 struct ToneInfo { float gainShort, gainLong, keyBefore; };
+ToneInfo compute_tone_info(const ImageF& rgb, const LookParams& p);
 ToneInfo local_tonemap(ImageF& rgb, const LookParams& p);    // HDR+ synthetic exposure fusion, in-place, output linear
 void pixel_look(ImageF& rgb, const LookParams& p);          // sRGB OETF + S-curve + vibrance, output display-referred
 // display-luma unsharp mask; detail below `core` (sharpen_core) is left alone so grain is not boosted
-void sharpen_luma(ImageF& rgb, float amount, float radius, float core);
+void sharpen_luma(ImageF& rgb, float amount, float radius, float core, const SemanticMask* seg = nullptr);
 float sharpen_core(float visibleSigma);
 // targetKey lowered where reaching it would lift the visible noise above kKeyNoiseCap (dark scenes, high ISO)
 float noise_limited_key(float targetKey, float visibleSigma);
 void wb_shift(ImageF& rgb, float cool);                      // linear sRGB
-void local_contrast(ImageF& rgb, float amount, float radiusFrac);  // display referred
+void local_contrast(ImageF& rgb, float amount, float radiusFrac, const SemanticMask* seg = nullptr);  // display referred
 // local contrast amount eased off when the visible noise is high, so it does not pull up shadow grain
 float noise_scaled_local_contrast(float amount, float visibleSigma);
-void hue_tune(ImageF& rgb, const LookParams& p);            // display referred
+void hue_tune(ImageF& rgb, const LookParams& p, const SemanticMask* seg = nullptr);  // display referred
+struct Lut3D {
+    int size = 0;
+    float domMin[3] = {0.f, 0.f, 0.f};
+    float domMax[3] = {1.f, 1.f, 1.f};
+    std::vector<float> table;  // size^3 * 3 floats, R-fastest: ((b * size + g) * size + r) * 3
+    bool valid() const { return size >= 2 && table.size() == (size_t)size * size * size * 3; }
+};
+bool parse_cube_lut(std::istream& in, Lut3D& out);
+bool load_cube_lut(const std::string& path, Lut3D& out);
+void apply_lut_3d(ImageF& rgb, const Lut3D& lut, float strength);  // display referred sRGB
 bool apply_look_preset(const std::string& name, LookParams& p);   // default | pixel | night
 bool write_jpeg(const std::string& path, const ImageF& rgb, int quality, int downscale);
 std::vector<uint8_t> to_rgb8(const ImageF& rgb, int downscale, int& w, int& h);  // dithered, box-downscaled

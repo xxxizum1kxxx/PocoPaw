@@ -7,6 +7,7 @@ import com.izum1k.pocopaw.camera.ManualExposure
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.pow
+import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
 /**
@@ -33,6 +34,22 @@ object BurstExposure {
     const val NIGHT_OIS_CREDIT = 4.0
     const val NIGHT_MAX_EXPOSURE_NS = 333_000_000L
     const val NIGHT_MIN_EXPOSURE_NS = 33_000_000L
+
+    /** Boost frame count to 12–16 when digitally zooming (`cropZoom > 1.01f`) unless flash fires. */
+    fun framesForZoom(baseFrames: Int, cropZoom: Float, flash: Boolean = false): Int {
+        if (flash) return 1
+        if (!cropZoom.isFinite() || cropZoom <= 1.01f) return baseFrames.coerceAtLeast(1)
+        val z = cropZoom.coerceIn(1f, 2f)
+        val boosted = 12 + ((z - 1f) * 4f).roundToInt()
+        return maxOf(baseFrames, boosted).coerceIn(12, 16)
+    }
+
+    /** Clamp [desiredFrames] safely against [budget.maxAffordable] without throwing (returns `0` when exhausted). */
+    fun framesWithinBudget(desiredFrames: Int, budget: com.izum1k.pocopaw.camera.RawRequestBudget): Int {
+        val desired = desiredFrames.coerceAtLeast(1)
+        val affordable = budget.maxAffordable()
+        return if (affordable <= 0) 0 else desired.coerceAtMost(affordable)
+    }
 
     fun plan(live: LiveExposure, camera: CameraInfo, evIndex: Int = 0): ExposurePlan.Manual? =
         planExposure(

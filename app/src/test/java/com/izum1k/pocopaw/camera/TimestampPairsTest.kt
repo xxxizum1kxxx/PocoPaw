@@ -38,4 +38,40 @@ class TimestampPairsTest {
         assertNull(pairs.result(50L, 5))
         assertNull(pairs.image(60L, "img60"))
     }
+
+    @Test
+    fun errorRecoveryClearDropsUnpairedTimestampPairsWithCleanup() {
+        val dropped = mutableListOf<String>()
+        val pairs = TimestampPairs<String, Int>(max = 2, onDropA = { dropped += it })
+        pairs.image(1L, "buf1")
+        pairs.image(2L, "buf2")
+        pairs.image(3L, "buf3")
+        assertEquals(listOf("buf1"), dropped)
+
+        pairs.clear()
+        assertEquals(listOf("buf1", "buf2", "buf3"), dropped)
+        assertEquals(0, pairs.unpairedACount())
+        assertEquals(0, pairs.unpairedBCount())
+    }
+
+    @Test
+    fun duplicateTimestampOverwriteInvokesDropCallbacks() {
+        val droppedA = mutableListOf<String>()
+        val droppedB = mutableListOf<String>()
+        val pairs = TimestampPairs<String, String>(
+            max = 4,
+            onDropA = { droppedA += it },
+            onDropB = { droppedB += it },
+        )
+
+        assertNull(pairs.image(10L, "buf1"))
+        assertNull(pairs.image(10L, "buf2"))
+        assertEquals(listOf("buf1"), droppedA)
+        assertEquals("buf2" to "res10", pairs.result(10L, "res10"))
+
+        assertNull(pairs.result(20L, "resA"))
+        assertNull(pairs.result(20L, "resB"))
+        assertEquals(listOf("resA"), droppedB)
+        assertEquals("buf20" to "resB", pairs.image(20L, "buf20"))
+    }
 }

@@ -6,6 +6,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.izum1k.pocopaw.AppContainer
+import com.izum1k.pocopaw.camera.AwbEstimator
 import com.izum1k.pocopaw.camera.CameraController
 import com.izum1k.pocopaw.camera.CameraInfo
 import com.izum1k.pocopaw.camera.CaptureSpec
@@ -69,6 +70,7 @@ class P1CaptureViewModel(private val container: AppContainer, private val store:
 
     fun onResume() {
         resumed = true
+        controller.setAwbEstimator(AwbEstimator.HAL)
         motion.start()
         maybeOpen()
     }
@@ -76,6 +78,7 @@ class P1CaptureViewModel(private val container: AppContainer, private val store:
     fun onPause() {
         resumed = false
         releaseMotion()
+        container.syncAwbEstimator()
         viewModelScope.launch { controller.close() }
     }
 
@@ -97,6 +100,7 @@ class P1CaptureViewModel(private val container: AppContainer, private val store:
         val t = texture ?: return
         val cam = _ui.value.camera ?: return
         if (!resumed) return
+        controller.setAwbEstimator(AwbEstimator.HAL)
         viewModelScope.launch { controller.open(cam, t, PreviewControls()) }
     }
 

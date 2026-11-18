@@ -3,8 +3,10 @@
 
 #include "../demosaic.h"
 #include "../finish.h"
+#include "../hdrnet.h"
 #include "../kr.h"
 #include "../merge.h"
+#include "../semantic_seg.h"
 #include "../ultrahdr.h"
 #include "cl_runtime.h"
 
@@ -18,7 +20,7 @@ public:
     static std::unique_ptr<GpuBurst> create(const std::vector<Raw>& frames, std::string& why);
 
     // Stages listed in `off` ("align,merge,freq,kr,finish") run on the CPU, for bisecting a GPU problem;
-    // the default is "freq".
+    // empty by default (all stages enabled on the GPU).
     static void set_disabled(const std::string& off);
     static bool enabled(const char* stage);
 
@@ -47,21 +49,28 @@ public:
     Offsets stream_align(const Raw& frame, ImageF* gray);
     void stream_merge(const Offsets& of, const NoiseModel& nm, float black, const MergeOpts& o);
     double stream_end(float black);
+    void stream_freq_ref(const Raw& ref, const Meta& m, ImageF* gray);
+    void stream_freq_merge(const Offsets& of, const Meta& m, const NoiseModel& nm, float c);
+    double stream_freq_end(const Meta& m, const NoiseModel& nm, float spatial);
+    double stream_neff(bool freq);
     // the merged mosaic (classic) or RGB (kernel regression) for a CPU finish; finish() keeps it intact
     // until it returns
     ImageF download_merged();
     bool merged() const { return merged_.w > 0; }
     // a CPU merge's result, for a GPU finish
-    void set_merged(const ImageF& im, bool kernelRegression);
+    void set_merged(const ImageF& im, bool kernelRegression, float krScale = 1.f);
+    float kr_scale() const { return krScale_; }
 
     struct FinishOut {
         double sigma = 0, visibleSigma = 0, chroma = 0, localContrast = 0, tUpscale = 0, targetKey = 0, sharpenCore = 0;
         ToneInfo tone{};
         FinishTimes ft;
         HdrLuma hdr;
+        HdrnetStats hdrnet;
+        SemanticSegStats seg;
     };
     void finish(const Meta& m, const LookParams& lp, Demosaic dm, float zoom, bool keepHdr, FinishOut& out, float aspect = 0.f,
-                const float lcaR[2] = nullptr, const float lcaB[2] = nullptr);
+                const float lcaR[2] = nullptr, const float lcaB[2] = nullptr, AccelBackend accelBackend = AccelBackend::AUTO);
     int width() const { return rgb_.w; }
     int height() const { return rgb_.h; }
     void render(uint8_t* rgba, size_t stride);
@@ -92,9 +101,11 @@ private:
     void upscale(int W, int H);
     void crop_aspect(float aspect);
     ToneInfo local_tonemap(const LookParams& p);
+    bool hdrnet_tonemap(const LookParams& p, AccelBackend backend, ToneInfo& outTone, HdrnetStats& outSt);
     GImg fuse_exposures(const GImg& Y, float gS, float gL);
-    void local_contrast(float amount, float radiusFrac);
-    void sharpen(float amount, float radius, float core);
+    void local_contrast(float amount, float radiusFrac, const GImg* segMask = nullptr);
+    void apply_lut_3d(const Lut3D& lut, float strength);
+    void sharpen(float amount, float radius, float core, const GImg* segMask = nullptr);
     GImg luma(const GImg& rgb, float floorv);
 
     Gpu& g_;
@@ -104,10 +115,12 @@ private:
     int nt_ = 0, tnx_ = 0, tny_ = 0;
     GImg grayRef_;
     bool aligned_ = false, kr_ = false;
+    float krScale_ = 1.f;
     GImg merged_, rgb_;
     std::vector<GImg> refPyr_;
     GImg sOut_, sWsum_, sRob_, sTmp_;
     Buf sRows_;
+    Buf sFreqRe_, sFreqIm_, sFreqMean_, sTileW_;
     double sWeight_ = 0;
     int sAdded_ = 0;
 };

@@ -39,9 +39,14 @@ data class CaptureSpec(
      * burst split over several captures: a reopen for the RAW budget loses the AF lock. Null focuses as usual.
      */
     val focusDioptres: Float? = null,
+    val earlyStopEnabled: Boolean = false,
+    val allowZsl: Boolean = false,
+    val reserveShortFrames: Int = 0,
 ) {
     init {
         require(frameCount in 1..RawRequestBudget.DEFAULT_LIMIT) { "frameCount must be 1..${RawRequestBudget.DEFAULT_LIMIT}" }
+        require(cropZoom >= 1f) { "cropZoom must be >= 1f" }
+        require(reserveShortFrames >= 0) { "reserveShortFrames must be >= 0" }
     }
 }
 
@@ -52,6 +57,7 @@ data class PreviewControls(
     val zoomRatio: Float = 1f,
     /** Warm (+) / cool (−) steps off auto white balance; 0 leaves AWB running. */
     val wbShift: Int = 0,
+    val zslActive: Boolean = false,
 )
 
 /** What the preview's capture results report, for the viewfinder's readouts. */

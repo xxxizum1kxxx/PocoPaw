@@ -40,6 +40,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -161,6 +162,33 @@ private fun CameraContent(vm: CameraViewModel) {
     var wbChip by remember { mutableStateOf("") }
     if (ui.wbShift != 0) wbChip = CameraFormat.wb(ui.wbShift)
     var quickOpen by rememberSaveable { mutableStateOf(false) }
+    var zoomSliderOpen by remember { mutableStateOf(false) }
+    var zoomEventSeq by remember { mutableIntStateOf(0) }
+    var zoomHudVisible by remember { mutableStateOf(false) }
+    var lastZoomTick by remember { mutableIntStateOf((ui.zoom * 10f).roundToInt()) }
+    LaunchedEffect(zoomEventSeq) {
+        if (zoomEventSeq == 0) return@LaunchedEffect
+        zoomHudVisible = true
+        delay(ZOOM_HUD_LINGER_MS)
+        zoomHudVisible = false
+    }
+    LaunchedEffect(zoomSliderOpen, zoomEventSeq) {
+        if (!zoomSliderOpen) return@LaunchedEffect
+        delay(ZOOM_SLIDER_DISMISS_MS)
+        zoomSliderOpen = false
+    }
+    LaunchedEffect(quickOpen, current?.id) {
+        if (quickOpen || current?.facing != LensFacing.BACK || current.relativeZoom != 1f) {
+            zoomSliderOpen = false
+        }
+    }
+    LaunchedEffect(ui.zoom) {
+        val tick = (ui.zoom * 10f).roundToInt()
+        if (ui.zoomTarget == null && zoomEventSeq > 0 && tick != lastZoomTick) {
+            haptics.performHapticFeedback(HapticFeedbackType.SegmentTick)
+        }
+        lastZoomTick = tick
+    }
     // The chips leave, turn while hidden and come back upright in the user's new corner.
     var chipRotation by remember { mutableFloatStateOf(-deviceRotation.toFloat()) }
     var chipsShown by remember { mutableStateOf(true) }
@@ -204,6 +232,10 @@ private fun CameraContent(vm: CameraViewModel) {
             onEvSteps = { vm.setEv(ui.evIndex + it) },
             onWbSteps = { vm.setWb(ui.wbShift + it) },
             onRetry = vm::retry,
+            onPinchZoom = { factor ->
+                zoomEventSeq++
+                vm.scaleContinuousZoom(factor)
+            },
             modifier = Modifier
                 .offset {
                     val under = (TOP_BAR_HEIGHT + VIEWFINDER_GAP).toPx()
@@ -225,6 +257,16 @@ private fun CameraContent(vm: CameraViewModel) {
                         PillReveal(chipsShown && evLabel != null && ui.focus == null) { EvChip(evChip) { vm.setEv(0) } }
                         PillReveal(chipsShown && ui.wbShift != 0) { EvChip(wbChip, tag = "WB") { vm.setWb(0) } }
                     }
+                    Box(Modifier.align(Alignment.TopCenter)) {
+                        PillReveal(chipsShown && zoomHudVisible && current != null) {
+                            current?.let { cam ->
+                                ZoomHudPill(
+                                    zoomText = CameraFormat.zoom(cam.relativeZoom * ui.zoom),
+                                    focalText = CameraFormat.equivalentFocal(cam.equivalentFocalMm * ui.zoom),
+                                )
+                            }
+                        }
+                    }
                 }
             },
             cover = {
@@ -240,10 +282,14 @@ private fun CameraContent(vm: CameraViewModel) {
                         settings = settings,
                         onOutput = { vm.setQuick { copy(output = it) } },
                         onProcessing = { vm.setQuick { copy(processing = it) } },
+                        onKrScale = { vm.setQuick { copy(krScale = it) } },
                         onFrames = { vm.setQuick { copy(burstFrames = it) } },
                         onScene = { vm.setQuick { copy(scene = it) } },
                         onLook = { vm.setQuick { copy(look = it) } },
+                        onTonemap = { vm.setQuick { copy(tonemapMode = it) } },
                         onUltraHdr = { vm.setQuick { copy(ultraHdr = it) } },
+                        onAwb = vm::setAwbMode,
+                        onEarlyStop = { vm.setQuick { copy(earlyStopEnabled = it) } },
                         modifier = Modifier
                             .offset { IntOffset(0, ((TOP_BAR_HEIGHT + VIEWFINDER_GAP).toPx() * frame.blowUp(tallest)).roundToInt()) }
                             .clip(YoinContainerShapes.Panel)
@@ -311,7 +357,21 @@ private fun CameraContent(vm: CameraViewModel) {
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    if (settings.developerInfo) DevChip(settings, current, live)
+                    if (settings.developerInfo) DevChip(settings, current, live, cropZoom = ui.cropZoom)
+                    val mainBack = current?.facing == LensFacing.BACK && current.relativeZoom == 1f
+                    val maxZoom = current?.let { 2f.coerceAtMost(it.zoomRange.upper).coerceAtLeast(1f) } ?: 1f
+                    val minZoom = current?.let { it.zoomRange.lower.coerceAtLeast(1f).coerceAtMost(maxZoom) } ?: 1f
+                    Reveal(zoomSliderOpen && mainBack && maxZoom > minZoom) {
+                        ZoomSlider(
+                            zoom = ui.zoom,
+                            minZoom = minZoom,
+                            maxZoom = maxZoom,
+                            onZoomChange = { z ->
+                                zoomEventSeq++
+                                vm.setContinuousZoom(z)
+                            },
+                        )
+                    }
                     Reveal(current?.facing == LensFacing.BACK) {
                         current?.let {
                             LensSelector(
@@ -321,6 +381,7 @@ private fun CameraContent(vm: CameraViewModel) {
                                 rotation = rotation,
                                 onSelect = vm::selectCamera,
                                 onToggleZoom = vm::toggleTwoX,
+                                onLongPressMain = { zoomSliderOpen = !zoomSliderOpen },
                             )
                         }
                     }
@@ -442,6 +503,8 @@ private val CHIP_FLOAT_CLEARANCE = 104.dp
 
 /** How long the chips take to leave before they turn. */
 private const val CHIP_TURN_MS = 220L
+private const val ZOOM_HUD_LINGER_MS = 1_200L
+private const val ZOOM_SLIDER_DISMISS_MS = 3_000L
 /** The camera whose frames are on screen; a reopen mid-capture (RAW budget) keeps the busy flag instead. */
 private fun CameraController.State.showing(): String? = when (this) {
     is CameraController.State.Previewing -> cameraId

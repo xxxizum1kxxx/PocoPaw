@@ -48,6 +48,8 @@ data class CameraInfo(
     val hasNoiseProfile: Boolean,
     /** Field of view relative to the main back camera: 1 for the main camera, < 1 for ultra-wide. */
     val relativeZoom: Float,
+    val supportsRaw10: Boolean = false,
+    val raw10Size: Size? = null,
 ) {
     val rawMegapixels: Float get() = rawSize.width * rawSize.height / 1_000_000f
 }
@@ -85,6 +87,9 @@ class CameraCatalog(private val manager: CameraManager) {
         if (CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA in caps) return null
         val map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
         val rawSize = map.getOutputSizes(ImageFormat.RAW_SENSOR)?.maxByOrNull { it.width.toLong() * it.height } ?: return null
+        val raw10Sizes = map.getOutputSizes(ImageFormat.RAW10).orEmpty()
+        val raw10Size = raw10Sizes.firstOrNull { it == rawSize }
+            ?: raw10Sizes.maxByOrNull { it.width.toLong() * it.height }
         val previewSize = choosePreviewSize(map.getOutputSizes(SurfaceTexture::class.java).orEmpty().toList(), rawSize)
         val facing = when (c.get(CameraCharacteristics.LENS_FACING)) {
             CameraMetadata.LENS_FACING_FRONT -> LensFacing.FRONT
@@ -142,6 +147,8 @@ class CameraCatalog(private val manager: CameraManager) {
             hardwareLevel = c.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL) ?: -1,
             hasNoiseProfile = CaptureResult.SENSOR_NOISE_PROFILE in c.availableCaptureResultKeys,
             relativeZoom = 1f,
+            supportsRaw10 = raw10Size != null,
+            raw10Size = raw10Size,
         )
     }
 

@@ -20,6 +20,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -124,6 +125,7 @@ fun Viewfinder(
     onWbSteps: (Int) -> Unit,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
+    onPinchZoom: (Float) -> Unit = {},
     topOverlay: @Composable BoxScope.() -> Unit = {},
     bottomOverlay: @Composable BoxScope.() -> Unit = {},
     /** Over everything, edge to edge of the frame. */
@@ -173,7 +175,7 @@ fun Viewfinder(
             Box(
                 Modifier
                     .fillMaxSize()
-                    .viewfinderGestures(focus, ev != null, wb != null, controlRotation, onTap, onEvSteps, onWbSteps) { swiping = it },
+                    .viewfinderGestures(focus, ev != null, wb != null, controlRotation, onTap, onEvSteps, onWbSteps, onPinchZoom) { swiping = it },
             )
             FaceBoxes(if (focus == null) faces else emptyList(), focusLocked)
             FocusRing(focus, focusLocked, focusHeld, evLabel, controlRotation)
@@ -277,11 +279,13 @@ private fun Modifier.viewfinderGestures(
     onTap: (Float, Float, Boolean) -> Unit,
     onEvSteps: (Int) -> Unit,
     onWbSteps: (Int) -> Unit,
+    onPinchZoom: (Float) -> Unit,
     onSwipe: (SwipeSide?) -> Unit,
 ): Modifier {
     val tap by rememberUpdatedState(onTap)
     val ev by rememberUpdatedState(onEvSteps)
     val wb by rememberUpdatedState(onWbSteps)
+    val pinch by rememberUpdatedState(onPinchZoom)
     val swipe by rememberUpdatedState(onSwipe)
     val evOn by rememberUpdatedState(evEnabled)
     val wbOn by rememberUpdatedState(wbEnabled)
@@ -305,6 +309,8 @@ private fun Modifier.viewfinderGestures(
                 val pressed = event.changes.count { it.pressed }
                 if (pressed >= 2) {
                     multi = true
+                    val zoomFactor = event.calculateZoom()
+                    if (abs(zoomFactor - 1f) > 1e-3f) pinch(zoomFactor)
                     event.changes.forEach { it.consume() }
                 } else if (!multi) {
                     val change = event.changes.first()

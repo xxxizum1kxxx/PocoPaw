@@ -40,4 +40,20 @@ class CoordinateMappingTest {
         assertEquals(unmirrored.first, mirrored.first, 1e-5f)
         assertEquals(unmirrored.second, mirrored.second, 1e-5f)
     }
+
+    @Test
+    fun continuousZoomRangeRoundTripsAcrossAllOrientationsAndMirroring() {
+        val zooms = listOf(1.0f, 1.05f, 1.25f, 1.37f, 1.5f, 1.75f, 2.0f)
+        for (orientation in listOf(0, 90, 180, 270)) {
+            for (mirrored in listOf(false, true)) {
+                for (zoom in zooms) {
+                    val (u, v) = CameraViewModel.viewToSensor(0.32f, 0.68f, orientation, mirrored, zoom)
+                    assert(u in 0f..1f && v in 0f..1f)
+                    val (rx, ry) = CameraViewModel.sensorPointToView(u, v, orientation, mirrored, zoom)
+                    assertEquals(0.32f, rx, 1e-5f)
+                    assertEquals(0.68f, ry, 1e-5f)
+                }
+            }
+        }
+    }
 }

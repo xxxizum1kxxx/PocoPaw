@@ -106,6 +106,12 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.datastore.preferences)
+    implementation(libs.onnxruntime.android)
 
     testImplementation(libs.junit)
+    testImplementation(libs.onnxruntime.jvm)
+}
+
+configurations.matching { it.name.contains("UnitTest") }.configureEach {
+    exclude(group = "com.microsoft.onnxruntime", module = "onnxruntime-android")
 }

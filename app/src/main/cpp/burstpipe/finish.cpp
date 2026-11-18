@@ -1,8 +1,12 @@
 #include "finish.h"
+#include "ort_runtime.h"
 
+#include <cctype>
 #include <csetjmp>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
 
 #include "third_party/libultrahdr/include/jpeglib.h"
 
@@ -247,7 +251,7 @@ double det3(const double m[9]) {
 
 bool invert3(const double m[9], double inv[9]) {
     double d = det3(m);
-    if (!std::isfinite(d) || std::fabs(d) < 1e-7) return false;
+    if (!is_finite_f64_val(d) || std::fabs(d) < 1e-7) return false;
     double id = 1.0 / d;
     inv[0] = (m[4] * m[8] - m[5] * m[7]) * id;
     inv[1] = (m[2] * m[7] - m[1] * m[8]) * id;
@@ -273,10 +277,11 @@ void mul3v(const double m[9], const double v[3], double o[3]) {
 
 bool mat_valid3(const float f[9], double out[9]) {
     for (int i = 0; i < 9; i++) {
-        if (!std::isfinite(f[i])) return false;
+        if (!is_finite_f32_val(f[i])) return false;
         out[i] = f[i];
     }
-    return std::fabs(det3(out)) > 1e-6;
+    const double d = det3(out);
+    return is_finite_f64_val(d) && std::fabs(d) > 1e-6;
 }
 
 // 5-tap binomial pyramid (Burt & Adelson)
@@ -525,11 +530,12 @@ void apply_ccm(ImageF& rgb, const float M[9]) {
 bool compute_dual_illuminant_ccm(const DualColorCal& cal, const float wb[4], float outCcm[9]) {
     if (cal.illuminants <= 0) return false;
     double neu[3] = {cal.neutral[0], cal.neutral[1], cal.neutral[2]};
-    bool neuOk = std::isfinite(neu[0]) && std::isfinite(neu[1]) && std::isfinite(neu[2]) &&
+    bool neuOk = is_finite_f64_val(neu[0]) && is_finite_f64_val(neu[1]) && is_finite_f64_val(neu[2]) &&
                  neu[0] > 1e-5 && neu[1] > 1e-5 && neu[2] > 1e-5;
     if (!neuOk) {
         double g = 0.5 * (wb[1] + wb[2]);
-        if (!(wb[0] > 1e-5f && g > 1e-5 && wb[3] > 1e-5f && std::isfinite(wb[0]) && std::isfinite(g) && std::isfinite(wb[3])))
+        if (!(is_finite_f32_val(wb[0]) && is_finite_f64_val(g) && is_finite_f32_val(wb[3]) &&
+              wb[0] > 1e-5f && g > 1e-5 && wb[3] > 1e-5f))
             return false;
         neu[0] = g / wb[0];
         neu[1] = 1.0;
@@ -557,9 +563,9 @@ bool compute_dual_illuminant_ccm(const DualColorCal& cal, const float wb[4], flo
             if (!invert3(cm, invCm)) return false;
             mul3v(invCm, neu, xyz);
             const double sum = xyz[0] + xyz[1] + xyz[2];
-            if (!std::isfinite(sum) || sum <= 1e-9) return false;
+            if (!is_finite_f64_val(sum) || sum <= 1e-9) return false;
             const double tn = xy_to_cct_robertson(xyz[0] / sum, xyz[1] / sum);
-            if (!std::isfinite(tn)) return false;
+            if (!is_finite_f64_val(tn)) return false;
             if (std::fabs(tn - T) < 0.01) { T = tn; break; }
             T = it >= 12 ? 0.5 * (T + tn) : tn;
         }
@@ -600,7 +606,7 @@ bool compute_dual_illuminant_ccm(const DualColorCal& cal, const float wb[4], flo
         for (int i = 0; i < 9; i++) cm[i] = (w >= 1.0 || !cm2Ok) ? cm1[i] : (w * cm1[i] + (1.0 - w) * cm2[i]);
         if (!invert3(cm, camToXyz)) return false;
         mul3v(camToXyz, neu, xyzW);
-        if (!std::isfinite(xyzW[1]) || xyzW[1] <= 1e-6) return false;
+        if (!is_finite_f64_val(xyzW[1]) || xyzW[1] <= 1e-6) return false;
         for (int i = 0; i < 3; i++) xyzW[i] /= xyzW[1];
         double cW[3], cD65[3];
         mul3v(kBrad, xyzW, cW);
@@ -619,10 +625,11 @@ bool compute_dual_illuminant_ccm(const DualColorCal& cal, const float wb[4], flo
 
     for (int r = 0; r < 3; r++) {
         double sum = M[r * 3] + M[r * 3 + 1] + M[r * 3 + 2];
-        if (!std::isfinite(sum) || sum <= 0.1) return false;
+        if (!is_finite_f64_val(sum) || sum <= 0.1) return false;
         for (int c = 0; c < 3; c++) M[r * 3 + c] /= sum;
     }
-    if (!std::isfinite(det3(M)) || std::fabs(det3(M)) <= 1e-6) return false;
+    const double detM = det3(M);
+    if (!is_finite_f64_val(detM) || std::fabs(detM) <= 1e-6) return false;
     for (int i = 0; i < 9; i++) outCcm[i] = (float)M[i];
     return true;
 }
@@ -842,7 +849,7 @@ static inline float fast_exp2(float x) {
     return p;
 }
 
-ToneInfo local_tonemap(ImageF& rgb, const LookParams& p) {
+ToneInfo compute_tone_info(const ImageF& rgb, const LookParams& p) {
     auto Yat = [&](int x, int y) { const float* q = rgb.row(y) + (size_t)x * 3; return std::max(1e-6f, luma709(q[0], q[1], q[2])); };
     std::vector<float> samp;
     double lsum = 0;
@@ -854,6 +861,13 @@ ToneInfo local_tonemap(ImageF& rgb, const LookParams& p) {
     float gL = clampf(p.targetKey / key, 1.f, 64.f);
     float maxRatio = p.compression > 0 ? p.compression : 8.f;
     float gS = clampf(1.f / p995, gL / maxRatio, gL);
+    return {gS, gL, key};
+}
+
+ToneInfo local_tonemap(ImageF& rgb, const LookParams& p) {
+    auto Yat = [&](int x, int y) { const float* q = rgb.row(y) + (size_t)x * 3; return std::max(1e-6f, luma709(q[0], q[1], q[2])); };
+    const ToneInfo ti = compute_tone_info(rgb, p);
+    const float gS = ti.gainShort, gL = ti.gainLong, key = ti.keyBefore;
 
     auto apply_whitepoint = [&]() {
         // Low-contrast scenes whose brightest areas stay well below white get them lifted above targetKey so whites are not left grey.
@@ -1038,8 +1052,26 @@ float noise_limited_key(float targetKey, float visibleSigma) {
     return targetKey * std::max(0.5f, std::sqrt(kKeyNoiseCap / visibleSigma));
 }
 
-void sharpen_luma(ImageF& rgb, float amount, float radius, float core) {
+static inline void sample_mask2(const SemanticMask* seg, int x, int y, int W, int H, float& faceW, float& skyW) {
+    if (!seg || !seg->valid()) { faceW = 0.f; skyW = 0.f; return; }
+    const int mw = seg->w, mh = seg->h;
+    const float fx = clampf((x + 0.5f) * mw / (float)W - 0.5f, 0.f, (float)(mw - 1));
+    const float fy = clampf((y + 0.5f) * mh / (float)H - 0.5f, 0.f, (float)(mh - 1));
+    const int x0 = (int)fx, y0 = (int)fy;
+    const int x1 = std::min(x0 + 1, mw - 1), y1 = std::min(y0 + 1, mh - 1);
+    const float ax = fx - x0, ay = fy - y0;
+    const float* p00 = seg->data.data() + ((size_t)y0 * mw + x0) * 2;
+    const float* p10 = seg->data.data() + ((size_t)y0 * mw + x1) * 2;
+    const float* p01 = seg->data.data() + ((size_t)y1 * mw + x0) * 2;
+    const float* p11 = seg->data.data() + ((size_t)y1 * mw + x1) * 2;
+    faceW = (1.f - ay) * ((1.f - ax) * p00[0] + ax * p10[0]) + ay * ((1.f - ax) * p01[0] + ax * p11[0]);
+    skyW  = (1.f - ay) * ((1.f - ax) * p00[1] + ax * p10[1]) + ay * ((1.f - ax) * p01[1] + ax * p11[1]);
+}
+
+void sharpen_luma(ImageF& rgb, float amount, float radius, float core, const SemanticMask* seg) {
     if (amount <= 0) return;
+    const bool hasSeg = seg && seg->valid();
+    auto smooth01 = [](float t) { t = clampf(t, 0.f, 1.f); return t * t * (3.f - 2.f * t); };
     ImageF L(rgb.w, rgb.h);
     parallel_for(rgb.h, [&](int y) { const float* q = rgb.row(y); for (int x = 0; x < rgb.w; x++, q += 3) L.at(x, y) = luma709(q[0], q[1], q[2]); });
     ImageF B = gaussian_blur(L, radius);
@@ -1047,8 +1079,15 @@ void sharpen_luma(ImageF& rgb, float amount, float radius, float core) {
         float* q = rgb.row(y);
         for (int x = 0; x < rgb.w; x++, q += 3) {
             float d = L.at(x, y) - B.at(x, y);
-            d = d > core ? d - core : (d < -core ? d + core : 0.f);
-            float delta = amount * d;
+            float faceW = 0.f, skyW = 0.f;
+            if (hasSeg) sample_mask2(seg, x, y, rgb.w, rgb.h, faceW, skyW);
+            const float effCore = core * (1.f + 0.8f * faceW + 1.5f * skyW);
+            const float effAmt = amount * (1.f - 0.55f * faceW) * (1.f - 0.85f * skyW);
+            const float dSharp = d > effCore ? d - effCore : (d < -effCore ? d + effCore : 0.f);
+            const float skyGrain = (hasSeg && skyW > 0.f)
+                ? (-0.45f * skyW * (1.f - smooth01((std::fabs(d) - core) / std::max(2.f * core, 1e-5f))) * d)
+                : 0.f;
+            const float delta = effAmt * dSharp + skyGrain;
             for (int c = 0; c < 3; c++) q[c] = clampf(q[c] + delta, 0.f, 1.f);
         }
     });
@@ -1211,8 +1250,9 @@ float noise_scaled_local_contrast(float amount, float visibleSigma) {
     return amount * clampf(0.006f / std::max(1e-6f, visibleSigma), 0.4f, 1.f);
 }
 
-void local_contrast(ImageF& rgb, float amount, float radiusFrac) {
+void local_contrast(ImageF& rgb, float amount, float radiusFrac, const SemanticMask* seg) {
     if (amount <= 0) return;
+    const bool hasSeg = seg && seg->valid();
     // self-guided filter (He et al. 2010) on display luma: edge-preserving base, so boosting the
     // detail layer adds clarity without halos around strong edges
     ImageF L(rgb.w, rgb.h);
@@ -1257,14 +1297,18 @@ void local_contrast(ImageF& rgb, float amount, float radiusFrac) {
             float l = L.at(x, y), base = up(mA, x, y) * l + up(mB, x, y);
             // fade the boost out in deep shadows (noise) and near white (clipping)
             float fade = clampf(l / 0.08f, 0.f, 1.f) * clampf((1.f - l) / 0.1f, 0.f, 1.f);
-            float delta = amount * fade * (l - base);
+            float faceW = 0.f, skyW = 0.f;
+            if (hasSeg) sample_mask2(seg, x, y, rgb.w, rgb.h, faceW, skyW);
+            const float regionScale = hasSeg ? (1.f - 0.55f * faceW) * (1.f - 0.50f * skyW) : 1.f;
+            float delta = amount * regionScale * fade * (l - base);
             for (int c = 0; c < 3; c++) q[c] = clampf(q[c] + delta, 0.f, 1.f);
         }
     });
 }
 
-void hue_tune(ImageF& rgb, const LookParams& p) {
+void hue_tune(ImageF& rgb, const LookParams& p, const SemanticMask* seg) {
     if (p.skySat == 1 && p.skinSat == 1 && p.skyHue == 0 && p.skinHue == 0) return;
+    const bool hasSeg = seg && seg->valid();
     // Perceptual Oklab hue windows (hue = atan2(b, a)): sky blue around -110 deg (+-38), skin around +52 deg (+-28).
     struct Win { float cx, cy, c0; };
     auto mk = [](float centre, float half) {
@@ -1289,7 +1333,11 @@ void hue_tune(ImageF& rgb, const LookParams& p) {
             float C = std::sqrt(c2), inv = 1.f / C;
             float ux = a * inv, uy = ob * inv;
             float cw = clampf(C / 0.025f, 0.f, 1.f);
-            float ws = weight(sky, ux, uy) * cw, wk = weight(skin, ux, uy) * cw;
+            float faceW = 0.f, skyW = 0.f;
+            if (hasSeg) sample_mask2(seg, x, y, rgb.w, rgb.h, faceW, skyW);
+            const float skyGate = hasSeg ? (0.25f + 0.75f * skyW) : 1.f;
+            const float faceGate = hasSeg ? (0.25f + 0.75f * faceW) : 1.f;
+            float ws = weight(sky, ux, uy) * cw * skyGate, wk = weight(skin, ux, uy) * cw * faceGate;
             if (ws + wk <= 0.f) continue;
             float sat = 1.f + ws * (p.skySat - 1.f) + wk * (p.skinSat - 1.f);
             float th = ws * skyRot + wk * skinRot;
@@ -1306,10 +1354,30 @@ void hue_tune(ImageF& rgb, const LookParams& p) {
 }
 
 bool apply_look_preset(const std::string& name, LookParams& p) {
+    // Preserve non-preset fields (LUT, HDRnet tonemapper, semantic segmentation & face metadata).
+    const std::string lutPath = p.lutPath;
+    const float lutStrength = p.lutStrength;
+    const TonemapMode tonemapMode = p.tonemapMode;
+    const std::string hdrnetModelPath = p.hdrnetModelPath;
+    const bool semanticSegEnabled = p.semanticSegEnabled;
+    const std::string segModelPath = p.segModelPath;
+    const std::vector<float> faceBoxes = p.faceBoxes;
+    const int orientationDegrees = p.orientationDegrees;
+    auto restore = [&]() {
+        p.lutPath = lutPath;
+        p.lutStrength = lutStrength;
+        p.tonemapMode = tonemapMode;
+        p.hdrnetModelPath = hdrnetModelPath;
+        p.semanticSegEnabled = semanticSegEnabled;
+        p.segModelPath = segModelPath;
+        p.faceBoxes = faceBoxes;
+        p.orientationDegrees = orientationDegrees;
+    };
     if (name == "default") {
         // a little brighter and crisper than the neutral parameters, still well below pixel's noise
         p = LookParams();
         p.targetKey = 0.23f; p.sharpen = 0.8f; p.localContrast = 0.3f;
+        restore();
         return true;
     }
     if (name == "pixel") {
@@ -1319,6 +1387,7 @@ bool apply_look_preset(const std::string& name, LookParams& p) {
         p.targetKey = 0.22f; p.compression = 6.f; p.contrast = 0.26f; p.saturation = 1.24f;
         p.sharpen = 0.9f; p.localContrast = 0.6f; p.wbCool = 0.025f;
         p.skySat = 1.18f; p.skyHue = -4.f; p.skinSat = 0.92f; p.skinHue = 3.f;
+        restore();
         return true;
     }
     if (name == "night") {
@@ -1326,6 +1395,7 @@ bool apply_look_preset(const std::string& name, LookParams& p) {
         p = LookParams();
         p.targetKey = 0.11f; p.compression = 4.f; p.contrast = 0.18f; p.saturation = 1.05f;
         p.sharpen = 0.4f; p.localContrast = 0.15f; p.chromaDenoiseScale = 1.6f;
+        restore();
         return true;
     }
     return false;
@@ -1364,6 +1434,122 @@ void to_rgba8888_thumb(const ImageF& rgb, uint8_t* out, size_t stride, int outW,
             o[1] = (uint8_t)clampi((int)std::lround(sg * inv * 255.f), 0, 255);
             o[2] = (uint8_t)clampi((int)std::lround(sb * inv * 255.f), 0, 255);
             o[3] = 255;
+        }
+    });
+}
+
+bool parse_cube_lut(std::istream& in, Lut3D& out) {
+    out = Lut3D();
+    std::string line;
+    auto skip_ws = [](const char* p) {
+        while (*p && std::isspace((unsigned char)*p)) p++;
+        return p;
+    };
+    auto parse3 = [&](const char* p, float dst[3]) -> bool {
+        for (int c = 0; c < 3; c++) {
+            p = skip_ws(p);
+            if (!*p) return false;
+            char* end = nullptr;
+            dst[c] = std::strtof(p, &end);
+            if (end == p) return false;
+            p = end;
+        }
+        return *skip_ws(p) == '\0';
+    };
+    while (std::getline(in, line)) {
+        size_t hash = line.find('#');
+        if (hash != std::string::npos) line.resize(hash);
+        while (!line.empty() && std::isspace((unsigned char)line.back())) line.pop_back();
+        const char* p = skip_ws(line.c_str());
+        if (!*p) continue;
+        if (std::strncmp(p, "TITLE", 5) == 0 && (p[5] == '\0' || std::isspace((unsigned char)p[5]))) continue;
+        if (std::strncmp(p, "LUT_1D_SIZE", 11) == 0) return false;
+        if (std::strncmp(p, "LUT_3D_SIZE", 11) == 0 && std::isspace((unsigned char)p[11])) {
+            char* end = nullptr;
+            long n = std::strtol(skip_ws(p + 11), &end, 10);
+            if (end == p + 11 || *skip_ws(end) != '\0' || n < 2 || n > 256) return false;
+            out.size = (int)n;
+            out.table.reserve((size_t)n * n * n * 3);
+            continue;
+        }
+        if (std::strncmp(p, "DOMAIN_MIN", 10) == 0 && std::isspace((unsigned char)p[10])) {
+            if (!parse3(p + 10, out.domMin)) return false;
+            continue;
+        }
+        if (std::strncmp(p, "DOMAIN_MAX", 10) == 0 && std::isspace((unsigned char)p[10])) {
+            if (!parse3(p + 10, out.domMax)) return false;
+            continue;
+        }
+        if (std::strncmp(p, "LUT_3D_INPUT_RANGE", 18) == 0) continue;
+        float rgb[3];
+        if (!parse3(p, rgb)) return false;
+        out.table.push_back(rgb[0]);
+        out.table.push_back(rgb[1]);
+        out.table.push_back(rgb[2]);
+    }
+    for (int c = 0; c < 3; c++)
+        if (!(out.domMax[c] > out.domMin[c])) return false;
+    return out.valid();
+}
+
+bool load_cube_lut(const std::string& path, Lut3D& out) {
+    if (path.empty()) return false;
+    std::ifstream in(path);
+    if (!in) return false;
+    return parse_cube_lut(in, out);
+}
+
+void apply_lut_3d(ImageF& rgb, const Lut3D& lut, float strength) {
+    const float s = clampf(strength, 0.f, 1.f);
+    if (s <= 0.f || !lut.valid() || rgb.w <= 0 || rgb.h <= 0) return;
+    const int N = lut.size;
+    const float* tbl = lut.table.data();
+    const float min0 = lut.domMin[0], min1 = lut.domMin[1], min2 = lut.domMin[2];
+    const float inv0 = 1.f / (lut.domMax[0] - min0);
+    const float inv1 = 1.f / (lut.domMax[1] - min1);
+    const float inv2 = 1.f / (lut.domMax[2] - min2);
+    auto at = [&](int ri, int gi, int bi) -> const float* {
+        return tbl + (((size_t)bi * N + gi) * N + ri) * 3;
+    };
+    parallel_for(rgb.h, [&](int y) {
+        float* q = rgb.row(y);
+        for (int x = 0; x < rgb.w; x++, q += 3) {
+            float r = q[0], g = q[1], b = q[2];
+            float fr = clampf((r - min0) * inv0, 0.f, 1.f) * (N - 1);
+            float fg = clampf((g - min1) * inv1, 0.f, 1.f) * (N - 1);
+            float fb = clampf((b - min2) * inv2, 0.f, 1.f) * (N - 1);
+            int r0 = std::min((int)fr, N - 2), r1 = r0 + 1;
+            int g0 = std::min((int)fg, N - 2), g1 = g0 + 1;
+            int b0 = std::min((int)fb, N - 2), b1 = b0 + 1;
+            float dr = fr - r0, dg = fg - g0, db = fb - b0;
+            const float* c000 = at(r0, g0, b0);
+            const float* c111 = at(r1, g1, b1);
+            const float* cA;
+            const float* cB;
+            float w0, wA, wB, w1;
+            if (dr >= dg && dg >= db) {
+                cA = at(r1, g0, b0); cB = at(r1, g1, b0);
+                w0 = 1.f - dr; wA = dr - dg; wB = dg - db; w1 = db;
+            } else if (dr >= db && db >= dg) {
+                cA = at(r1, g0, b0); cB = at(r1, g0, b1);
+                w0 = 1.f - dr; wA = dr - db; wB = db - dg; w1 = dg;
+            } else if (db >= dr && dr >= dg) {
+                cA = at(r0, g0, b1); cB = at(r1, g0, b1);
+                w0 = 1.f - db; wA = db - dr; wB = dr - dg; w1 = dg;
+            } else if (dg >= dr && dr >= db) {
+                cA = at(r0, g1, b0); cB = at(r1, g1, b0);
+                w0 = 1.f - dg; wA = dg - dr; wB = dr - db; w1 = db;
+            } else if (dg >= db && db >= dr) {
+                cA = at(r0, g1, b0); cB = at(r0, g1, b1);
+                w0 = 1.f - dg; wA = dg - db; wB = db - dr; w1 = dr;
+            } else {
+                cA = at(r0, g0, b1); cB = at(r0, g1, b1);
+                w0 = 1.f - db; wA = db - dg; wB = dg - dr; w1 = dr;
+            }
+            for (int c = 0; c < 3; c++) {
+                float val = w0 * c000[c] + wA * cA[c] + wB * cB[c] + w1 * c111[c];
+                q[c] = clampf(q[c] + s * (val - q[c]), 0.f, 1.f);
+            }
         }
     });
 }

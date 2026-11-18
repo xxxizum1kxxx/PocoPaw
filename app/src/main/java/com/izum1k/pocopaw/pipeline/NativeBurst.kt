@@ -10,10 +10,16 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
+/** Optical flow backend for multi-frame alignment (`FlowMethod` in `cpp/burstpipe/optical_flow.h`). */
+enum class FlowMethod { BLOCK_MATCH, SEA_RAFT, AUTO }
+
+/** Tone mapping operator (`TonemapMode` in `cpp/burstpipe/finish.h`). */
+enum class TonemapMode { MERTENS, HDRNET }
+
 /**
  * Finishing parameters of the native pipeline (`LookParams` in `cpp/burstpipe/finish.h`).
  * [chromaDenoise] < 0 scales with the measured noise; [compression] 0 picks the ratio from the scene.
- * A [style] other than "default" ("pixel", "night") replaces every other field with that preset.
+ * A [style] other than "default" ("pixel", "night") replaces preset fields while keeping LUT, HDRnet, and segmentation settings.
  */
 data class BurstLook(
     val style: String = "default",
@@ -26,6 +32,12 @@ data class BurstLook(
     val sharpen: Float = 0.8f,
     val sharpenRadius: Float = 1f,
     val localContrast: Float = 0.3f,
+    val lutPath: String = "",
+    val lutStrength: Float = 1f,
+    val tonemapMode: TonemapMode = TonemapMode.MERTENS,
+    val hdrnetModelPath: String = "",
+    val semanticSegEnabled: Boolean = false,
+    val segModelPath: String = "",
 ) {
     internal fun toArray() =
         floatArrayOf(lscLumaStrength, chromaDenoise, compression, targetKey, contrast, saturation, sharpen, sharpenRadius, localContrast)
@@ -61,11 +73,23 @@ data class MergeOptions(
     val frequencyC: Float = 64f,
     val frequencySpatial: Float = 2f,
     val lca: LensLca? = null,
+    val krScale: Int = 1,
+    val krAuto2x: Boolean = false,
+    val krSnrThresholdDb: Float = 14.0f,
+    val pmridEnabled: Boolean = false,
+    val pmridLowNoiseCutoff: Float = 0.05f,
+    val pmridModelPath: String = "",
+    val accelBackend: AccelBackend = AccelBackend.AUTO,
+    val flowMethod: FlowMethod = FlowMethod.BLOCK_MATCH,
+    val flowModelPath: String = "",
+    val earlyStopEnabled: Boolean = false,
+    val earlyStopTargetSnrDb: Float = 6.0f,
 ) {
     internal fun toArray() = floatArrayOf(
         if (kernelRegression) 1f else 0f, robustLo, robustHi, motionDilate.toFloat(), demosaic.ordinal.toFloat(),
         if (frequencyMerge) 1f else 0f, frequencyC, frequencySpatial,
         lca?.kr1 ?: 0f, lca?.kr2 ?: 0f, lca?.kb1 ?: 0f, lca?.kb2 ?: 0f,
+        krScale.toFloat(), if (krAuto2x) 1f else 0f, krSnrThresholdDb,
     )
 }
 
@@ -76,8 +100,10 @@ data class EncodedPhoto(val bytes: ByteArray, val ultraHdr: Boolean)
  * use every core. The frames' direct buffers are read in place, so [burst] must stay reachable
  * until [merge] returns. A [forStream] session takes its frames one by one instead ([addFrame]).
  */
-class NativeBurst private constructor(private var handle: Long) : Closeable {
+class NativeBurst private constructor(private var handle: Long) : StreamSession {
     constructor(burst: RawBurst) : this(create(burst.metadata, burst.reference, burst.frames, burst.referenceIndex, burst.frames))
+
+    private val progressOut = FloatArray(6)
 
     var width = 0
         private set
@@ -85,23 +111,49 @@ class NativeBurst private constructor(private var handle: Long) : Closeable {
         private set
 
     /** Before [align]: run the steps on the GPU (OpenCL) where possible, each falling back to the CPU on failure. */
-    fun useGpu(enabled: Boolean) = nativeUseGpu(live(), enabled)
+    override fun useGpu(enabled: Boolean) = nativeUseGpu(live(), enabled)
+
+    /** Before [align]: select accelerator routing policy (AUTO, CPU, GPU_OPENCL, NPU_DSP). */
+    override fun setAccelBackend(backend: AccelBackend) = nativeSetAccelBackend(live(), backend.ordinal)
+
+    /** Before [align]: configure optical flow method (BLOCK_MATCH, SEA_RAFT, AUTO) and optional model path. */
+    fun setFlowOptions(method: FlowMethod, modelPath: String = "") = nativeSetFlowOptions(live(), method.ordinal, modelPath)
 
     /** Before [align]: use the camera's calibrated noise instead of estimating it from the burst. */
-    fun setNoiseCurve(curve: NoiseCurve) = nativeSetNoiseCurve(live(), curve.iso, curve.a, curve.b)
+    override fun setNoiseCurve(curve: NoiseCurve) = nativeSetNoiseCurve(live(), curve.iso, curve.a, curve.b)
 
     /** Before [align]: process only the centre 1/[zoom]; [finish] scales the result back to the sensor size. */
-    fun crop(zoom: Float) = nativeCrop(live(), zoom)
+    override fun crop(zoom: Float) = nativeCrop(live(), zoom)
 
     /** Before [finish]: crop the finished RGB to [aspect] (e.g. 16f/9f); <= 0 keeps full sensor. */
     fun setAspect(aspect: Float) = nativeSetAspect(live(), aspect)
 
     fun align() = nativeAlign(live())
 
-    fun merge(options: MergeOptions) = nativeMerge(live(), options.toArray())
+    fun merge(options: MergeOptions) = nativeMerge(
+        live(),
+        options.toArray(),
+        options.pmridEnabled,
+        options.pmridLowNoiseCutoff,
+        options.pmridModelPath,
+        options.accelBackend.ordinal,
+        options.flowMethod.ordinal,
+        options.flowModelPath,
+    )
 
     /** On a [forStream] session, after [useGpu], [setNoiseCurve] and [crop]: merge the frames as [addFrame] hands them in. */
-    fun beginStream(options: MergeOptions) = nativeBeginStream(live(), options.toArray())
+    override fun beginStream(options: MergeOptions) = nativeBeginStream(
+        live(),
+        options.toArray(),
+        options.pmridEnabled,
+        options.pmridLowNoiseCutoff,
+        options.pmridModelPath,
+        options.accelBackend.ordinal,
+        options.flowMethod.ordinal,
+        options.flowModelPath,
+        options.earlyStopEnabled,
+        options.earlyStopTargetSnrDb,
+    )
 
     /**
      * Aligns and merges [frame], or holds it while the reference is still open (the first three frames). Returns the
@@ -109,8 +161,20 @@ class NativeBurst private constructor(private var handle: Long) : Closeable {
      */
     fun addFrame(frame: RawFrame): Int = nativeAddFrame(live(), frame.data, frame.width, frame.height)
 
+    override fun addFrameWithProgress(frame: RawFrame): StreamProgress {
+        nativeAddFrameProgress(live(), frame.data, frame.width, frame.height, progressOut)
+        return StreamProgress(
+            refIdx = progressOut[0].roundToInt(),
+            acceptedCount = progressOut[1].roundToInt(),
+            neff = progressOut[2],
+            phaseCoverage = progressOut[3],
+            estimatedSnrGainDb = progressOut[4],
+            shouldStop = progressOut[5] != 0f,
+        )
+    }
+
     /** After the last [addFrame]: finishes the merge ([merge] then only picks the demosaic); returns the reference's index. */
-    fun endFrames(): Int = nativeEndFrames(live())
+    override fun endFrames(): Int = nativeEndFrames(live())
 
     /**
      * After [merge], before [finish]: the merged mosaic as a 16-bit DNG in [NativeMemory] (the caller frees it), or null
@@ -131,8 +195,26 @@ class NativeBurst private constructor(private var handle: Long) : Closeable {
     ): ByteBuffer? = nativeEncodeDng(live(), color, illuminants, neutral, orientation, make, model, software, thumbnail, thumbnailWidth, thumbnailHeight)
 
     /** [keepHdr] keeps the scene-linear luminance [encodePhoto] needs for Ultra HDR. */
-    fun finish(look: BurstLook, keepHdr: Boolean = false) {
-        val size = nativeFinish(live(), look.style, look.toArray(), keepHdr)
+    fun finish(
+        look: BurstLook,
+        keepHdr: Boolean = false,
+        faceBoxes: FloatArray = FloatArray(0),
+        orientationDegrees: Int = 0,
+    ) {
+        val size = nativeFinish(
+            live(),
+            look.style,
+            look.toArray(),
+            look.lutPath,
+            look.lutStrength,
+            keepHdr,
+            look.tonemapMode.ordinal,
+            look.hdrnetModelPath,
+            look.semanticSegEnabled,
+            look.segModelPath,
+            if (faceBoxes.isEmpty()) null else faceBoxes,
+            orientationDegrees,
+        )
         width = (size ushr 32).toInt()
         height = (size and 0xFFFFFFFFL).toInt()
     }
@@ -244,6 +326,13 @@ class NativeBurst private constructor(private var handle: Long) : Closeable {
         /** Read-only findings about the Hexagon cDSP (FastRPC capabilities, unsigned protection domain), one per line. */
         fun dspProbe(): String = nativeDspProbe()
 
+        /** Unified accelerator capability probe (OpenCL GPU, ONNX Runtime, NNAPI/QNN, big+prime CPUs, cDSP boundary). */
+        fun accelProbe(): String = nativeAccelProbe()
+
+        /** Native MIPI RAW10 -> RAW16 unpacker over direct ByteBuffers. */
+        fun unpackRaw10Native(src: ByteBuffer, width: Int, height: Int, rowStride: Int, dst: ByteBuffer): Boolean =
+            nativeUnpackRaw10(src, width, height, rowStride, dst)
+
         init {
             System.loadLibrary("burstpipe")
         }
@@ -262,6 +351,8 @@ class NativeBurst private constructor(private var handle: Long) : Closeable {
         @JvmStatic private external fun nativeCrop(handle: Long, zoom: Float)
         @JvmStatic private external fun nativeSetAspect(handle: Long, aspect: Float)
         @JvmStatic private external fun nativeUseGpu(handle: Long, enabled: Boolean)
+        @JvmStatic private external fun nativeSetAccelBackend(handle: Long, backend: Int)
+        @JvmStatic private external fun nativeSetFlowOptions(handle: Long, flowMethod: Int, flowModelPath: String)
         /**
          * The frame to merge onto: a bracket's shortest exposure (it keeps the highlights), otherwise the sharpest
          * of the first three frames by gradient energy (a handheld burst's first frame is often shaken by the press).
@@ -278,11 +369,27 @@ class NativeBurst private constructor(private var handle: Long) : Closeable {
         @JvmStatic private external fun nativeSharpestFrame(frames: Array<ByteBuffer>, width: Int, height: Int): Int
         @JvmStatic private external fun nativeSetNoiseCurve(handle: Long, iso: FloatArray, a: FloatArray, b: FloatArray)
         @JvmStatic private external fun nativeAlign(handle: Long)
-        @JvmStatic private external fun nativeMerge(handle: Long, options: FloatArray)
-        @JvmStatic private external fun nativeBeginStream(handle: Long, options: FloatArray)
+        @JvmStatic private external fun nativeMerge(
+            handle: Long, options: FloatArray,
+            pmridEnabled: Boolean, pmridLowNoiseCutoff: Float, pmridModelPath: String, accelBackend: Int,
+            flowMethod: Int, flowModelPath: String,
+        )
+        @JvmStatic private external fun nativeBeginStream(
+            handle: Long, options: FloatArray,
+            pmridEnabled: Boolean, pmridLowNoiseCutoff: Float, pmridModelPath: String, accelBackend: Int,
+            flowMethod: Int, flowModelPath: String,
+            earlyStopEnabled: Boolean, earlyStopTargetSnrDb: Float,
+        )
         @JvmStatic private external fun nativeAddFrame(handle: Long, frame: ByteBuffer, width: Int, height: Int): Int
+        @JvmStatic private external fun nativeAddFrameProgress(
+            handle: Long, frame: ByteBuffer, width: Int, height: Int, out: FloatArray,
+        ): Int
         @JvmStatic private external fun nativeEndFrames(handle: Long): Int
-        @JvmStatic private external fun nativeFinish(handle: Long, style: String, look: FloatArray, keepHdr: Boolean): Long
+        @JvmStatic private external fun nativeFinish(
+            handle: Long, style: String, look: FloatArray, lutPath: String, lutStrength: Float, keepHdr: Boolean,
+            tonemapMode: Int, hdrnetModelPath: String, semanticSegEnabled: Boolean, segModelPath: String,
+            faceBoxes: FloatArray?, orientationDegrees: Int,
+        ): Long
         @JvmStatic private external fun nativeEncodeDng(
             handle: Long, color: FloatArray, illuminants: IntArray, neutral: FloatArray, orientation: Int,
             make: String, model: String, software: String, thumbnail: ByteArray?, thumbnailWidth: Int, thumbnailHeight: Int,
@@ -295,5 +402,9 @@ class NativeBurst private constructor(private var handle: Long) : Closeable {
         @JvmStatic private external fun nativeRelease(handle: Long)
         @JvmStatic private external fun nativeGpuInit(cacheDir: String): String
         @JvmStatic private external fun nativeDspProbe(): String
+        @JvmStatic private external fun nativeAccelProbe(): String
+        @JvmStatic private external fun nativeUnpackRaw10(
+            src: ByteBuffer, width: Int, height: Int, rowStride: Int, dst: ByteBuffer,
+        ): Boolean
     }
 }

@@ -9,6 +9,10 @@
 // DSP reports about itself, and whether an app process may open a module in an unsigned protection
 // domain, the only way third-party code can run there without Qualcomm's signing. Nothing is executed on
 // the DSP: the probe opens the stock calculator skel and closes it again.
+//
+// Proprietary SDK boundary: compiling custom HVX/cDSP kernels (lib*_skel.so) requires Qualcomm's
+// proprietary Hexagon SDK (qaic / hexagon-clang), which is not bundled. Without a signed or unsigned
+// custom skel on the device, custom burst stages run on OpenCL GPU or big+prime CPU cores.
 namespace {
 
 // remote.h (Hexagon SDK)
@@ -28,9 +32,57 @@ using HandleClose = int (*)(uint64_t);
 
 }  // namespace
 
+DspProbeInfo dsp_probe_info() {
+    DspProbeInfo info;
+    void* lib = dlopen("libcdsprpc.so", RTLD_NOW | RTLD_LOCAL);
+    if (!lib) {
+        const char* err = dlerror();
+        info.note = std::string("libcdsprpc.so not loadable: ") + (err ? err : "unknown");
+        return info;
+    }
+    info.cdspFastRpcAvailable = true;
+    auto control = reinterpret_cast<HandleControl>(dlsym(lib, "remote_handle_control"));
+    auto session = reinterpret_cast<SessionControl>(dlsym(lib, "remote_session_control"));
+    auto openModule = reinterpret_cast<HandleOpen>(dlsym(lib, "remote_handle64_open"));
+    auto closeModule = reinterpret_cast<HandleClose>(dlsym(lib, "remote_handle64_close"));
+
+    if (control) {
+        auto query = [&](uint32_t attr, uint32_t& dst) {
+            DspCapability c{kCdsp, attr, 0};
+            if (control(kGetDspInfo, &c, sizeof c) == 0) dst = c.capability;
+        };
+        uint32_t dom = 0, upd = 0;
+        query(0, dom);
+        query(1, upd);
+        query(3, info.hvx128Count);
+        query(6, info.arch);
+        query(7, info.hmxDepth);
+        info.domainSupport = dom != 0;
+        info.unsignedPdSupported = upd != 0;
+    }
+    if (session && openModule && closeModule) {
+        UnsignedModule u{kCdsp, 1};
+        int err = session(kControlUnsignedModule, &u, sizeof u);
+        uint64_t h = 0;
+        int oerr = err ? err : openModule("file:///libcalculator_skel.so?calculator_skel_handle_invoke&_modver=1.0&_dom=cdsp", &h);
+        if (!oerr) {
+            closeModule(h);
+            info.skelOpened = true;
+        } else {
+            info.skelError = oerr;
+        }
+    }
+    info.note = "FastRPC runtime probed; custom cDSP skel requires proprietary Hexagon SDK (unavailable)";
+    dlclose(lib);
+    return info;
+}
+
 std::string dsp_probe() {
     void* lib = dlopen("libcdsprpc.so", RTLD_NOW | RTLD_LOCAL);
-    if (!lib) return std::string("libcdsprpc.so not loadable: ") + dlerror();
+    if (!lib) {
+        const char* err = dlerror();
+        return std::string("libcdsprpc.so not loadable: ") + (err ? err : "unknown");
+    }
     auto control = reinterpret_cast<HandleControl>(dlsym(lib, "remote_handle_control"));
     auto session = reinterpret_cast<SessionControl>(dlsym(lib, "remote_session_control"));
     auto openModule = reinterpret_cast<HandleOpen>(dlsym(lib, "remote_handle64_open"));

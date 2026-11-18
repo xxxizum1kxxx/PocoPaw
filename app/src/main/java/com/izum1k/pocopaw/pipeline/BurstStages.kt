@@ -29,7 +29,13 @@ class ReferenceStage : PipelineStage {
  * every frame to the reference and fits the noise model (or takes the camera's calibrated [noise]). With [gpu] this and the later native steps
  * run on the GPU where they can. A streamed burst ([RawBurst.stream]) is aligned and merged already; this waits for its last frames.
  */
-class AlignStage(private val gpu: Boolean = false, private val noise: NoiseCurve? = null) : PipelineStage {
+class AlignStage(
+    private val gpu: Boolean = false,
+    private val noise: NoiseCurve? = null,
+    private val accelBackend: AccelBackend = AccelBackend.AUTO,
+    private val flowMethod: FlowMethod = FlowMethod.BLOCK_MATCH,
+    private val flowModelPath: String = "",
+) : PipelineStage {
     override val name = "align"
 
     override suspend fun run(ctx: PipelineContext) {
@@ -40,6 +46,8 @@ class AlignStage(private val gpu: Boolean = false, private val noise: NoiseCurve
         val native = ctx.own(NativeBurst(ctx.burst))
         ctx[PipelineKeys.Native] = native
         native.useGpu(gpu)
+        if (accelBackend != AccelBackend.AUTO) native.setAccelBackend(accelBackend)
+        if (flowMethod != FlowMethod.BLOCK_MATCH) native.setFlowOptions(flowMethod, flowModelPath)
         noise?.let { native.setNoiseCurve(it) }
         val zoom = ctx.burst.metadata.cropZoom
         if (zoom > 1f) native.crop(zoom)
@@ -76,7 +84,13 @@ class FinishStage(
     override suspend fun run(ctx: PipelineContext) {
         val native = ctx.require(PipelineKeys.Native)
         if (aspectRatio > 0f) native.setAspect(aspectRatio)
-        native.finish(look, keepHdr = ultraHdr && writeJpeg)
+        val meta = ctx.burst.metadata
+        native.finish(
+            look,
+            keepHdr = ultraHdr && writeJpeg,
+            faceBoxes = meta.faceBoxes,
+            orientationDegrees = meta.orientationDegrees,
+        )
         val thumb = native.renderThumbnail(THUMB_LONG_SIDE)
         val uprightThumb = upright(thumb, ctx.burst.metadata.orientationDegrees)
         if (uprightThumb !== thumb) thumb.recycle()
